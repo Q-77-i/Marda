@@ -1,0 +1,29 @@
+[project]
+name = "marda-backend"
+version = "0.1.0"
+description = "Marda 码达 — Agent 智能面试学习平台后端"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "sse-starlette>=2.0",
+    "langgraph>=1.0,<2.0",
+    "langchain>=1.0,<2.0",
+    "openai>=1.50",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "tenacity>=9.0",
+    "httpx>=0.27",
+    "pypdf>=5.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
