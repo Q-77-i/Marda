@@ -1,0 +1,38 @@
+# ===== 密钥（不进仓库）=====
+.env
+.env.*
+!.env.example
+
+# ===== 个人文档（跨会话交流用，不进仓库）=====
+docs/规划报告.md
+
+# ===== 个人题库及其派生数据（不进仓库）=====
+docs/题库/
+data/raw/
+data/parsed/
+
+# ===== macOS =====
+.DS_Store
+
+# ===== Python =====
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+
+# ===== Node / Next.js =====
+node_modules/
+.next/
+out/
+*.log
+
+# ===== 本地数据与本地配置 =====
+*.sqlite3
+*.db
+.claude/
+
+# ===== Docker（阶段 3）=====
+docker/volumes/
