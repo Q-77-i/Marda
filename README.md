@@ -11,8 +11,8 @@
 
 | 层 | 选型 | 为什么 |
 | --- | --- | --- |
-| 编排 | **LangGraph** 1.x | 面试流程有"向后的箭头"（追问循环、难度升降、中断恢复），状态机是刚需；内置 checkpointer 让"断线续面"几乎零成本 |
-| 组件 | **LangChain** 1.x | 切分器 / 加载器 / 工具装饰器，只在直线管道上用 |
+| 编排 | **LangGraph** 1.2.11 | 面试流程有"向后的箭头"（追问循环、难度升降、中断恢复），状态机是刚需；内置 checkpointer 让"断线续面"几乎零成本 |
+| 组件 | **LangChain** 1.4.0 | 切分器 / 加载器 / 工具装饰器，只在直线管道上用 |
 | LLM | DeepSeek（`deepseek-flash` 主力 / `deepseek-v4-pro` 难题报告） | 官方 `openai` SDK + `base_url` 直连（绕开第三方封装的 `reasoning_content` 回传缺陷） |
 | 嵌入 | BGE-M3（1024d，SiliconFlow / 本地） | DeepSeek 不提供 embedding API |
 | 向量库 | **Qdrant** | 单容器可跑、payload 过滤与原生稀疏+RRF，阶段 2 混合检索不用换库 |

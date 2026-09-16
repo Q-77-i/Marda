@@ -41,7 +41,7 @@ marda/
 └── eval/                         # golden set（阶段 2 启用）
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph>=1.0,<2.0、langchain>=1.0,<2.0、openai（SDK）、pydantic、httpx、pypdf、sqlite3（内置）
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1（2026-09-17 T4 实测锁定）、openai（SDK）、pydantic、httpx、pypdf、sqlite3（内置）
 - 前端依赖：next@15、react、tailwindcss、shadcn/ui、framer-motion、recharts
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：SiliconFlow `BAAI/bge-m3`（1024d，免费，需 `SILICONFLOW_API_KEY`）

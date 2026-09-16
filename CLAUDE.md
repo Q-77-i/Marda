@@ -22,7 +22,7 @@
 
 ## 技术栈（版本线）
 
-- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph>=1.0,<2.0` + `langchain>=1.0,<2.0`
+- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1`（2026-09-17 T4 实测锁定）
 - 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）；设计规范参考 taste-skill
 - 数据：PostgreSQL（业务/面试记录/能力档案）+ Qdrant 1.19（向量，原生稀疏 + RRF）；checkpointer SQLite 起步 → PG
 - RAG：BGE-M3（1024d）+ bge-reranker-v2-m3（必上）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
