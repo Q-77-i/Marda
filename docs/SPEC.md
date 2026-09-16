@@ -76,6 +76,7 @@ class QuestionRecord(BaseModel):
     question_id: str | None; text: str; domain: str; topic: str
     difficulty: str; key_points: list[str]
     follow_up_count: int = 0; clarify_used: int = 0; missing_used: int = 0
+    followup_log: list[str] = []   # 2026-09-16 T4 补充：评分节点需要追问记录（§4.5）
     answer: str | None = None; score: ScoreItem | None = None
     skipped: bool = False; from_bank: bool = True
 
@@ -88,6 +89,9 @@ class InterviewState(BaseModel):
     consecutive_good: int = 0; consecutive_bad: int = 0
     candidate_profile: str = ""          # 自我介绍提炼
     answered_count: int = 0
+    answered_questions: list[QuestionRecord] = []  # 2026-09-16 T4 补充：报告聚合数据来源
+    user_input: str = ""                 # 2026-09-16 T4 补充：resume 消息（route 分发依据）
+    closing_question_count: int = 0      # 2026-09-16 T4 补充：反问计数（PRD §4.1 上限 1-2）
     chat_history: list[dict] = []        # LLM 上下文（保留最近 24 条）
     report: dict | None = None
     status: str = "running"              # running / finished
@@ -126,7 +130,9 @@ def decide_follow_up(score, follow_up_count, clarify_used, missing_used, rules) 
     # 上限: clarify_limit=1, missing_limit=2, total_limit=3（PRD §4.2）
     if follow_up_count >= rules.total_limit:  return Decision.NEXT
     if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY
-    if score.missed_key_points and missing_used < rules.missing_limit:  return Decision.MISSING
+    # 2026-09-16 拍板：覆盖率 < 70% 才追问遗漏（PRD §4.2 阈值口径，覆盖率 = covered/(covered+missed)）
+    if (score.missed_key_points and score.coverage < rules.coverage_threshold
+            and missing_used < rules.missing_limit):  return Decision.MISSING
     return Decision.NEXT
 ```
 
@@ -171,7 +177,7 @@ def update_difficulty(state) -> None:
 
 - 分块：**每题一 doc**（PRD §4.6 字段即 payload）；embedding 用 `question + topic 前缀`（"科目>章节"式上下文前缀）。
 - Qdrant collection `questions`：vectors 1024d；payload = {question_id, domain, topic, difficulty, round, company}；过滤查询 domain/difficulty。
-- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：dense top-k + payload 过滤；阶段 2 升级混合检索 + reranker（接口不变）。
+- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：payload 过滤 + 随机取 k + SQLite join 完整题目（2026-09-16 T4 落地口径：出题场景没有查询文本，dense 检索没有输入；§5 的 dense top-k 保留给阶段 2 追问/学习推送，接口不变）。
 - 建库脚本 ingest.py：parsed JSON → SQLite + Qdrant 双写，幂等（按 question_id upsert）。
 
 ## 6. 语料解析与入库（data/scripts/）

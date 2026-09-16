@@ -89,6 +89,20 @@ score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提
 **语料合规**：入库语料必须有明确 license，每条带 `source`/`license`/`url` 三要素；
 无 license、非商用（NC）、来源不明的语料一律不入库。详见 [data/licenses/语料来源清单.md](data/licenses/语料来源清单.md)。
 
+## 面试状态机（LangGraph）
+
+[backend/app/graph/](backend/app/graph/) 是面试引擎核心，五阶段（开场 → 自我介绍 → 技术问答 → 场景深挖 → 反问）全部由状态机驱动：
+
+- **确定性规则全在代码**（[graph/rules/](backend/app/graph/rules/)）：追问决策（PRD §4.2：澄清 ≤1 / 遗漏 <70% 阈值 ≤2 / 单题总追问 ≤3）、难度连击升降档、知识域配额（largest remainder）、阶段推进、结束门槛（≥60% 题量），全部有单测钉死状态转移
+- **LLM 只产出文案与评分**（[graph/nodes/](backend/app/graph/nodes/)）：出题（题库检索 → 难度放宽 → LLM 生成三级降级）、评分（五维 1-5 结构化）、追问文案、场景题（结合候选人项目经历定制）、报告
+- **断线续面**：checkpointer（SQLite）以 `thread_id = interview_id` 持久化，中断后 resume 状态一致（集成测试覆盖）
+- **单 interrupt 点**：每次用户消息 = 一次 resume，route 按 phase 纯代码分发
+
+```bash
+uv run pytest -q                                    # 90 个测试（规则 36 + 图集成 8 + …）
+uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
+```
+
 ## 开发进度
 
 | 阶段 | 内容 | 状态 |
@@ -96,7 +110,7 @@ score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提
 | T1 | 脚手架（FastAPI + Next.js + shadcn/ui） | ✅ |
 | T2 | 语料管道（解析 / 富化 / 入库，342 题，完整率 100%） | ✅ |
 | T3 | LLM 封装（关 thinking、JSON 校验、两层重试） | ✅ |
-| T4 | 面试状态机（五阶段 + 追问决策 + 配额） | ⬜ |
+| T4 | 面试状态机（五阶段 + 追问决策 + 配额 + checkpoint 续面） | ✅ |
 | T5 | API（路由 + SSE 流式） | ⬜ |
 | T6 | 前端三页面 + 流式联调 | ⬜ |
 | T7 | 部署验收 | ⬜ |
