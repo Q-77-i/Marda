@@ -53,7 +53,7 @@ marda/
 - **阶段 1 所有调用关 thinking**（`extra_body={"thinking": {"type": "disabled"}}`），规避坑位清单 1/2；阶段 2 再按节点开启。
 - 两个函数：
   - `chat(messages, *, max_tokens, temperature) -> str`：文案类（开场/出题/追问/结束语）
-  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），`response_format={"type":"json_schema",...}` + Pydantic 校验 + 失败重试 1 次（非法 JSON 时）
+  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），`response_format={"type":"json_object"}` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次（非法 JSON 时）。（2026-09-16 实测 `json_schema` 返回 400 不可用）
 - 重试：429/5xx tenacity 指数退避（阶段 1 只做重试，限流/熔断阶段 3）。
 - 调用点全部走 `LLMError` 自定义异常 → API 层转 SSE error 事件。
 
@@ -235,6 +235,15 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 ```
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
+
+### 8.1 多源扩充口径（2026-09-16 定）
+
+阶段 1 单一数据源（个人题库），`source`/`license`/`url` 为单值。阶段 2 接入开源白名单语料（WenQu MIT 等）前，按以下路径扩展，不临时拍脑袋：
+
+- `source` 列语义 = **答案主源**（provenance 的精简版）；接入第二个数据源时拆 `question_sources` 关联表（`question_id, source, license, url, source_detail, imported_at, status`），四个来源字段一并迁入，questions 表只保留主源外键
+- **license 按源记、不按题记**；一题多源时主答案裁决：主源优先级 > 答案质量 > 导入时间，其余源记录保留；license 展示为集合
+- 每个新源一个 adapter（复用 `_make_question`/`_finalize`），负责把该源的分类体系归一化到统一 schema（topic→域、easy/medium/hard→L1/L2/L3、无轮次概念→NULL）；未知 topic 沿用"报错、人工补映射"
+- Qdrant payload 不含 source 字段，provenance 拆表对向量层透明（检索命中后 join SQLite）
 
 ## 9. 前端设计
 

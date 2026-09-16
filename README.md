@@ -63,6 +63,20 @@ DEEPSEEK_API_KEY=
 SILICONFLOW_API_KEY=
 ```
 
+## LLM 封装
+
+所有 LLM 调用走 [backend/app/llm.py](backend/app/llm.py) 这唯一入口：
+
+```python
+text = await chat(messages)                           # 文案：开场 / 出题 / 追问 / 结束语
+score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提炼 / 报告
+```
+
+- 官方 `openai` SDK + `base_url` 直连 DeepSeek，**所有调用显式关 thinking**（思考模式与结构化输出冲突会 400）
+- 结构化输出 = `json_object` + JSON Schema 注入 prompt + Pydantic 校验，校验失败重请求 1 次
+- 两层重试：网络层（429/5xx/超时）指数退避 3 次；失败统一抛 `LLMError(retryable=…)` 供 SSE error 映射
+- smoke（真实 API，验两条通路）：`cd backend && uv run python scripts/smoke_llm.py`
+
 ## 语料管道
 
 ```bash
@@ -81,7 +95,7 @@ SILICONFLOW_API_KEY=
 | --- | --- | --- |
 | T1 | 脚手架（FastAPI + Next.js + shadcn/ui） | ✅ |
 | T2 | 语料管道（解析 / 富化 / 入库，342 题，完整率 100%） | ✅ |
-| T3 | LLM 封装（关 thinking、JSON 校验、重试） | ⬜ |
+| T3 | LLM 封装（关 thinking、JSON 校验、两层重试） | ✅ |
 | T4 | 面试状态机（五阶段 + 追问决策 + 配额） | ⬜ |
 | T5 | API（路由 + SSE 流式） | ⬜ |
 | T6 | 前端三页面 + 流式联调 | ⬜ |
