@@ -35,5 +35,6 @@ def _weak_domains(domain_scores: dict[str, float]) -> list[str]:
     ordered = sorted(domain_scores, key=domain_scores.get)  # 稳定：同分按域名字典序
     weak = ordered[:2]
     if len(ordered) > 2 and domain_scores[ordered[2]] == domain_scores[ordered[1]]:
+        # 如果存在并列第二低分，就把并列的也选为弱项。
         weak.append(ordered[2])
     return weak

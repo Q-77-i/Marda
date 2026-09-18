@@ -207,23 +207,23 @@ def update_difficulty(state) -> None:
 
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
-| POST /api/interviews | `{position, question_count}` | `{interview_id, thread_id}`；创建后立即执行开场（返回 SSE 流） |
+| POST /api/interviews | `{position, question_count}`（1–20，默认 10） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
-| GET /api/interviews/{id}/report | — | 报告 JSON |
+| GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 
 **SSE 事件**（`sse-starlette` EventSourceResponse；POST 由前端 fetch 流解析）：
 
 | event | data | 说明 |
 | --- | --- | --- |
-| meta | `{interview_id, phase, answered_count, question_count}` | 阶段/进度 |
-| delta | `{text}` | 面试官消息增量（打字机） |
-| question | `{index, question_id, domain, difficulty}` | 新题提示 |
+| meta | `{interview_id, phase, answered_count, question_count}` | 阶段/进度（创建流首事件携带 interview_id） |
+| delta | `{text}` | 面试官消息（完整文案；打字机由前端客户端渲染） |
+| question | `{index, question_id, domain, difficulty}` | 新题提示（只在新题时发一次：追问/评分重传同题不发；生成题无 question_id 不发） |
 | done | `{interview_id, report_ready}` | 面试结束 |
-| error | `{code, message}` | 可重试错误 |
+| error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限） |
 
-工程要求：`stream_mode=["messages","updates"]`（禁用 `values` 全量推送）；`X-Accel-Buffering: no`；15s 心跳注释；async handler 全程 `astream` 不阻塞事件循环。
+工程要求：`stream_mode=["updates"]`（2026-09-19 修订：llm.py 走裸 openai SDK，无 LangChain messages token 流可推，原 `messages` 模式无产出；打字机效果由 T6 前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
 
 ## 8. 数据库（SQLite，阶段 1）
 
@@ -254,7 +254,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 ## 9. 前端设计
 
 - **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15）+ 历史列表（进入报告）。
-- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI。
+- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI。
 - **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评。
 - 设计：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。
 

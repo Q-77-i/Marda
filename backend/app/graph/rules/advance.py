@@ -10,7 +10,7 @@ from math import ceil
 
 from app.graph.state import Phase
 
-END_QUOTA_RATIO = 0.6
+END_QUOTA_RATIO = 0.6 # 结束配额比例
 FLOAT_EPSILON = 1e-9  # 0.6 浮点表示略小，乘出来的积直接 ceil 会差 1（如 15×0.6=8.999…）
 
 # 主动结束指令（前端结束按钮发送「结束面试」，T5 契约沿用）

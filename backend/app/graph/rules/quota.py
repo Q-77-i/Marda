@@ -28,7 +28,9 @@ def allocate_quota(total: int, weights: dict[str, float]) -> dict[str, int]:
 
 def remaining_quota(state: InterviewState) -> dict[str, int]:
     """剩余配额 = 总配额 − 已出题域计数（含正在答的当前题）。"""
+    # 总配额
     base = allocate_quota(state.question_count, DOMAIN_WEIGHTS)
+    # 用 Counter 统计已经回答过的题目中，每个领域出现了多少次。
     used = Counter(q.domain for q in state.answered_questions)
     if state.current_question and state.current_question.domain in base:
         used[state.current_question.domain] += 1

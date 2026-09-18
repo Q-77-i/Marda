@@ -31,6 +31,9 @@ backend/            FastAPI + LangGraph
     graph/          状态机（state / graph / nodes / rules）
     agents/         角色节点与结构化输出 schema
     tools/          RAG 检索工具
+    api/            路由（SSE 流）
+    service.py      服务层（图单例 / 事件翻译 / 落库编排）
+    db.py           业务库持久化（interviews / answers / reports）
     rag/            嵌入 / Qdrant / 检索
   tests/
 data/
@@ -99,8 +102,23 @@ score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提
 - **单 interrupt 点**：每次用户消息 = 一次 resume，route 按 phase 纯代码分发
 
 ```bash
-uv run pytest -q                                    # 90 个测试（规则 36 + 图集成 8 + …）
+uv run pytest -q                                    # 118 个测试（规则 36 + 图集成 8 + API 12 + …）
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
+```
+
+## API（SSE 流式）
+
+[backend/app/api/](backend/app/api/) 提供面试 REST API（SPEC §7），服务层 [backend/app/service.py](backend/app/service.py) 持有图单例并翻译 SSE 事件：
+
+- `POST /api/interviews` 创建场次并流式执行开场（首事件 `meta` 携带 `interview_id`）
+- `POST /api/interviews/{id}/messages` 发送回答，流式返回 `delta`（面试官文案）/ `question`（新题）/ `meta`（进度）/ `done`（结束）/ `error`
+- `GET /api/interviews/{id}` 会话恢复（checkpoint 为权威）；`GET /api/interviews/{id}/report` 报告；`GET /api/interviews` 历史列表
+- 面试结束后一次落库：answers / reports / interviews 收尾（[backend/app/db.py](backend/app/db.py)，SPEC §8）
+- 打字机效果由前端客户端渲染（delta 为完整文案），15s 心跳走 sse-starlette 内置 ping
+
+```bash
+uv run uvicorn app.main:app --reload              # 起服务
+uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
 ```
 
 ## 开发进度
@@ -111,7 +129,7 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 | T2 | 语料管道（解析 / 富化 / 入库，342 题，完整率 100%） | ✅ |
 | T3 | LLM 封装（关 thinking、JSON 校验、两层重试） | ✅ |
 | T4 | 面试状态机（五阶段 + 追问决策 + 配额 + checkpoint 续面） | ✅ |
-| T5 | API（路由 + SSE 流式） | ⬜ |
+| T5 | API（路由 + SSE 流式 + 落库，118 测试） | ✅ |
 | T6 | 前端三页面 + 流式联调 | ⬜ |
 | T7 | 部署验收 | ⬜ |
 
