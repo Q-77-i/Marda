@@ -38,3 +38,23 @@ def _weak_domains(domain_scores: dict[str, float]) -> list[str]:
         # 如果存在并列第二低分，就把并列的也选为弱项。
         weak.append(ordered[2])
     return weak
+
+
+def build_per_question_comments(questions: list[QuestionRecord], comments: list[str]) -> list[dict]:
+    """逐题点评（SPEC §4.6）：元信息取真实作答记录，LLM 只提供点评文字。
+
+    LLM 的 ``question_id`` 是它自编的序号（prompt 未定义该字段含义），不可信，故调用方
+    只取 ``comment`` 文本、按位置与已答题目对齐。条数恒等于已答题目数（LLM 少给时用评分官
+    点评兜底），保证「逐题点评条数」与「完成题量」一致——自然结束会多一道场景题，
+    条数对不上时前端只能靠位置猜哪条是场景题。
+    """
+    return [
+        {
+            "index": index,
+            "question_id": q.question_id,
+            "domain": q.domain,
+            "text": q.text,
+            "comment": comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
+        }
+        for index, q in enumerate(questions, 1)
+    ]

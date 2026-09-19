@@ -165,12 +165,19 @@ def update_difficulty(state) -> None:
 ### 4.6 报告生成节点
 
 - 纯代码聚合：五维均值、各 domain 均分、短板 = 均分最低的 2-3 个 domain、跳过标记。
-- LLM 结构化输出：总评 + 逐题点评（每题一句话，引用追问过程）+ 学习建议。输出 schema：
+- LLM 结构化输出：总评 + 逐题点评（每题一句话，引用追问过程）+ 学习建议。LLM 侧 schema：
 
 ```json
 { "total_comment": str, "per_question_comments": [{question_id, comment}], "study_advice": [{domain, advice}] }
 ```
 
+- **逐题点评落库 payload 由后端组装**（2026-09-19 修订）：LLM 的 `question_id` 是它自编的序号（prompt 未定义该字段含义），只取 `comment` 文本，元信息一律从 `state.answered_questions` 带出，条数恒等于已答题目数（LLM 少给时用评分官点评兜底）：
+
+```json
+{ "per_question_comments": [{ "index": int, "question_id": str|null, "domain": str, "text": str, "comment": str }] }
+```
+
+  场景题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
 - 报告落库（reports 表）+ state.status="finished"。
 
 ## 5. RAG（阶段 1 简版）

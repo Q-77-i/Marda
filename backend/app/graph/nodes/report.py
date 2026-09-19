@@ -5,7 +5,7 @@ from __future__ import annotations
 from app import llm
 from app.agents.prompts import REPORT_TEMPLATE
 from app.agents.schemas import ReportLLM
-from app.graph.rules.aggregate import aggregate_scores
+from app.graph.rules.aggregate import aggregate_scores, build_per_question_comments
 from app.graph.state import InterviewState, Phase, QuestionRecord
 
 
@@ -26,7 +26,10 @@ async def report_node(state: InterviewState) -> dict:
         "answered_count": state.answered_count,
         "question_count": state.question_count,
         "total_comment": llm_part.total_comment,
-        "per_question_comments": [c.model_dump() for c in llm_part.per_question_comments],
+        # 点评文字来自 LLM，元信息（题库 id / domain / 题干）由后端从真实作答记录带出
+        "per_question_comments": build_per_question_comments(
+            state.answered_questions, [c.comment for c in llm_part.per_question_comments]
+        ),
         "study_advice": [a.model_dump() for a in llm_part.study_advice],
     }
     return {"report": report, "status": "finished", "phase": Phase.FINISHED}

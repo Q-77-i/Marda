@@ -186,6 +186,13 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     }
     assert report["weaknesses"] == ["agent-architecture", "rag"]
     assert report["total_comment"]
+    # 逐题点评：条数恒等于作答数，元信息来自真实记录（fake 里 LLM 自编的 "q1" 不许泄漏）
+    comments = report["per_question_comments"]
+    assert len(comments) == report["answered_count"] == 3
+    assert [c["index"] for c in comments] == [1, 2, 3]
+    assert all(c["question_id"] != "q1" for c in comments)
+    assert comments[-1]["domain"] == "project"  # 场景题
+    assert all(c["text"] for c in comments)
 
 
 async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, install_search, graph_env):
