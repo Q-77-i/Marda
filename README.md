@@ -40,7 +40,9 @@ data/
   scripts/          语料管道：parse_md / parse_xmind / enrich / ingest
   parsed/           解析产物（gitignore）
   licenses/         语料来源清单与许可
-frontend/           Next.js 15
+frontend/           Next.js 15（app 路由 / lib 纯逻辑 / components）
+  lib/              sse 流解析 / typewriter 队列 / api 封装 / 展示格式化
+  components/       面试页客户端 / 报告页客户端 / 图表 / UI 基础件
 docs/               PRD / SPEC（个人规划文档不进仓库）
 ```
 
@@ -121,6 +123,23 @@ uv run uvicorn app.main:app --reload              # 起服务
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
 ```
 
+## 前端（三页面 + 流式联调）
+
+[frontend/](frontend/) 是 Next.js 15 App Router，三个页面：仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。
+请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+
+- **SSE 走 POST**：`EventSource` 只支持 GET，所以 [lib/sse.ts](frontend/lib/sse.ts) 用 `fetch` + 手动分帧；兼容 `\n\n` / `\r\n\r\n`、跳过 `: ping` 心跳注释、`TextDecoder` 用 `stream: true` 兜住中文跨 chunk 截断
+- **打字机在前端**：后端 `delta` 发的是完整文案，前端 [TypewriterQueue](frontend/lib/typewriter.ts) 按 30ms 节拍自适应吐字（FIFO，前一题吐完才吐下一题）；纯逻辑类，单测钉死连发顺序性
+- **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域换警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器六项检查（明暗双模式），图表颜色用 `getComputedStyle` 运行时读 CSS 变量（recharts 写的是 SVG 属性，`var()` 不解析）并跟随 `prefers-color-scheme` 重读
+- **刷新恢复**：挂载时拉 `GET /api/interviews/{id}` 从 checkpoint 重建消息列表；已结束的场次直接跳报告页
+- **错误路径**：网络层失败（后端没起）与 HTTP 4xx 都转成中文文案 + 重试按钮，重试不重复插入用户消息
+- **题量口径**（`lib/format.ts`，两处展示位共用）：分母**恒为用户配置的题量**，分子封顶。场景题（PROJECT 阶段额外加问、`domain="project"`）不参与计数——否则自然结束会显示成 `16/15`、逐题点评末条变成「第 16 题」，与用户选的 15 题矛盾。逐题点评由 `commentLabels()` 把场景题单列（新 payload 看 `domain`，历史 payload 按"超出配置题量的最后一条"兜底）
+
+```bash
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（40 个）
+pnpm lint && pnpm build
+```
+
 ## 开发进度
 
 | 阶段 | 内容 | 状态 |
@@ -130,7 +149,7 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 | T3 | LLM 封装（关 thinking、JSON 校验、两层重试） | ✅ |
 | T4 | 面试状态机（五阶段 + 追问决策 + 配额 + checkpoint 续面） | ✅ |
 | T5 | API（路由 + SSE 流式 + 落库，118 测试） | ✅ |
-| T6 | 前端三页面 + 流式联调 | ⬜ |
+| T6 | 前端三页面 + 流式联调（打字机 / 雷达图 / 断线恢复） | ✅ |
 | T7 | 部署验收 | ⬜ |
 
 ## 文档
