@@ -209,6 +209,18 @@ class Service:
         )
         await asyncio.to_thread(db.finish_interview, self._settings.db_path, interview_id)
 
+    async def delete_interview(self, interview_id: str) -> None:
+        """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表。
+
+        checkpointer 先删（线程是会话权威，删后 resume 即 404），业务库三表再删；
+        任一失败抛异常（500），保证不出现「列表没了但线程还在」的半删状态。
+        """
+        exists = await asyncio.to_thread(db.get_interview, self._settings.db_path, interview_id)
+        if exists is None:
+            raise InterviewNotFoundError(interview_id)
+        await self._g.checkpointer.adelete_thread(interview_id)
+        await asyncio.to_thread(db.delete_interview, self._settings.db_path, interview_id)
+
     async def get_session(self, interview_id: str) -> dict:
         """UI 恢复数据（SPEC §7）：checkpoint 为权威。"""
         values = await self._current_values(interview_id)

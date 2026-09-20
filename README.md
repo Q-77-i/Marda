@@ -115,6 +115,7 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 - `POST /api/interviews` 创建场次并流式执行开场（首事件 `meta` 携带 `interview_id`）
 - `POST /api/interviews/{id}/messages` 发送回答，流式返回 `delta`（面试官文案）/ `question`（新题）/ `meta`（进度）/ `done`（结束）/ `error`
 - `GET /api/interviews/{id}` 会话恢复（checkpoint 为权威）；`GET /api/interviews/{id}/report` 报告；`GET /api/interviews` 历史列表
+- `DELETE /api/interviews/{id}` 物理删除场次（业务库三表 + checkpointer 线程，进行中也允许；前端每条记录带确认弹窗删除按钮）
 - 面试结束后一次落库：answers / reports / interviews 收尾（[backend/app/db.py](backend/app/db.py)，SPEC §8）
 - 打字机效果由前端客户端渲染（delta 为完整文案），15s 心跳走 sse-starlette 内置 ping
 
@@ -133,7 +134,7 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 - **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域换警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器六项检查（明暗双模式），图表颜色用 `getComputedStyle` 运行时读 CSS 变量（recharts 写的是 SVG 属性，`var()` 不解析）并跟随 `prefers-color-scheme` 重读
 - **刷新恢复**：挂载时拉 `GET /api/interviews/{id}` 从 checkpoint 重建消息列表；已结束的场次直接跳报告页
 - **错误路径**：网络层失败（后端没起）与 HTTP 4xx 都转成中文文案 + 重试按钮，重试不重复插入用户消息
-- **题量口径**（`lib/format.ts`，两处展示位共用）：分母**恒为用户配置的题量**，分子封顶。场景题（PROJECT 阶段额外加问、`domain="project"`）不参与计数——否则自然结束会显示成 `16/15`、逐题点评末条变成「第 16 题」，与用户选的 15 题矛盾。逐题点评由 `commentLabels()` 把场景题单列（新 payload 看 `domain`，历史 payload 按"超出配置题量的最后一条"兜底）
+- **题量语义 = 全场问答轮次**（T7a-R1）：用户选的 N 就是会被问的 N 轮（内部组成 N−1 技术 + 1 场景由引擎决定，不对用户暴露），`answered_count ≤ question_count` 恒成立，进度与报告自然一致（旧版"场景题额外 +1"导致的 `16/15` 问题从根上消除，封顶仅作旧数据兼容）。**题型语义由后端定义**（T7a）：逐题点评 payload 每条带 `question_type`（tech/scenario）与 `number`（计入轮次的题型按序编号），前端 `commentLabels()` 只消费不推断（非技术题型显示「第 N 题 · 场景题」，未知题型显示原值）；历史 payload 按 domain/位置兜底。每条面试记录带**物理删除按钮**（确认弹窗 → DELETE 接口，三表 + checkpointer 线程一并清除）
 
 ```bash
 cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（40 个）
@@ -150,7 +151,8 @@ pnpm lint && pnpm build
 | T4 | 面试状态机（五阶段 + 追问决策 + 配额 + checkpoint 续面） | ✅ |
 | T5 | API（路由 + SSE 流式 + 落库，118 测试） | ✅ |
 | T6 | 前端三页面 + 流式联调（打字机 / 雷达图 / 断线恢复） | ✅ |
-| T7 | 部署验收 | ⬜ |
+| T7a | 题型语义 + 轮次语义建模（question_type/number 契约、题量 = 问答轮次、删除接口） | ✅ |
+| T7b | 部署验收（云服务器 compose + PRD §7 八条） | ⬜ |
 
 ## 文档
 

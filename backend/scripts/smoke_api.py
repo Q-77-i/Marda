@@ -1,22 +1,41 @@
-"""T5 smoke：真实 DeepSeek + Qdrant，走 HTTP API（本地 uvicorn）跑一场 2 题短面试。
+"""T5 smoke：真实 DeepSeek + Qdrant，走 HTTP API（本地 uvicorn）跑一场 2 轮短面试。
 
 用法：cd backend && uv run python scripts/smoke_api.py
 
 流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → POST 创建（SSE 开场）→
 循环 POST 消息到 done → GET 报告 + 会话恢复 + 历史列表，验证落库。
 依赖：.env（DEEPSEEK_API_KEY）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
+
+隔离（T7a-R1）：业务库与 checkpointer 落 /tmp 临时文件，验证不污染正式数据
+（题库 Qdrant 只读，不受影响）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# 必须先于 app.config 的 get_settings 首次调用注入临时库路径（lru_cache）
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="marda-smoke-"))
+os.environ["DB_PATH"] = str(_TMP_DIR / "marda.sqlite3")
+os.environ["CHECKPOINT_DB_PATH"] = str(_TMP_DIR / "checkpoints.sqlite3")
+
+# 出题检索走 SQLite join questions 表 → 从正式库拷贝只读快照到临时库
+import sqlite3
+
+_REAL_DB = Path(__file__).resolve().parents[2] / "data" / "marda.sqlite3"
+with sqlite3.connect(os.environ["DB_PATH"]) as _dst:
+    _dst.execute("ATTACH DATABASE ? AS real", (str(_REAL_DB),))
+    _dst.execute("CREATE TABLE questions AS SELECT * FROM real.questions")
+    _dst.execute("DETACH DATABASE real")
 
 import httpx
 
@@ -76,7 +95,7 @@ async def main() -> None:
     try:
         await wait_ready()
         print("=" * 60)
-        print(f"T5 smoke：真实 DeepSeek + Qdrant，HTTP API 跑 2 题短面试")
+        print(f"T5 smoke：真实 DeepSeek + Qdrant，HTTP API 跑 2 轮短面试")
         print("=" * 60)
 
         async with httpx.AsyncClient(timeout=120) as client:
@@ -129,6 +148,11 @@ async def main() -> None:
             print("总评:", report["total_comment"])
             for item in report["study_advice"]:
                 print(f"  学习建议 - {item['domain']}: {item['advice']}")
+            print("逐题点评（轮次语义 number/question_type）:")
+            for item in report["per_question_comments"]:
+                assert item["number"] is not None, "计入轮次的题型必须有序号"
+                print(f"  第{item['number']}轮 [{item['question_type']}/{item['domain']}] "
+                      f"{item['comment'][:30]}…")
 
             # 会话恢复 + 历史列表
             r = await client.get(f"{BASE}/api/interviews/{interview_id}")

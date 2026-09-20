@@ -37,14 +37,16 @@ describe("completedCount", () => {
   });
 });
 
-/** 造逐题点评条目：新 payload 带 domain，历史 payload 只有 question_id。 */
+/** 造逐题点评条目：新 payload 带 number/question_type，历史 payload 只有 question_id。 */
 const comment = (
   question_id: string | null,
   domain?: string,
-): PerQuestionComment => ({ question_id, comment: "点评", domain });
+  number?: number | null,
+  question_type?: string,
+): PerQuestionComment => ({ question_id, comment: "点评", domain, number, question_type });
 
 describe("commentLabels", () => {
-  it("新 payload：场景题单列，技术题按序编号", () => {
+  it("旧 payload（有 domain 无题型字段）：场景题按 domain 兜底", () => {
     const items = [
       comment("q_a", "rag"),
       comment("q_b", "memory"),
@@ -52,6 +54,28 @@ describe("commentLabels", () => {
     ];
 
     expect(commentLabels(items, 3, 2)).toEqual(["第 1 题", "第 2 题", "场景题"]);
+  });
+
+  it("T7a 新契约：number 与 question_type 由后端给，场景题计入轮次", () => {
+    const items = [
+      comment("q_a", "rag", 1, "tech"),
+      comment("q_b", "memory", 2, "tech"),
+      comment(null, "project", 3, "scenario"),
+    ];
+
+    expect(commentLabels(items, 3, 3)).toEqual(["第 1 题", "第 2 题", "第 3 题 · 场景题"]);
+  });
+
+  it("T7a：number 优先于 question_type（轮次编号 + 题型标注）", () => {
+    const items = [comment(null, "project", 3, "scenario")];
+
+    expect(commentLabels(items, 1, 3)).toEqual(["第 3 题 · 场景题"]);
+  });
+
+  it("T7a：未知题型无编号时显示原值，不猜", () => {
+    const items = [comment(null, "behavioral", null, "behavioral")];
+
+    expect(commentLabels(items, 1, 2)).toEqual(["behavioral"]);
   });
 
   it("15 题自然结束：第 16 条标场景题而不是「第 16 题」", () => {

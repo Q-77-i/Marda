@@ -36,6 +36,14 @@ export const PHASE_LABELS: Record<Phase, string> = {
   finished: "已结束",
 };
 
+/**
+ * 题型标签（T7a：question_type 语义由后端定义，此处仅作展示映射；
+ * 未知题型显示原值不猜）。tech 走编号展示，不入此表。
+ */
+export const QUESTION_TYPE_LABELS: Record<string, string> = {
+  scenario: "场景题",
+};
+
 export function domainLabel(domain: string): string {
   return DOMAIN_LABELS[domain] ?? domain;
 }

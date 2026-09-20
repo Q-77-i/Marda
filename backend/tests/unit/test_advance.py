@@ -23,20 +23,22 @@ def test_五题答三题可主动结束():
     assert meets_end_quota(3, 5) is True
 
 
-def test_技术题答满进场景题():
+def test_技术轮答满进场景题():
+    # 轮次语义：10 轮 = 9 技术 + 1 场景，答满 9 轮进场景题
+    assert phase_after_answer(Phase.TECH_BASE, 9, 10) is Phase.PROJECT
     assert phase_after_answer(Phase.TECH_BASE, 10, 10) is Phase.PROJECT
 
 
-def test_技术题未满留在技术阶段():
-    assert phase_after_answer(Phase.TECH_BASE, 9, 10) is Phase.TECH_BASE
+def test_技术轮未满留在技术阶段():
+    assert phase_after_answer(Phase.TECH_BASE, 8, 10) is Phase.TECH_BASE
 
 
 def test_场景题完成进反问():
-    assert phase_after_answer(Phase.PROJECT, 11, 10) is Phase.CLOSING
+    assert phase_after_answer(Phase.PROJECT, 10, 10) is Phase.CLOSING
 
 
 def test_反问阶段不变():
-    assert phase_after_answer(Phase.CLOSING, 11, 10) is Phase.CLOSING
+    assert phase_after_answer(Phase.CLOSING, 10, 10) is Phase.CLOSING
 
 
 def test_开场与自我介绍阶段不受影响():

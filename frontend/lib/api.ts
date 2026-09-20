@@ -59,7 +59,9 @@ export type InterviewRow = {
  * 逐题点评。
  *
  * 2026-09-19 起后端补上 `index`/`domain`/`text`（场景题 `domain="project"`、`question_id=null`）；
- * 历史报告的 payload 只有 `{question_id, comment}`，故新字段可选，前端按位置推断兜底。
+ * 2026-09-21（T7a）再补 `question_type`/`number`——题型语义由后端定义，前端只消费：
+ * `number` 为计入配置题量的题型按作答顺序的编号（场景题为 null），`question_type`
+ * 为题型种类（tech/scenario）。历史报告的 payload 没有这些字段，前端按 domain/位置兜底。
  */
 export type PerQuestionComment = {
   question_id: string | null;
@@ -67,6 +69,8 @@ export type PerQuestionComment = {
   index?: number;
   domain?: string;
   text?: string;
+  number?: number | null;
+  question_type?: string;
 };
 export type StudyAdvice = { domain: string; advice: string };
 
@@ -174,4 +178,24 @@ export function getReport(interviewId: string): Promise<ReportResponse> {
 
 export function listInterviews(): Promise<InterviewRow[]> {
   return getJSON<InterviewRow[]>("/api/interviews");
+}
+
+/** 物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。 */
+export async function deleteInterview(interviewId: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(`/api/interviews/${interviewId}`, { method: "DELETE" });
+  } catch (err) {
+    throw new Error(networkMessage(err));
+  }
+  if (!response.ok) {
+    let detail = `删除失败（${response.status}）`;
+    try {
+      const payload = await response.json();
+      if (typeof payload?.detail === "string") detail = payload.detail;
+    } catch {
+      // 非 JSON 响应，用通用文案
+    }
+    throw new Error(detail);
+  }
 }

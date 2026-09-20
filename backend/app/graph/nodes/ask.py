@@ -100,4 +100,5 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
         difficulty="L3",
         key_points=generated.key_points,
         from_bank=False,
+        question_type="scenario",  # 加问不计入配置题量（COUNTED_QUESTION_TYPES）
     )

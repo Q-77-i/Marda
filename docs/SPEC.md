@@ -79,9 +79,11 @@ class QuestionRecord(BaseModel):
     followup_log: list[str] = []   # 2026-09-16 T4 补充：评分节点需要追问记录（§4.5）
     answer: str | None = None; score: ScoreItem | None = None
     skipped: bool = False; from_bank: bool = True
+    question_type: str = "tech"    # 2026-09-21 T7a 补充：题型语义（tech=技术题计入题量；scenario=场景题加问不计入；默认值兼容旧 checkpoint）
 
 class InterviewState(BaseModel):
-    interview_id: str; position: str; question_count: int = 10
+    interview_id: str; position: str
+    question_count: int = 10   # 2026-09-21 T7a-R1 修订：全场问答轮次（组成 = 技术 N−1 + 场景 1，见 domain.SCENARIO_COUNT）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
@@ -147,9 +149,9 @@ def update_difficulty(state) -> None:
     good>=2 → difficulty 升一档（封顶 L3）并清零；bad>=2 → 降一档（保底 L1）并清零
 ```
 
-**quota.py**：知识域配额（largest remainder 按权重 × 题量），例：10 题 → Agent 认知 2 / RAG 2 / Tool-FC 2 / Memory 1 / 规划推理 2 / 工程化 1。
+**quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − SCENARIO_COUNT），例：10 轮 → 9 道技术题 → Agent 认知 2 / RAG 2 / 规划推理 2 / Tool-FC 1 / Memory 1 / 工程化 1。
 
-**advance.py**：`answered_count+1`；技术题答满 → `phase=PROJECT`（场景题 1 道）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= ceil(question_count*0.6)` 才允许，否则面试官礼貌拒绝并继续。
+**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`，2026-09-21 T7a-R1 轮次语义修订）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= ceil(question_count*0.6)` 才允许，否则面试官礼貌拒绝并继续。
 
 ### 4.4 出题节点
 
@@ -174,10 +176,11 @@ def update_difficulty(state) -> None:
 - **逐题点评落库 payload 由后端组装**（2026-09-19 修订）：LLM 的 `question_id` 是它自编的序号（prompt 未定义该字段含义），只取 `comment` 文本，元信息一律从 `state.answered_questions` 带出，条数恒等于已答题目数（LLM 少给时用评分官点评兜底）：
 
 ```json
-{ "per_question_comments": [{ "index": int, "question_id": str|null, "domain": str, "text": str, "comment": str }] }
+{ "per_question_comments": [{ "index": int, "number": int|null, "question_id": str|null, "question_type": str, "domain": str, "text": str, "comment": str }] }
 ```
 
   场景题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
+- **题型语义由后端定义**（2026-09-21 T7a/T7a-R1 修订）：`question_type` 为题型种类（tech/scenario），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（场景题计入轮次，编号为其轮次序号，2026-09-21 修订）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
 - 报告落库（reports 表）+ state.status="finished"。
 
 ## 5. RAG（阶段 1 简版）
@@ -214,11 +217,12 @@ def update_difficulty(state) -> None:
 
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
-| POST /api/interviews | `{position, question_count}`（1–20，默认 10） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
+| POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；2026-09-21 T7a-R1 修订：question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
+| DELETE /api/interviews/{id} | — | **204**：物理删除（2026-09-21 T7a-R1：业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 
 **SSE 事件**（`sse-starlette` EventSourceResponse；POST 由前端 fetch 流解析）：
 
@@ -249,6 +253,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
 
+**删除口径（2026-09-21 T7a-R1）**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（demo 单用户，逻辑删除的 `deleted_at` 过滤会污染所有查询）。
+
 ### 8.1 多源扩充口径（2026-09-16 定）
 
 阶段 1 单一数据源（个人题库），`source`/`license`/`url` 为单值。阶段 2 接入开源白名单语料（WenQu MIT 等）前，按以下路径扩展，不临时拍脑袋：
@@ -260,7 +266,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 9. 前端设计
 
-- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15）+ 历史列表（进入报告）。
+- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮）+ 历史列表（进入报告，**每条带物理删除按钮**（2026-09-21 T7a-R1，确认弹窗后调 DELETE 接口））。
 - **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI。
 - **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评。
 - 设计：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。

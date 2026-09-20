@@ -23,8 +23,8 @@ INTERVIEWER_PERSONA = (
 INTRO_TEMPLATE = (
     INTERVIEWER_PERSONA
     + "\n"
-    "现在开始一场针对「{position}」岗位的模拟面试：{question_count} 道技术题 + 1 道场景题，"
-    "每题后你会根据回答选择追问或换题，最后生成能力评估报告。\n"
+    "现在开始一场针对「{position}」岗位的模拟面试，共 {question_count} 轮问答。"
+    "每轮后你会根据回答选择追问或换题，最后生成能力评估报告。\n"
     "请先做开场：用 2-3 句话介绍自己和面试流程，然后邀请候选人做 1 分钟左右的自我介绍。"
 )
 

@@ -21,8 +21,8 @@ from app.main import app
 from app.tools import question_search
 from fake_llm import FakeLLMClient
 
-# 一场 2 题面试的完整轮次（T4 图流程：自我介绍 → 2 技术题 → 场景题 → 2 反问 → 报告）
-TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……", "第二题回答……",
+# 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 技术 + 1 场景 → 2 反问 → 报告）
+TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……",
          "场景题方案是……", "请问团队技术栈？", "晋升路径？"]
 
 
@@ -167,17 +167,16 @@ async def test_完整一场落库与报告(client):
     # 每道新题只发一次 question 事件（追问/评分重传 current_question 不算新题）
     assert [q["data"] for q in questions] == [
         {"index": 1, "question_id": "q_arch", "domain": "agent-architecture", "difficulty": "L1"},
-        {"index": 2, "question_id": "q_rag", "domain": "rag", "difficulty": "L1"},
     ]
     done = [e for e in events if e["event"] == "done"]
     assert len(done) == 1
     assert done[0]["data"] == {"interview_id": interview_id, "report_ready": True}
-    # answers 落库：2 技术题 + 1 场景题
+    # answers 落库：1 技术题 + 1 场景题
     rows = _db_rows(f"SELECT * FROM answers WHERE interview_id='{interview_id}' ORDER BY id")
-    assert len(rows) == 3
+    assert len(rows) == 2
     # 报告落库（SPEC §8：结束后一次写入）
     report = db.get_report(get_settings().db_path, interview_id)
-    assert report["payload"]["answered_count"] == 3
+    assert report["payload"]["answered_count"] == 2
     assert set(report["payload"]["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving",
     }
@@ -188,7 +187,7 @@ async def test_完整一场落库与报告(client):
     # 报告接口
     r = await client.get(f"/api/interviews/{interview_id}/report")
     assert r.status_code == 200
-    assert r.json()["report"]["answered_count"] == 3
+    assert r.json()["report"]["answered_count"] == 2
 
 
 async def test_会话状态恢复(client):
@@ -237,6 +236,45 @@ async def test_空消息400(client):
 async def test_题量越界422(client):
     r = await client.post("/api/interviews", json={"position": "x", "question_count": 99})
     assert r.status_code == 422
+    # 轮次语义：1 轮 = 0 技术 + 1 场景没有意义，最小 2
+    r = await client.post("/api/interviews", json={"position": "x", "question_count": 1})
+    assert r.status_code == 422
+
+
+async def test_删除场次_三表与接口全部清除(client):
+    interview_id, _ = await _create(client)
+    for turn in TURNS:
+        await _send(client, interview_id, turn)  # 完整一场（有 answers/report）
+
+    r = await client.delete(f"/api/interviews/{interview_id}")
+    assert r.status_code == 204
+    # 三表物理删除
+    assert _db_rows(f"SELECT * FROM interviews WHERE id='{interview_id}'") == []
+    assert _db_rows(f"SELECT * FROM answers WHERE interview_id='{interview_id}'") == []
+    assert _db_rows(f"SELECT * FROM reports WHERE interview_id='{interview_id}'") == []
+    # checkpointer 线程已删：会话/报告/发消息全部 404
+    assert (await client.get(f"/api/interviews/{interview_id}")).status_code == 404
+    assert (await client.get(f"/api/interviews/{interview_id}/report")).status_code == 404
+    async with client.stream(
+        "POST", f"/api/interviews/{interview_id}/messages", json={"content": "hi"},
+    ) as r:
+        assert r.status_code == 404
+    # 历史列表不再包含
+    rows = (await client.get("/api/interviews")).json()
+    assert all(x["id"] != interview_id for x in rows)
+
+
+async def test_删除进行中场次也允许(client):
+    interview_id, _ = await _create(client)
+    await _send(client, interview_id, TURNS[0])
+
+    r = await client.delete(f"/api/interviews/{interview_id}")
+    assert r.status_code == 204
+    assert (await client.get(f"/api/interviews/{interview_id}")).status_code == 404
+
+
+async def test_删除不存在404(client):
+    assert (await client.delete("/api/interviews/nope")).status_code == 404
 
 
 async def test_未结束查报告404(client):

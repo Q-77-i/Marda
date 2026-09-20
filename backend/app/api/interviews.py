@@ -25,7 +25,8 @@ SSE_HEADERS = {"X-Accel-Buffering": "no"}  # SPEC §7：关闭代理缓冲
 
 class CreateRequest(BaseModel):
     position: str = Field(min_length=1, max_length=100)
-    question_count: int = Field(default=10, ge=1, le=20)
+    # 轮次语义（T7a-R1）：全场问答轮次，≥2（1 轮 = 0 技术 + 1 场景无意义）
+    question_count: int = Field(default=10, ge=2, le=20)
 
 
 class MessageRequest(BaseModel):
@@ -91,3 +92,13 @@ async def get_interview_report(interview_id: str, request: Request):
 @router.get("")
 async def list_interviews(request: Request):
     return await request.app.state.service.list_interviews()
+
+
+@router.delete("/{interview_id}", status_code=204)
+async def delete_interview(interview_id: str, request: Request):
+    """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。"""
+    service = request.app.state.service
+    try:
+        await service.delete_interview(interview_id)
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="面试不存在") from exc

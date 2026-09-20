@@ -1,13 +1,15 @@
 """阶段推进与主动结束门槛（纯代码，SPEC §4.3）。
 
 - 主动结束门槛：已答 ≥ ceil(question_count × 0.6)（PRD §4.5，否则拒绝并继续）；
-- 阶段推进：技术题答满 → 场景题（1 道）→ 反问。
+- 阶段推进（轮次语义，T7a-R1）：技术轮答满（question_count − SCENARIO_COUNT）
+  → 场景题（SCENARIO_COUNT 道）→ 反问。question_count 为全场问答轮次。
 """
 
 from __future__ import annotations
 
 from math import ceil
 
+from app.domain import SCENARIO_COUNT
 from app.graph.state import Phase
 
 END_QUOTA_RATIO = 0.6 # 结束配额比例
@@ -28,8 +30,8 @@ def meets_end_quota(answered_count: int, question_count: int) -> bool:
 
 
 def phase_after_answer(phase: Phase, answered_count: int, question_count: int) -> Phase:
-    """一道题评分完成后应进入的阶段（TECH_BASE 答满 → PROJECT → CLOSING）。"""
-    if phase == Phase.TECH_BASE and answered_count >= question_count:
+    """一道题评分完成后应进入的阶段（TECH_BASE 技术轮答满 → PROJECT → CLOSING）。"""
+    if phase == Phase.TECH_BASE and answered_count >= question_count - SCENARIO_COUNT:
         return Phase.PROJECT
     if phase == Phase.PROJECT:
         return Phase.CLOSING

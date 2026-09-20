@@ -129,6 +129,15 @@ def get_interview(db_path: Path, interview_id: str) -> dict | None:
     return dict(row) if row else None
 
 
+def delete_interview(db_path: Path, interview_id: str) -> bool:
+    """物理删除场次（T7a-R1）：interviews/answers/reports 三表。返回是否存在过。"""
+    with _connect(db_path) as conn:
+        deleted = conn.execute("DELETE FROM interviews WHERE id=?", (interview_id,)).rowcount
+        conn.execute("DELETE FROM answers WHERE interview_id=?", (interview_id,))
+        conn.execute("DELETE FROM reports WHERE interview_id=?", (interview_id,))
+    return deleted > 0
+
+
 def list_interviews(db_path: Path, limit: int = 50) -> list[dict]:
     with _connect(db_path) as conn:
         rows = conn.execute(

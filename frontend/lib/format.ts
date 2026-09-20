@@ -1,6 +1,7 @@
 /** 展示格式化工具。 */
 
 import type { PerQuestionComment } from "@/lib/api";
+import { QUESTION_TYPE_LABELS } from "@/lib/constants";
 
 /** 后端时间为 UTC ISO 串，转为本地 "MM-DD HH:mm"。 */
 export function formatTime(iso: string): string {
@@ -47,30 +48,31 @@ export function progressLabel(answered: number, total: number): string {
 }
 
 /**
- * 场景题在逐题点评中的下标，没有则 -1。
+ * 逐题点评标题（T7a/T7a-R1：题型语义由后端定义，前端零推断）。
  *
- * 场景题是 PROJECT 阶段额外加问的那道（`domain="project"`、无题库 id），不属于配置题量，
- * 总排在所有技术题之后。
- */
-function scenarioIndex(items: PerQuestionComment[], answered: number, total: number): number {
-  const byDomain = items.findIndex((item) => item.domain === "project");
-  if (byDomain >= 0) return byDomain;
-  // 2026-09-19 之前的报告 payload 没有 domain，只能按位置推断：超出配置题量的那条即场景题
-  if (answered > total && items.length > 0) return items.length - 1;
-  return -1;
-}
-
-/**
- * 逐题点评标题：场景题单列，其余按作答顺序编号。
- *
- * 若一律按数组下标编号，15 题配置的自然结束会显示成「第 16 题」——看起来像凭空多了一题，
- * 与用户选的题量矛盾。场景题由标签点明，编号只覆盖配置的题量。
+ * 新 payload 每条带 `number`（计入问答轮次的题型按作答顺序编号，含场景题）与
+ * `question_type`：有 number 的按「第 N 题」，非技术题型追加题型标签
+ * （如「第 3 题 · 场景题」）；无 number 只有 type 的按标签（未知题型显示原值，不猜）。
+ * 2026-09-19 之前的报告 payload 无新字段，保留 domain/位置推断兜底。
  */
 export function commentLabels(
   items: PerQuestionComment[],
   answered: number,
   total: number,
 ): string[] {
-  const scenarioAt = scenarioIndex(items, answered, total);
-  return items.map((_, index) => (index === scenarioAt ? "场景题" : `第 ${index + 1} 题`));
+  return items.map((item, index) => {
+    if (typeof item.number === "number") {
+      const label = item.question_type && item.question_type !== "tech"
+        ? ` · ${QUESTION_TYPE_LABELS[item.question_type] ?? item.question_type}`
+        : "";
+      return `第 ${item.number} 题${label}`;
+    }
+    if (item.question_type) {
+      return QUESTION_TYPE_LABELS[item.question_type] ?? item.question_type;
+    }
+    // 旧 payload 兜底：场景题（domain="project"）单列，不参与编号
+    if (item.domain === "project") return "场景题";
+    if (answered > total && index === items.length - 1) return "场景题";
+    return `第 ${index + 1} 题`;
+  });
 }

@@ -51,6 +51,12 @@ def _record(domain: str) -> QuestionRecord:
     return QuestionRecord(text="题", domain=domain, topic="t", difficulty="L1")
 
 
+def test_技术配额等于轮次减场景题():
+    # 轮次语义：question_count 为全场问答轮次，场景题固定 1 道不占域配额
+    assert sum(remaining_quota(_state(10)).values()) == 9
+    assert sum(remaining_quota(_state(5)).values()) == 4
+
+
 def test_剩余配额扣减已答题与当前题():
     state = _state()
     state.answered_questions = [_record("rag")]
@@ -66,7 +72,7 @@ def test_选域取剩余配额最大的域():
 def test_配额耗尽兜底取权重表首域():
     state = _state()
     state.answered_questions = [
-        _record(domain) for domain, n in allocate_quota(10, DOMAIN_WEIGHTS).items() for _ in range(n)
+        _record(domain) for domain, n in allocate_quota(9, DOMAIN_WEIGHTS).items() for _ in range(n)
     ]
 
     assert pick_domain(state) == "agent-architecture"

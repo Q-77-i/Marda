@@ -77,6 +77,7 @@ class QuestionRecord(BaseModel):
     score: ScoreItem | None = None
     skipped: bool = False
     from_bank: bool = True
+    question_type: str = "tech"  # 题型（T7a）：tech=技术题；scenario=场景题。均计入问答轮次，默认值兼容旧 checkpoint
 
 
 class InterviewState(BaseModel):
@@ -91,7 +92,7 @@ class InterviewState(BaseModel):
 
     interview_id: str = ""
     position: str = ""
-    question_count: int = 10
+    question_count: int = 10  # 全场问答轮次（T7a-R1）：组成 = 技术 question_count−1 + 场景 1（domain.SCENARIO_COUNT）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []

@@ -153,18 +153,13 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     assert values["current_question"]["domain"] == "agent-architecture"
     assert values["current_question"]["from_bank"] is True
 
-    # TECH_BASE 第 1 题作答 → 评分换题（1/2）
+    # 技术题作答 → 答满（2 轮 = 1 技术 + 1 场景）→ PROJECT 场景题
     values = await _run(graph, config, Command(resume="我的答案是……"))
     assert values["answered_count"] == 1
-    assert values["phase"] == "tech_base"
-    assert values["current_question"]["domain"] == "rag"
-
-    # 第 2 题作答 → 答满 → PROJECT 场景题
-    values = await _run(graph, config, Command(resume="第二题的回答……"))
-    assert values["answered_count"] == 2
     assert values["phase"] == "project"
     assert values["current_question"]["domain"] == "project"
     assert values["current_question"]["from_bank"] is False
+    assert values["current_question"]["question_type"] == "scenario"
 
     # 场景题作答 → CLOSING 反问邀请
     values = await _run(graph, config, Command(resume="我的场景题方案是……"))
@@ -180,19 +175,22 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     values = await _run(graph, config, Command(resume="再问一个：晋升路径？"))
     assert values["status"] == "finished"
     report = values["report"]
-    assert report["answered_count"] == 3  # 2 技术 + 1 场景
+    assert report["answered_count"] == 2  # 1 技术 + 1 场景
     assert set(report["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving"
     }
-    assert report["weaknesses"] == ["agent-architecture", "rag"]
+    assert report["weaknesses"] == ["agent-architecture"]
     assert report["total_comment"]
     # 逐题点评：条数恒等于作答数，元信息来自真实记录（fake 里 LLM 自编的 "q1" 不许泄漏）
     comments = report["per_question_comments"]
-    assert len(comments) == report["answered_count"] == 3
-    assert [c["index"] for c in comments] == [1, 2, 3]
+    assert len(comments) == report["answered_count"] == 2
+    assert [c["index"] for c in comments] == [1, 2]
     assert all(c["question_id"] != "q1" for c in comments)
     assert comments[-1]["domain"] == "project"  # 场景题
     assert all(c["text"] for c in comments)
+    # 题型语义：技术题/场景题都计入轮次，按序编号
+    assert [c["question_type"] for c in comments] == ["tech", "scenario"]
+    assert [c["number"] for c in comments] == [1, 2]
 
 
 async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, install_search, graph_env):
@@ -202,7 +200,7 @@ async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, in
     ])
     install_llm(score=lambda: next(scores))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=2)
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -227,7 +225,7 @@ async def test_遗漏追问_两次用满后换题(install_llm, install_search, g
     missed = {**DEFAULT_SCORE, "covered_key_points": ["k1"], "missed_key_points": ["k2"]}  # 50% < 70%
     install_llm(score=lambda: dict(missed))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=2)
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -280,7 +278,7 @@ async def test_达标后结束指令直接进报告(install_llm, install_search,
 async def test_checkpoint续面_重建图后状态一致(install_llm, install_search, graph_env):
     install_llm()
     install_search(_bank("agent-architecture", "rag"))
-    graph, saver, config, state, db_path = await graph_env(question_count=2)
+    graph, saver, config, state, db_path = await graph_env(question_count=3)  # 2 技术 + 1 场景
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -303,7 +301,7 @@ async def test_checkpoint续面_重建图后状态一致(install_llm, install_se
 
     values = await _run(graph2, config, Command(resume="第二题回答……"))
     assert values["answered_count"] == 2
-    assert values["phase"] == "project"  # 2/2 答满 → 场景题
+    assert values["phase"] == "project"  # 2/2 技术轮答满 → 场景题
     assert len(values["chat_history"]) > history_len  # 历史连续
     assert len(values["asked_ids"]) == len(asked_ids)  # 场景题无 id，asked_ids 无重复
     await conn2.close()
@@ -317,7 +315,7 @@ async def test_连差两次难度降档(install_llm, install_search, graph_env):
     }
     install_llm(score=lambda: dict(low))
     install_search(_bank("agent-architecture", "rag", difficulty="L2"))
-    graph, _, config, state, _ = await graph_env(question_count=2, difficulty="L2")
+    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")  # 2 技术 + 1 场景
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))

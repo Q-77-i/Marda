@@ -32,3 +32,12 @@ DOMAIN_LABELS: Final[dict[str, str]] = {
 ENABLED_DOMAINS: Final[frozenset[str]] = frozenset(DOMAIN_WEIGHTS) | {"algorithms"}
 
 DIFFICULTIES: Final[frozenset[str]] = frozenset({"L1", "L2", "L3"})
+
+# 题型种类与计数语义（T7a，单一来源）：计入问答轮次的题型参与逐题编号
+#（question_type 见 state.QuestionRecord，默认 tech）。
+COUNTED_QUESTION_TYPES: Final[frozenset[str]] = frozenset({"tech", "scenario"})
+
+# 组成规则（T7a-R1 轮次语义，2026-09-21 拍板）：question_count = 全场问答轮次，
+# 场景题固定 SCENARIO_COUNT 道、技术题 = question_count − SCENARIO_COUNT；
+# 内部组成是引擎事务，不对用户暴露（UI 只讲「N 轮问答」）。
+SCENARIO_COUNT: Final[int] = 1

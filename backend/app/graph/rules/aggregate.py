@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.domain import DOMAIN_WEIGHTS
+from app.domain import COUNTED_QUESTION_TYPES, DOMAIN_WEIGHTS
 from app.graph.state import QuestionRecord
 
 FIVE_DIMS = ("technical_depth", "fundamentals", "project_experience", "communication", "problem_solving")
@@ -45,16 +45,27 @@ def build_per_question_comments(questions: list[QuestionRecord], comments: list[
 
     LLM 的 ``question_id`` 是它自编的序号（prompt 未定义该字段含义），不可信，故调用方
     只取 ``comment`` 文本、按位置与已答题目对齐。条数恒等于已答题目数（LLM 少给时用评分官
-    点评兜底），保证「逐题点评条数」与「完成题量」一致——自然结束会多一道场景题，
-    条数对不上时前端只能靠位置猜哪条是场景题。
+    点评兜底），保证「逐题点评条数」与「完成题量」一致。
+
+    题型语义（T7a/T7a-R1）：每条带出 ``question_type`` 与 ``number``——计入问答轮次的
+    题型（COUNTED_QUESTION_TYPES）按作答顺序编号（场景题计入轮次，编号为其轮次序号）；
+    前端据此展示，不再按 domain 推断题型。
     """
-    return [
-        {
+    number = 0
+    rows = []
+    for index, q in enumerate(questions, 1):
+        if q.question_type in COUNTED_QUESTION_TYPES:
+            number += 1
+            number_value = number
+        else:
+            number_value = None
+        rows.append({
             "index": index,
+            "number": number_value,
             "question_id": q.question_id,
+            "question_type": q.question_type,
             "domain": q.domain,
             "text": q.text,
             "comment": comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
-        }
-        for index, q in enumerate(questions, 1)
-    ]
+        })
+    return rows
