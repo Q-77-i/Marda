@@ -15,14 +15,14 @@
 
 ## DeepSeek 坑位清单（写代码前必读）
 
-1. **结构化输出必须显式关 thinking，且只能用 `json_object`**：v4 思考模式不支持 `tool_choice:"required"`，`with_structured_output` 会炸 → 评分/报告等结构化节点关掉 thinking；`response_format={"type":"json_schema"}` 实测 400 不可用（2026-09-16）→ 结构化输出 = `json_object` + schema 注入 prompt + Pydantic 校验（T3 已在 llm.py 固化）
+1. **结构化输出必须显式关 thinking，且只能用 `json_object`**：v4 思考模式不支持 `tool_choice:"required"`，`with_structured_output` 会炸 → 评分/报告等结构化节点关掉 thinking；`response_format={"type":"json_schema"}` 实测 400 不可用 → 结构化输出 = `json_object` + schema 注入 prompt + Pydantic 校验（已在 llm.py 固化）
 2. 思考模式 + 工具调用必须回传上一轮 `reasoning_content`，否则 400；`langchain-deepseek` 1.1.0 未修 → 集成首选官方 `openai` SDK + `base_url=https://api.deepseek.com`，或本地 patch ChatDeepSeek 子类
 3. 限流是**并发数**（flash 2500 / pro 500，账户级，可用 user_id 隔离）→ 令牌桶按并发设计，不是 QPS
 4. DeepSeek **无 embedding API** → 嵌入走 SiliconFlow BGE-M3（demo）/ 本地 BGE-M3（落地）
 
 ## 技术栈（版本线）
 
-- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1`（2026-09-17 T4 实测锁定）
+- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1`
 - 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）；设计规范参考 taste-skill
 - 数据：PostgreSQL（业务/面试记录/能力档案）+ Qdrant 1.19（向量，原生稀疏 + RRF）；checkpointer SQLite 起步 → PG
 - RAG：BGE-M3（1024d）+ bge-reranker-v2-m3（必上）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
@@ -54,15 +54,10 @@
 
 - 每阶段有验证标准（规划报告 §8）：**验证命令跑通才算完成**，不口头声称成功
 - TDD：追问决策、评分聚合、语料解析等确定性逻辑先写测试
-- 阶段节奏：规划（✓）→ CLAUDE.md（✓）→ PRD（✓）→ SPEC（✓）→ demo（阶段 1）→ 完善（阶段 2）→ 落地（阶段 3）→ 二期语音
+- 阶段节奏：规划（✓）→ CLAUDE.md（✓）→ PRD（✓）→ SPEC（✓）→ demo（✓）→ 完善（阶段 2）→ 落地（阶段 3）→ 二期语音
 
-## 目录结构（规划）
+## Changelog
 
-```
-backend/    FastAPI + LangGraph（api / graph 状态机 / agents 角色节点 / tools / rag / eval）
-frontend/   Next.js（面试 / 题库 / 报告 / 雷达图 / Trace 回放）
-data/       题库语料、三格式解析脚本、license 清单
-docker/     compose（api / web / qdrant / pg / …）
-docs/       规划报告等个人文档（开发时移走）
-eval/       golden set、DeepEval 用例
-```
+- 2026-09-16：坑位 1 实测确认 `json_schema` 返回 400 → 结构化输出定型 `json_object` + schema 注入 prompt + Pydantic 校验
+- 2026-09-17：T4 实测锁定版本线 `langgraph==1.2.11` / `langchain==1.4.0` / `langgraph-checkpoint-sqlite==3.1.1`
+- 2026-09-23：文档减负——「目录结构（规划）」删除（实际结构见 README）；demo（阶段 1）标记完成

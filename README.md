@@ -9,15 +9,15 @@
 
 ## 技术栈
 
-| 层 | 选型 | 为什么 |
+| 层 | 选型 | 关键理由 |
 | --- | --- | --- |
-| 编排 | **LangGraph** 1.2.11 | 面试流程有"向后的箭头"（追问循环、难度升降、中断恢复），状态机是刚需；内置 checkpointer 让"断线续面"几乎零成本 |
+| 编排 | **LangGraph** 1.2.11 | 追问循环 + 断线续面需要状态机，checkpointer 原生支持 |
 | 组件 | **LangChain** 1.4.0 | 切分器 / 加载器 / 工具装饰器，只在直线管道上用 |
-| LLM | DeepSeek（`deepseek-flash` 主力 / `deepseek-v4-pro` 难题报告） | 官方 `openai` SDK + `base_url` 直连（绕开第三方封装的 `reasoning_content` 回传缺陷） |
-| 嵌入 | BGE-M3（1024d，SiliconFlow / 本地） | DeepSeek 不提供 embedding API |
-| 向量库 | **Qdrant** | 单容器可跑、payload 过滤与原生稀疏+RRF，阶段 2 混合检索不用换库 |
-| 后端 | FastAPI + uvicorn + sse-starlette | 流式打字机输出 |
-| 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | 报告页雷达图 |
+| LLM | DeepSeek（`deepseek-flash` 主力 / `deepseek-v4-pro` 难题报告） | 双档控成本，快档跑高频、深度档跑报告 |
+| 嵌入 | BGE-M3（1024d，SiliconFlow / 本地） | 一次前向出稠密+稀疏，省掉独立 BM25 |
+| 向量库 | **Qdrant** | 原生稀疏+服务端 RRF，阶段2 混合检索不用换库 |
+| 后端 | FastAPI + uvicorn + sse-starlette | Python 生态 + SSE 原生支持 |
+| 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | App Router + AI 生态组件最全 |
 | 业务库 | SQLite（阶段 1）→ PostgreSQL | checkpointer 同步升级 |
 
 **设计原则**：确定性逻辑（阶段推进、轮数上限、追问决策、配额）全部用代码写死——可解释、可单测、UI 可回放；LLM 只负责出题、评分、追问文案这类语义任务。
@@ -74,23 +74,13 @@ SILICONFLOW_API_KEY=
 
 ## LLM 封装
 
-所有 LLM 调用走 [backend/app/llm.py](backend/app/llm.py) 这唯一入口：
-
-```python
-text = await chat(messages)                           # 文案：开场 / 出题 / 追问 / 结束语
-score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提炼 / 报告
-```
-
-- 官方 `openai` SDK + `base_url` 直连 DeepSeek，**所有调用显式关 thinking**（思考模式与结构化输出冲突会 400）
-- 结构化输出 = `json_object` + JSON Schema 注入 prompt + Pydantic 校验，校验失败重请求 1 次
-- 两层重试：网络层（429/5xx/超时）指数退避 3 次；失败统一抛 `LLMError(retryable=…)` 供 SSE error 映射
-- smoke（真实 API，验两条通路）：`cd backend && uv run python scripts/smoke_llm.py`
+所有 LLM 调用走 [backend/app/llm.py](backend/app/llm.py) 这唯一入口（文案 `chat` / 结构化 `chat_json`，显式关 thinking + json_object + Pydantic 校验）。DeepSeek 坑位清单见 [CLAUDE.md](CLAUDE.md)。
 
 ## 语料管道
 
 ```bash
-.venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON（351 → 合并 342 条）
-.venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账（题干重合 100%）
+.venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON
+.venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账
 .venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
 .venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（幂等 upsert）
 ```
@@ -102,47 +92,36 @@ score = await chat_json(messages, schema=ScoreItem)   # 结构化：评分 / 提
 
 [backend/app/graph/](backend/app/graph/) 是面试引擎核心，五阶段（开场 → 自我介绍 → 技术问答 → 场景深挖 → 反问）全部由状态机驱动：
 
-- **确定性规则全在代码**（[graph/rules/](backend/app/graph/rules/)）：追问决策（PRD §4.2：澄清 ≤1 / 遗漏 <70% 阈值 ≤2 / 单题总追问 ≤3）、难度连击升降档、知识域配额（largest remainder）、阶段推进、结束门槛（≥60% 题量），全部有单测钉死状态转移
+- **确定性规则全在代码**（[graph/rules/](backend/app/graph/rules/)）：追问决策、难度连击升降档、知识域配额、阶段推进、结束门槛，全部有单测钉死状态转移
 - **LLM 只产出文案与评分**（[graph/nodes/](backend/app/graph/nodes/)）：出题（题库检索 → 难度放宽 → LLM 生成三级降级）、评分（五维 1-5 结构化）、追问文案、场景题（结合候选人项目经历定制）、报告
-- **断线续面**：checkpointer（SQLite）以 `thread_id = interview_id` 持久化，中断后 resume 状态一致（集成测试覆盖）
-- **单 interrupt 点**：每次用户消息 = 一次 resume，route 按 phase 纯代码分发
+- **断线续面**：checkpointer（SQLite）以场次为粒度持久化，中断后 resume 状态一致（集成测试覆盖）
 
 ```bash
-uv run pytest -q                                    # 118 个测试（规则 36 + 图集成 8 + API 12 + …）
+uv run pytest -q                                    # 后端 129 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
 ## API（SSE 流式）
 
-[backend/app/api/](backend/app/api/) 提供面试 REST API（SPEC §7），服务层 [backend/app/service.py](backend/app/service.py) 持有图单例并翻译 SSE 事件：
-
-- `POST /api/interviews` 创建场次并流式执行开场（首事件 `meta` 携带 `interview_id`）
-- `POST /api/interviews/{id}/messages` 发送回答，流式返回 `delta`（面试官文案）/ `question`（新题）/ `meta`（进度）/ `done`（结束）/ `error`
-- `GET /api/interviews/{id}` 会话恢复（checkpoint 为权威）；`GET /api/interviews/{id}/report` 报告；`GET /api/interviews` 历史列表
-- `DELETE /api/interviews/{id}` 物理删除场次（业务库三表 + checkpointer 线程，进行中也允许；前端每条记录带确认弹窗删除按钮）
-- 面试结束后一次落库：answers / reports / interviews 收尾（[backend/app/db.py](backend/app/db.py)，SPEC §8）
-- 打字机效果由前端客户端渲染（delta 为完整文案），15s 心跳走 sse-starlette 内置 ping
+[backend/app/api/](backend/app/api/) 提供面试 REST API，契约定在 SPEC §7：SSE 流式（`meta` / `delta` / `question` / `done` / `error` 事件，首事件携带 `interview_id`）、会话恢复、报告与历史查询、场次物理删除；过程状态以 checkpoint 为权威，结束一次落库三表。
 
 ```bash
-uv run uvicorn app.main:app --reload              # 起服务
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
 ```
 
 ## 前端（三页面 + 流式联调）
 
-[frontend/](frontend/) 是 Next.js 15 App Router，三个页面：仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。
-请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+[frontend/](frontend/) 是 Next.js 15 App Router，三个页面：仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
 
-- **SSE 走 POST**：`EventSource` 只支持 GET，所以 [lib/sse.ts](frontend/lib/sse.ts) 用 `fetch` + 手动分帧；兼容 `\n\n` / `\r\n\r\n`、跳过 `: ping` 心跳注释、`TextDecoder` 用 `stream: true` 兜住中文跨 chunk 截断
-- **打字机在前端**：后端 `delta` 发的是完整文案，前端 [TypewriterQueue](frontend/lib/typewriter.ts) 按 30ms 节拍自适应吐字（FIFO，前一题吐完才吐下一题）；纯逻辑类，单测钉死连发顺序性
-- **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域换警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器六项检查（明暗双模式），图表颜色用 `getComputedStyle` 运行时读 CSS 变量（recharts 写的是 SVG 属性，`var()` 不解析）并跟随 `prefers-color-scheme` 重读
-- **刷新恢复**：挂载时拉 `GET /api/interviews/{id}` 从 checkpoint 重建消息列表；已结束的场次直接跳报告页
-- **错误路径**：网络层失败（后端没起）与 HTTP 4xx 都转成中文文案 + 重试按钮，重试不重复插入用户消息
-- **输入细节**：Enter 发送、Shift + Enter 换行；输入法组字中的回车（含 macOS 上用回车"上屏"的那一次）只上屏、不发送——`isComposing` 在这些浏览器里会先变 false，所以组字状态是自己维护的；**输入框随内容长高，涨到约 40% 视口高封顶后框内滚动**（高度由 `fitInput()` 按 `scrollHeight` 算，上限取自 `max-h-[40dvh]`），长高时消息区保持贴底。**高度不依赖 CSS `field-sizing`**——该属性 2026-06 才进 Baseline 全浏览器可用，Safari 18 / 旧版浏览器直接忽略，框会永远停在 `rows` 那么高
-- **题量语义 = 全场问答轮次**（T7a-R1）：用户选的 N 就是会被问的 N 轮（内部组成 N−1 技术 + 1 场景由引擎决定，不对用户暴露），`answered_count ≤ question_count` 恒成立，进度与报告自然一致（旧版"场景题额外 +1"导致的 `16/15` 问题从根上消除，封顶仅作旧数据兼容）。**题型语义由后端定义**（T7a）：逐题点评 payload 每条带 `question_type`（tech/scenario）与 `number`（计入轮次的题型按序编号），前端 `commentLabels()` 只消费不推断（非技术题型显示「第 N 题 · 场景题」，未知题型显示原值）；历史 payload 按 domain/位置兜底。每条面试记录带**物理删除按钮**（确认弹窗 → DELETE 接口，三表 + checkpointer 线程一并清除）
+- **SSE 走 POST**：`EventSource` 只支持 GET，[lib/sse.ts](frontend/lib/sse.ts) 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断
+- **打字机在前端**：后端 `delta` 发完整文案，前端 [TypewriterQueue](frontend/lib/typewriter.ts) 逐字渲染（FIFO，前一题吐完才吐下一题；单测钉死顺序性）
+- **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器明暗双模式检查
+- **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表，已结束场次直接跳报告页；网络失败与 HTTP 4xx 均转中文文案 + 重试按钮，重试不重复插入消息
+- **输入体验**：Enter 发送、Shift + Enter 换行，输入法"上屏回车"不误发送；输入框随内容长高，约 40% 视口高封顶后框内滚动
+- **题量与记录**：题量 = 全场问答轮次（选 N 就是 N 轮，进度与报告自然一致）；历史记录带物理删除（确认弹窗）
 
 ```bash
-cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（40 个）
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（43 个）
 pnpm lint && pnpm build
 ```
 
@@ -163,16 +142,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-| 阶段 | 内容 | 状态 |
-| --- | --- | --- |
-| T1 | 脚手架（FastAPI + Next.js + shadcn/ui） | ✅ |
-| T2 | 语料管道（解析 / 富化 / 入库，342 题，完整率 100%） | ✅ |
-| T3 | LLM 封装（关 thinking、JSON 校验、两层重试） | ✅ |
-| T4 | 面试状态机（五阶段 + 追问决策 + 配额 + checkpoint 续面） | ✅ |
-| T5 | API（路由 + SSE 流式 + 落库，118 测试） | ✅ |
-| T6 | 前端三页面 + 流式联调（打字机 / 雷达图 / 断线恢复） | ✅ |
-| T7a | 题型语义 + 轮次语义建模（question_type/number 契约、题量 = 问答轮次、删除接口） | ✅ |
-| T7b | 容器化与演示就绪（compose 一键起：nginx + web + api + qdrant） | ✅ |
+阶段 1 demo 已完成（T1–T7b），阶段 2 进行中。
 
 ## 文档
 

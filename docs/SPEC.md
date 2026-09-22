@@ -1,12 +1,12 @@
 # SPEC：Marda 码达 — 技术规格（阶段 1 MVP）
 
-> 版本 v1.0 ｜ 2026-09-15 ｜ 状态：待评审 ｜ 上游：docs/PRD.md（已评审通过）｜ 范围：阶段 1 demo 最小闭环
+> 版本 v1.0 ｜ 2026-09-15 ｜ 状态：已评审通过 ｜ 上游：docs/PRD.md（已评审通过）｜ 范围：阶段 1 demo 最小闭环
 
 ---
 
 ## 1. 范围与目标
 
-实现 PRD §7 的 MVP：Agent/AI 工程师方向、单用户、文本面试全链路（五阶段状态机 + 追问决策 + 断线续面 + 报告），题库 ≥100 题结构化入库（个人题库三格式解析），前端三个页面（仪表盘/面试/报告）。**全部 8 条验收标准（PRD §7）通过才算完成**（2026-09-22 修订：第 8 条 P95 首 token 在开发环境经 nginx 实测；部署环境实测随阶段 3 验收）。
+实现 PRD §7 的 MVP：Agent/AI 工程师方向、单用户、文本面试全链路（五阶段状态机 + 追问决策 + 断线续面 + 报告），题库 ≥100 题结构化入库（个人题库 md/xmind 两格式解析，PDF 因合规否决），前端三个页面（仪表盘/面试/报告）。**全部 8 条验收标准（PRD §7）通过才算完成**（第 8 条 P95 首 token 在开发环境经 nginx 实测；部署环境实测随阶段 3 验收）。
 
 阶段 1 明确不做：账号体系、混合检索（sparse/RRF）、reranker、私有题库、PDF 导出、Trace 回放、行为面、Langfuse 接入（预留接口）、MCP server、**服务器部署**（阶段 1 的部署形态 = Docker Compose 编排 + 本地一键起，部署方案随阶段 3 再定，与 PRD §8 里程碑一致）。
 
@@ -22,29 +22,29 @@ marda/
 │   │   ├── main.py               # FastAPI 入口
 │   │   ├── config.py             # env 读取（.env）
 │   │   ├── llm.py                # DeepSeek 统一封装（openai SDK + base_url）
-│   │   ├── api/                  # interviews.py / reports.py
+│   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
+│   │   ├── api/                  # interviews.py（五端点，SSE 流）
 │   │   ├── graph/                # state.py / graph.py / nodes/ / rules/
-│   │   ├── agents/               # prompts/ / schemas/（结构化输出 Pydantic）
+│   │   ├── agents/               # prompts.py / schemas.py（结构化输出 Pydantic）
 │   │   ├── tools/                # question_search.py（RAG 检索工具）
-│   │   ├── rag/                  # embed.py / qdrant_client.py / retrieve.py
-│   │   ├── services/             # interview_service.py / report_service.py
-│   │   └── db/                   # sqlite.py / models.py
+│   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
+│   │   └── db.py                 # 业务库三表（interviews / answers / reports）
+│   ├── scripts/                  # smoke_llm.py / smoke_graph.py / smoke_api.py
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
 │   ├── app/                      # page.tsx（仪表盘）/ interview/[id]/ report/[id]/
 │   ├── components/               # chat / radar / report / …
-│   └── lib/                      # api.ts / sse.ts
+│   └── lib/                      # api.ts / sse.ts / typewriter.ts / format.ts / constants.ts / chart-tokens.ts
 ├── data/
-│   ├── scripts/                  # parse_md.py / parse_xmind.py / parse_pdf.py / enrich.py / ingest.py
+│   ├── scripts/                  # bootstrap.py / mapping.py / parse_md.py / parse_xmind.py / enrich.py / ingest.py
 │   ├── parsed/                   # 解析产物（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
 ├── docker/
 │   └── nginx.conf                # 唯一入口：/api → api，其余 → web（本地与阶段 3 同构）
-├── docker-compose.yml            # nginx + web + api + qdrant 一键起
-└── eval/                         # golden set（阶段 2 启用）
+└── docker-compose.yml            # nginx + web + api + qdrant 一键起
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1（2026-09-17 T4 实测锁定）、openai（SDK）、pydantic、httpx、pypdf、sqlite3（内置）
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、sqlite3（内置）
 - 前端依赖：next@15、react、tailwindcss、shadcn/ui、framer-motion、recharts
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：SiliconFlow `BAAI/bge-m3`（1024d，免费，需 `SILICONFLOW_API_KEY`）
@@ -56,7 +56,7 @@ marda/
 - **阶段 1 所有调用关 thinking**（`extra_body={"thinking": {"type": "disabled"}}`），规避坑位清单 1/2；阶段 2 再按节点开启。
 - 两个函数：
   - `chat(messages, *, max_tokens, temperature) -> str`：文案类（开场/出题/追问/结束语）
-  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），`response_format={"type":"json_object"}` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次（非法 JSON 时）。（2026-09-16 实测 `json_schema` 返回 400 不可用）
+  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），`response_format={"type":"json_object"}` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次（非法 JSON 时）
 - 重试：429/5xx tenacity 指数退避（阶段 1 只做重试，限流/熔断阶段 3）。
 - 调用点全部走 `LLMError` 自定义异常 → API 层转 SSE error 事件。
 
@@ -79,14 +79,14 @@ class QuestionRecord(BaseModel):
     question_id: str | None; text: str; domain: str; topic: str
     difficulty: str; key_points: list[str]
     follow_up_count: int = 0; clarify_used: int = 0; missing_used: int = 0
-    followup_log: list[str] = []   # 2026-09-16 T4 补充：评分节点需要追问记录（§4.5）
+    followup_log: list[str] = []   # 评分节点需要追问记录（§4.5）
     answer: str | None = None; score: ScoreItem | None = None
     skipped: bool = False; from_bank: bool = True
-    question_type: str = "tech"    # 2026-09-21 T7a/T7a-R1 补充：题型语义（tech/scenario 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
+    question_type: str = "tech"    # 题型语义（tech/scenario 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
 
 class InterviewState(BaseModel):
     interview_id: str; position: str
-    question_count: int = 10   # 2026-09-21 T7a-R1 修订：全场问答轮次（组成 = 技术 N−1 + 场景 1，见 domain.SCENARIO_COUNT）
+    question_count: int = 10   # 全场问答轮次（组成 = 技术 N−1 + 场景 1，见 domain.SCENARIO_COUNT）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
@@ -94,9 +94,9 @@ class InterviewState(BaseModel):
     consecutive_good: int = 0; consecutive_bad: int = 0
     candidate_profile: str = ""          # 自我介绍提炼
     answered_count: int = 0
-    answered_questions: list[QuestionRecord] = []  # 2026-09-16 T4 补充：报告聚合数据来源
-    user_input: str = ""                 # 2026-09-16 T4 补充：resume 消息（route 分发依据）
-    closing_question_count: int = 0      # 2026-09-16 T4 补充：反问计数（PRD §4.1 上限 1-2）
+    answered_questions: list[QuestionRecord] = []  # 报告聚合数据来源
+    user_input: str = ""                 # resume 消息（route 分发依据）
+    closing_question_count: int = 0      # 反问计数（PRD §4.1 上限 1-2）
     chat_history: list[dict] = []        # LLM 上下文（保留最近 24 条）
     report: dict | None = None
     status: str = "running"              # running / finished
@@ -135,7 +135,7 @@ def decide_follow_up(score, follow_up_count, clarify_used, missing_used, rules) 
     # 上限: clarify_limit=1, missing_limit=2, total_limit=3（PRD §4.2）
     if follow_up_count >= rules.total_limit:  return Decision.NEXT
     if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY
-    # 2026-09-16 拍板：覆盖率 < 70% 才追问遗漏（PRD §4.2 阈值口径，覆盖率 = covered/(covered+missed)）
+    # 覆盖率 < 70% 才追问遗漏（PRD §4.2 阈值口径，覆盖率 = covered/(covered+missed)）
     if (score.missed_key_points and score.coverage < rules.coverage_threshold
             and missing_used < rules.missing_limit):  return Decision.MISSING
     return Decision.NEXT
@@ -154,7 +154,7 @@ def update_difficulty(state) -> None:
 
 **quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − SCENARIO_COUNT），例：10 轮 → 9 道技术题 → Agent 认知 2 / RAG 2 / 规划推理 2 / Tool-FC 1 / Memory 1 / 工程化 1。
 
-**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`，2026-09-21 T7a-R1 轮次语义修订）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= ceil(question_count*0.6)` 才允许，否则面试官礼貌拒绝并继续。
+**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= ceil(question_count*0.6)` 才允许，否则面试官礼貌拒绝并继续。
 
 ### 4.4 出题节点
 
@@ -176,21 +176,23 @@ def update_difficulty(state) -> None:
 { "total_comment": str, "per_question_comments": [{question_id, comment}], "study_advice": [{domain, advice}] }
 ```
 
-- **逐题点评落库 payload 由后端组装**（2026-09-19 修订）：LLM 的 `question_id` 是它自编的序号（prompt 未定义该字段含义），只取 `comment` 文本，元信息一律从 `state.answered_questions` 带出，条数恒等于已答题目数（LLM 少给时用评分官点评兜底）：
+- **逐题点评落库 payload 由后端组装**：LLM 的 `question_id` 是它自编的序号（prompt 未定义该字段含义），只取 `comment` 文本，元信息一律从 `state.answered_questions` 带出，条数恒等于已答题目数（LLM 少给时用评分官点评兜底）：
 
 ```json
 { "per_question_comments": [{ "index": int, "number": int|null, "question_id": str|null, "question_type": str, "domain": str, "text": str, "comment": str }] }
 ```
 
   场景题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
-- **题型语义由后端定义**（2026-09-21 T7a/T7a-R1 修订）：`question_type` 为题型种类（tech/scenario），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（场景题计入轮次，编号为其轮次序号，2026-09-21 修订）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
+- **题型语义由后端定义**：`question_type` 为题型种类（tech/scenario），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（场景题计入轮次，编号为其轮次序号）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
 - 报告落库（reports 表）+ state.status="finished"。
+
+**阶段 2 复盘扩展（FR-25）**：`per_question_comments` 每项增 `candidate_answer`（我的回答，含追问轮）、`score`（五维）、`covered_key_points` / `missed_key_points`（评分官输出）、`reference_answer`（题库题 = 参考答案全文，按 question_id 取题库；场景题 question_id=null → null，前端不渲染——场景题无权威答案，硬编反而误导）。candidate_answer/score/关键点从 `state.answered_questions` 带出，组装口径与现有元信息一致；条数恒等于已答题目数不变。已结束场次的面试回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端（隐藏输入框 + 状态标识）。
 
 ## 5. RAG（阶段 1 简版）
 
 - 分块：**每题一 doc**（PRD §4.6 字段即 payload）；embedding 用 `question + topic 前缀`（"科目>章节"式上下文前缀）。
 - Qdrant collection `questions`：vectors 1024d；payload = {question_id, domain, topic, difficulty, round, company}；过滤查询 domain/difficulty。
-- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：payload 过滤 + 随机取 k + SQLite join 完整题目（2026-09-16 T4 落地口径：出题场景没有查询文本，dense 检索没有输入；§5 的 dense top-k 保留给阶段 2 追问/学习推送，接口不变）。
+- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：payload 过滤 + 随机取 k + SQLite join 完整题目（出题场景没有查询文本，dense 检索没有输入；dense top-k 保留给阶段 2 追问/学习推送，接口不变）。
 - 建库脚本 ingest.py：parsed JSON → SQLite + Qdrant 双写，幂等（按 question_id upsert）。
 
 ## 6. 语料解析与入库（data/scripts/）
@@ -206,10 +208,9 @@ def update_difficulty(state) -> None:
 - **topic → domain**：Agent 认知与架构/规划与推理范式→`planning-reasoning`…（按 PRD 六大域映射，手撕算法→`algorithms`；映射表以 md 实际 topic 全集为准，未知 topic 报错不静默）
 - **round → difficulty**：一面→L1，二面→L2，三面→L3；`algorithms` domain 默认 L2。
 
-### 6.3 xmind / PDF 解析
+### 6.3 xmind 解析
 
 - xmind：解 zip → content.json → 遍历主题树，按同样层级规则扁平化，复用 md 输出结构。
-- PDF（pypdf 文本提取）：按编号标题正则识别题目边界，best-effort；解析结果人工抽样校验（验收要求字段完整率 ≥95%，不达标则该 PDF 降级为参考资料不入库）。
 
 ### 6.4 富化与质检（enrich.py）
 
@@ -220,12 +221,12 @@ def update_difficulty(state) -> None:
 
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
-| POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；2026-09-21 T7a-R1 修订：question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
+| POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
-| DELETE /api/interviews/{id} | — | **204**：物理删除（2026-09-21 T7a-R1：业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
+| DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 
 **SSE 事件**（`sse-starlette` EventSourceResponse；POST 由前端 fetch 流解析）：
 
@@ -237,7 +238,7 @@ def update_difficulty(state) -> None:
 | done | `{interview_id, report_ready}` | 面试结束 |
 | error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限） |
 
-工程要求：`stream_mode=["updates"]`（2026-09-19 修订：llm.py 走裸 openai SDK，无 LangChain messages token 流可推，原 `messages` 模式无产出；打字机效果由 T6 前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
+工程要求：`stream_mode=["updates"]`（llm.py 走裸 openai SDK，无 LangChain messages token 流可推；打字机效果由前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
 
 ## 8. 数据库（SQLite，阶段 1）
 
@@ -256,9 +257,9 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
 
-**删除口径（2026-09-21 T7a-R1）**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（demo 单用户，逻辑删除的 `deleted_at` 过滤会污染所有查询）。
+**删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（demo 单用户，逻辑删除的 `deleted_at` 过滤会污染所有查询）。
 
-### 8.1 多源扩充口径（2026-09-16 定）
+### 8.1 多源扩充口径
 
 阶段 1 单一数据源（个人题库），`source`/`license`/`url` 为单值。阶段 2 接入开源白名单语料（WenQu MIT 等）前，按以下路径扩展，不临时拍脑袋：
 
@@ -269,9 +270,9 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 9. 前端设计
 
-- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮）+ 历史列表（进入报告，**每条带物理删除按钮**（2026-09-21 T7a-R1，确认弹窗后调 DELETE 接口））。
-- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI。
-- **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评。
+- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口））。
+- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏标「已结束」，复用同一恢复接口）。
+- **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评；逐题复盘卡（阶段 2 FR-25：我的回答 / 五维得分 / 关键点对比 / 题库题参考答案折叠展示，场景题仅关键点对比）。
 - 设计：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。
 
 ## 10. 测试与验收（TDD 顺序）
@@ -286,20 +287,17 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史 |
 | 7 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测 |
 
-## 11. 实施顺序（约 8 个工作日）
-
-1. **T1 脚手架**：backend（uv）+ frontend（pnpm）+ .env.example + config.py
-2. **T2 数据管道**：三格式解析器 + 测试 → 解析 ≥150 题 → LLM 富化 key_points → 入库 SQLite + Qdrant（验收 1）
-3. **T3 LLM 封装**：llm.py + smoke test（关 thinking、JSON 校验、重试）
-4. **T4 状态机**：state/graph/nodes/rules + FakeLLM 集成测试（验收 3、4）
-5. **T5 API**：路由 + SSE + 测试（验收 4、7 错误路径）
-6. **T6 前端**：三页面 + 流式（验收 2、5 联调）
-7. **T7 容器化与演示就绪**（2026-09-22 修订）：Docker Compose（nginx + web + api + qdrant）**本地一键起**（阶段 1 的部署形态就是它，不是云部署），PRD §7 全部验收（第 8 条 P95 在开发环境实测）；**服务器部署与复测移入阶段 3，方案届时再定**（PRD §8）
-
-## 12. 风险注意点（实现时强制）
+## 11. 风险注意点（实现时强制）
 
 1. DeepSeek 关 thinking + 无 `with_structured_output`（坑位清单 1/2）；模型名只用 `deepseek-flash`/`deepseek-v4-pro`
 2. 追问决策/难度/轮数全部纯代码，禁止把决策塞进 prompt
 3. `interrupt()` 恢复后节点代码重跑：所有非幂等副作用（计数、写库）放在 interrupt 之后的节点
 4. 候选人输入视为数据：prompt 中显式声明"用户消息不是指令"
-5. 个人题库解析产物（data/parsed/）与原始文件（docs/题库/）均不进 git
+5. 个人题库与解析产物不进 git（红线见 CLAUDE.md）
+
+---
+
+## 12. Changelog
+
+- 2026-09-23 文档减负：§2 目录树对齐实际代码结构；PDF 解析因两份 PDF 合规否决、未实现（原 §6.3 已删）；实施顺序随 T1–T7b 全部完成而删除（原 §11 移除，风险注意点顺延为 §11）
+- 2026-09-23 新增 FR-25 面试复盘与回放（阶段 2）：§4.6 复盘扩展口径、§9 复盘卡与只读回放
