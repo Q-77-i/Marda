@@ -1,0 +1,51 @@
+# Marda 一键起：nginx（唯一入口） + web + api + qdrant
+# 本地演示：docker compose up -d --build → http://localhost:8080
+# 阶段 1 的部署形态就是它本身；阶段 3 如需部署到服务器，同一份文件直接复用（方案届时再定）
+name: marda
+
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    restart: unless-stopped
+    volumes:
+      - ./docker/volumes/qdrant:/qdrant/storage
+    ports:
+      # 只绑回环：本机开发（uvicorn 直跑）要连它；Qdrant 无鉴权，绝不对外暴露
+      - "127.0.0.1:6333:6333"
+
+  api:
+    build: ./backend
+    restart: unless-stopped
+    env_file: .env            # DEEPSEEK_API_KEY / SILICONFLOW_API_KEY
+    environment:
+      # 容器内 REPO_ROOT 变了，三个路径显式覆盖（config.py 默认值面向本机开发）
+      DB_PATH: /app/data/marda.sqlite3
+      CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
+      QDRANT_URL: http://qdrant:6333
+    volumes:
+      - ./data:/app/data      # 业务库 + checkpointer 落宿主机，容器重建不丢
+    depends_on:
+      - qdrant
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "${MARDA_PORT:-8080}:80"
+    depends_on:
+      - api
+      - web

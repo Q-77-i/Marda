@@ -1,2 +1,2 @@
 allowBuilds:
-  unrs-resolver: set this to true or false
+  unrs-resolver: false   # 平台二进制走 optional dep（@unrs/resolver-binding-*），无需跑其校验脚本

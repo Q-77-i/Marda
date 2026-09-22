@@ -48,17 +48,21 @@ docs/               PRD / SPEC（个人规划文档不进仓库）
 
 ## 快速开始
 
+### 一键起（演示 / 验收，Docker）
+
 ```bash
-# 后端（需要 uv）
-cd backend && uv sync && uv run pytest -q
-uv run uvicorn app.main:app --reload          # http://127.0.0.1:8000/healthz
+cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY
+docker compose up -d --build  # → http://localhost:8080
+```
 
-# 前端（需要 pnpm）
-cd frontend && pnpm install && pnpm dev        # http://localhost:3000
+`nginx（唯一入口） → web（Next standalone）/ api（uvicorn） → qdrant` 四个容器；业务库与 checkpointer 落宿主机 `data/`，容器重建不丢。换端口：`MARDA_PORT=9000 docker compose up -d`。
 
-# 向量库
-docker run -d --name marda-qdrant -p 6333:6333 \
-  -v "$PWD/docker/volumes/qdrant:/qdrant/storage" qdrant/qdrant:v1.19.0
+### 开发模式（热重载）
+
+```bash
+docker compose up -d qdrant                     # 只起向量库（回环 6333）
+cd backend && uv sync && uv run uvicorn app.main:app --reload    # http://127.0.0.1:8000/healthz
+cd frontend && pnpm install && pnpm dev         # http://localhost:3000
 ```
 
 密钥放仓库根目录 `.env`（见 `.env.example`，**不进仓库**）：
@@ -134,12 +138,28 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 - **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域换警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器六项检查（明暗双模式），图表颜色用 `getComputedStyle` 运行时读 CSS 变量（recharts 写的是 SVG 属性，`var()` 不解析）并跟随 `prefers-color-scheme` 重读
 - **刷新恢复**：挂载时拉 `GET /api/interviews/{id}` 从 checkpoint 重建消息列表；已结束的场次直接跳报告页
 - **错误路径**：网络层失败（后端没起）与 HTTP 4xx 都转成中文文案 + 重试按钮，重试不重复插入用户消息
+- **输入细节**：Enter 发送、Shift + Enter 换行；输入法组字中的回车（含 macOS 上用回车"上屏"的那一次）只上屏、不发送——`isComposing` 在这些浏览器里会先变 false，所以组字状态是自己维护的；**输入框随内容长高，涨到约 40% 视口高封顶后框内滚动**（高度由 `fitInput()` 按 `scrollHeight` 算，上限取自 `max-h-[40dvh]`），长高时消息区保持贴底。**高度不依赖 CSS `field-sizing`**——该属性 2026-06 才进 Baseline 全浏览器可用，Safari 18 / 旧版浏览器直接忽略，框会永远停在 `rows` 那么高
 - **题量语义 = 全场问答轮次**（T7a-R1）：用户选的 N 就是会被问的 N 轮（内部组成 N−1 技术 + 1 场景由引擎决定，不对用户暴露），`answered_count ≤ question_count` 恒成立，进度与报告自然一致（旧版"场景题额外 +1"导致的 `16/15` 问题从根上消除，封顶仅作旧数据兼容）。**题型语义由后端定义**（T7a）：逐题点评 payload 每条带 `question_type`（tech/scenario）与 `number`（计入轮次的题型按序编号），前端 `commentLabels()` 只消费不推断（非技术题型显示「第 N 题 · 场景题」，未知题型显示原值）；历史 payload 按 domain/位置兜底。每条面试记录带**物理删除按钮**（确认弹窗 → DELETE 接口，三表 + checkpointer 线程一并清除）
 
 ```bash
 cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（40 个）
 pnpm lint && pnpm build
 ```
+
+## 部署：本地一键起（Docker Compose）
+
+阶段 1 的部署形态就是这份编排 + 本地一键起（演示/验收即 `docker compose up -d --build`）；**服务器部署与部署方案随阶段 3 再定**（PRD §8），届时同一份编排直接复用。
+
+```
+浏览器 → nginx:8080 ─┬─ /api/* → api:8000（uvicorn + LangGraph）
+                     └─ 其余   → web:3000（Next standalone）
+                                  qdrant:6333（仅内网 + 本机回环；无鉴权，不对外暴露）
+```
+
+- **nginx 是唯一入口**，本地与线上同构——`/api` 段关 `proxy_buffering`（SSE 打字机的前提）+ `proxy_read_timeout 300s`，这条最大的部署风险在本地就验证掉
+- **数据**：`./data`（业务库 + checkpointer）与 `./docker/volumes/qdrant` 挂宿主机，容器重建不丢
+- **密钥**：`.env` 经 compose `env_file` 注入，不进镜像不进仓库
+- **阶段 3 再定部署方案**（是否上云、服务器选型届时评估）。唯一值得提前记的一条：**镜像是分架构的**——Mac（arm64）本地构建的镜像在 amd64 服务器上跑不了，要么在服务器上构建，要么 `buildx --platform linux/amd64`
 
 ## 开发进度
 
@@ -152,7 +172,7 @@ pnpm lint && pnpm build
 | T5 | API（路由 + SSE 流式 + 落库，118 测试） | ✅ |
 | T6 | 前端三页面 + 流式联调（打字机 / 雷达图 / 断线恢复） | ✅ |
 | T7a | 题型语义 + 轮次语义建模（question_type/number 契约、题量 = 问答轮次、删除接口） | ✅ |
-| T7b | 部署验收（云服务器 compose + PRD §7 八条） | ⬜ |
+| T7b | 容器化与演示就绪（compose 一键起：nginx + web + api + qdrant） | ✅ |
 
 ## 文档
 

@@ -132,7 +132,7 @@ stateDiagram-v2
     [*] --> INTRO: 开始面试
     INTRO --> WARMUP: 开场说明完成
     WARMUP --> TECH_BASE: 自我介绍评估完（提取项目/方向）
-    TECH_BASE --> PROJECT: 技术题答满题量
+    TECH_BASE --> PROJECT: 技术轮答满（轮次 − 场景题数）
     PROJECT --> CLOSING: 场景题完成
     CLOSING --> FINISHED: 反问环节结束
     FINISHED --> REPORT: 评估报告生成
@@ -225,7 +225,7 @@ stateDiagram-v2
 | 安全 | .env 密钥不进 git、不打印；基本 prompt injection 防护（候选人输入视为数据，不改变面试流程决策）；个人题库仅本地 |
 | 合规 | 语料白名单制（CLAUDE.md 红线）；每条题目带 source/license/url |
 | 可观测 | 一次面试 = 一个 Langfuse trace；token 成本可统计（阶段 2 接入，阶段 1 预留埋点） |
-| 部署 | 云服务器先行（compose 编排，2-4G 内存可用）；浏览器 Chrome/Edge 现代版本 |
+| 部署 | 阶段 1 交付 Docker Compose 编排并**本地一键起**（nginx 唯一入口；数据与密钥挂宿主机）；服务器部署与部署方案随阶段 3 再定（§8）；浏览器 Chrome/Edge 现代版本 |
 
 ---
 
@@ -244,7 +244,7 @@ stateDiagram-v2
 5. 每场面试生成报告：五维评分 + 逐题点评 + 短板定位，数据与面试记录一致；
 6. 出题 ≥90% 命中题库（按 domain/difficulty 筛选，不重复出题）；
 7. LLM 调用异常时前端有友好提示，可重试；
-8. P95 首 token < 3s（云服务器环境实测）。
+8. P95 首 token < 3s（阶段 1 在开发环境实测；部署环境实测随阶段 3 验收）。
 
 ---
 
@@ -255,7 +255,7 @@ stateDiagram-v2
 | 阶段 0 | 规划/CLAUDE.md/PRD/SPEC | 已基本完成 |
 | 阶段 1 | demo 最小闭环（§7 范围） | 1-2 周 |
 | 阶段 2 | 功能完善：混合检索+rerank、多方向能力模型、行为面、账号、私有题库、PDF、Trace 回放、能力曲线、评估体系（DeepEval/RAGAS）、Langfuse | 2-4 周 |
-| 阶段 3 | 可落地：云服务器部署、稳定性全链路（限流/重试/熔断/降级）、README 演示脚本 | 1-2 周 |
+| 阶段 3 | 可落地：部署上线（服务器与部署方案届时评估）、稳定性全链路（限流/重试/熔断/降级）、README 演示脚本 | 1-2 周 |
 | 二期 | 语音面试（引擎与模态解耦） | 阶段 3 后 |
 
 ---
@@ -267,7 +267,7 @@ stateDiagram-v2
 | DeepSeek 思考模式与结构化输出不兼容 | 评分/报告节点报错 | 结构化节点显式关 thinking（已入 CLAUDE.md 坑位清单） |
 | 语料合规（GPL/NC 传染） | 简历项目可被质疑 | 白名单制 + 三要素元数据；个人题库不进 git |
 | 评分一致性（同一回答两次评分波动） | 能力曲线失真 | 固定 rubric + 低温结构化输出；阶段 2 golden set 校验 |
-| 云服务器资源（2-4G） | 组件超内存 | Langfuse 用云形态；嵌入走 API；Qdrant 量化 |
+| 部署机资源（阶段 3，2-4G 量级） | 组件超内存 | Langfuse 用云形态；嵌入走 API；Qdrant 量化 |
 | 个人题库质量（题量大、含长文） | 入库字段不整 | 解析脚本单测 + 字段完整率验收（≥95%） |
 
 ---

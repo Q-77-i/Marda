@@ -6,9 +6,9 @@
 
 ## 1. 范围与目标
 
-实现 PRD §7 的 MVP：Agent/AI 工程师方向、单用户、文本面试全链路（五阶段状态机 + 追问决策 + 断线续面 + 报告），题库 ≥100 题结构化入库（个人题库三格式解析），前端三个页面（仪表盘/面试/报告）。**全部 8 条验收标准（PRD §7）通过才算完成。**
+实现 PRD §7 的 MVP：Agent/AI 工程师方向、单用户、文本面试全链路（五阶段状态机 + 追问决策 + 断线续面 + 报告），题库 ≥100 题结构化入库（个人题库三格式解析），前端三个页面（仪表盘/面试/报告）。**全部 8 条验收标准（PRD §7）通过才算完成**（2026-09-22 修订：第 8 条 P95 首 token 在开发环境经 nginx 实测；部署环境实测随阶段 3 验收）。
 
-阶段 1 明确不做：账号体系、混合检索（sparse/RRF）、reranker、私有题库、PDF 导出、Trace 回放、行为面、Langfuse 接入（预留接口）、MCP server。
+阶段 1 明确不做：账号体系、混合检索（sparse/RRF）、reranker、私有题库、PDF 导出、Trace 回放、行为面、Langfuse 接入（预留接口）、MCP server、**服务器部署**（阶段 1 的部署形态 = Docker Compose 编排 + 本地一键起，部署方案随阶段 3 再定，与 PRD §8 里程碑一致）。
 
 ## 2. 工程结构
 
@@ -38,6 +38,9 @@ marda/
 │   ├── scripts/                  # parse_md.py / parse_xmind.py / parse_pdf.py / enrich.py / ingest.py
 │   ├── parsed/                   # 解析产物（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
+├── docker/
+│   └── nginx.conf                # 唯一入口：/api → api，其余 → web（本地与阶段 3 同构）
+├── docker-compose.yml            # nginx + web + api + qdrant 一键起
 └── eval/                         # golden set（阶段 2 启用）
 ```
 
@@ -79,7 +82,7 @@ class QuestionRecord(BaseModel):
     followup_log: list[str] = []   # 2026-09-16 T4 补充：评分节点需要追问记录（§4.5）
     answer: str | None = None; score: ScoreItem | None = None
     skipped: bool = False; from_bank: bool = True
-    question_type: str = "tech"    # 2026-09-21 T7a 补充：题型语义（tech=技术题计入题量；scenario=场景题加问不计入；默认值兼容旧 checkpoint）
+    question_type: str = "tech"    # 2026-09-21 T7a/T7a-R1 补充：题型语义（tech/scenario 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
 
 class InterviewState(BaseModel):
     interview_id: str; position: str
@@ -281,7 +284,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 4 | test_quota.py | 配额分配（largest remainder） |
 | 5 | test_graph_flow.py | FakeLLM 注入：五阶段顺序、追问路径、结束指令（<60% 拒绝）、**checkpoint 续面**（resume 后状态一致） |
 | 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史 |
-| 7 | 验收清单 | PRD §7 八条 + 云服务器实测 P95 首 token |
+| 7 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测 |
 
 ## 11. 实施顺序（约 8 个工作日）
 
@@ -291,7 +294,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 4. **T4 状态机**：state/graph/nodes/rules + FakeLLM 集成测试（验收 3、4）
 5. **T5 API**：路由 + SSE + 测试（验收 4、7 错误路径）
 6. **T6 前端**：三页面 + 流式（验收 2、5 联调）
-7. **T7 部署验收**：云服务器跑通（Qdrant 容器 + uvicorn + Next 构建），PRD §7 全部验收（含 8 性能）
+7. **T7 容器化与演示就绪**（2026-09-22 修订）：Docker Compose（nginx + web + api + qdrant）**本地一键起**（阶段 1 的部署形态就是它，不是云部署），PRD §7 全部验收（第 8 条 P95 在开发环境实测）；**服务器部署与复测移入阶段 3，方案届时再定**（PRD §8）
 
 ## 12. 风险注意点（实现时强制）
 
