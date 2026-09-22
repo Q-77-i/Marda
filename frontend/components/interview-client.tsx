@@ -35,10 +35,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [draft, setDraft] = useState("");
 
   const queueRef = useRef(new TypewriterQueue());
+  const composingRef = useRef(false);
   const streamingRef = useRef(false);
   const busyRef = useRef(false);
   const idRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const nearBottomRef = useRef(true);
 
   const nextId = () => `m${idRef.current++}`;
@@ -96,12 +98,34 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     return () => clearInterval(timer);
   }, [busy]);
 
-  /* 自动贴底：仅在用户本就位于底部时跟随，避免打断向上翻阅 */
+  /* 输入框按内容长高，到 ~40% 视口高封顶（到顶后框内滚动）。
+     高度自己算，不靠 CSS 的 field-sizing：Safari / 旧版浏览器直接忽略它，
+     表现就是框永远只有 rows 那么高（2026-06 才全浏览器可用） */
+  const fitInput = useCallback(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    const cap = parseFloat(getComputedStyle(ta).maxHeight) || Infinity; // 上限单一来源 = max-h-[40dvh]
+    ta.style.height = "auto"; // 先归零，才量得到真实内容高
+    ta.style.height = `${Math.min(ta.scrollHeight, cap)}px`;
+    ta.style.overflowY = ta.scrollHeight > cap ? "auto" : "hidden";
+  }, []);
+
+  useEffect(() => {
+    fitInput();
+  }, [draft, fitInput]);
+
+  useEffect(() => {
+    window.addEventListener("resize", fitInput); // 视口变了，40% 的上限跟着变
+    return () => window.removeEventListener("resize", fitInput);
+  }, [fitInput]);
+
+  /* 自动贴底：仅在用户本就位于底部时跟随，避免打断向上翻阅；
+     输入框长高会把消息区压短（draft 也在依赖里），不同步贴底就会脱离底部 */
   useEffect(() => {
     const node = scrollRef.current;
     if (!node || !nearBottomRef.current) return;
     node.scrollTop = node.scrollHeight;
-  }, [messages]);
+  }, [messages, draft]);
 
   /* 报告就绪且面试官说完 → 跳转报告页 */
   useEffect(() => {
@@ -263,18 +287,33 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
           ) : (
             <>
               <Textarea
+                ref={inputRef}
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  // 复位延到下一个宏任务：macOS 输入法用回车"上屏"时 compositionend 先于 keydown 到达，
+                  // 立刻复位会让那次回车被误判成普通回车（表现为上屏的同时把消息发出去）
+                  setTimeout(() => {
+                    composingRef.current = false;
+                  }, 0);
+                }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault();
-                    handleSend();
-                  }
+                  if (e.key !== "Enter" || e.shiftKey) return;
+                  // 组字进行中（含 Windows 输入法的 keyCode 229）：这个回车归输入法选字，放行
+                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                  e.preventDefault();
+                  // 刚用回车把候选上屏（compositionend 已先到、isComposing 已是 false）：只上屏，不发送也不换行
+                  if (composingRef.current) return;
+                  handleSend();
                 }}
                 disabled={busy || loading}
-                rows={3}
+                rows={1}
                 placeholder="输入你的回答，Enter 发送，Shift + Enter 换行"
-                className="resize-none"
+                // 高度由 fitInput() 按内容算；rows=1 让"撑不高"的浏览器也和小框起步（下限交给 min-h-16）
+                className="max-h-[40dvh] resize-none overflow-y-auto"
               />
               <div className="flex items-center justify-between">
                 <span className="text-xs text-muted-foreground">
