@@ -14,7 +14,7 @@
 | 编排 | **LangGraph** 1.2.11 | 追问循环 + 断线续面需要状态机，checkpointer 原生支持 |
 | 组件 | **LangChain** 1.4.0 | 切分器 / 加载器 / 工具装饰器，只在直线管道上用 |
 | LLM | DeepSeek（`deepseek-flash` 主力 / `deepseek-v4-pro` 难题报告） | 双档控成本，快档跑高频、深度档跑报告 |
-| 嵌入 | BGE-M3（1024d，SiliconFlow / 本地） | 一次前向出稠密+稀疏，省掉独立 BM25 |
+| 嵌入 | **本地 BGE-M3**（1024d，独立容器） | 一次前向出稠密+稀疏，省掉独立 BM25；模型自持，重嵌不依赖外部服务 |
 | 向量库 | **Qdrant** | 原生稀疏+服务端 RRF，阶段2 混合检索不用换库 |
 | 后端 | FastAPI + uvicorn + sse-starlette | Python 生态 + SSE 原生支持 |
 | 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | App Router + AI 生态组件最全 |
@@ -30,11 +30,11 @@ backend/            FastAPI + LangGraph
     domain.py       知识域定义（单一来源：配额 / 映射 / 报告共用）
     graph/          状态机（state / graph / nodes / rules）
     agents/         角色节点与结构化输出 schema
-    tools/          RAG 检索工具
+    tools/          RAG 检索工具（检索 / 嵌入客户端）
     api/            路由（SSE 流）
     service.py      服务层（图单例 / 事件翻译 / 落库编排）
     db.py           业务库持久化（interviews / answers / reports）
-    rag/            嵌入 / Qdrant / 检索
+  embedding_service/  本地 BGE-M3 嵌入服务（独立镜像，torch 不进 api）
   tests/
 data/
   scripts/          语料管道：parse_md / parse_xmind / enrich / ingest
@@ -55,12 +55,12 @@ cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / JWT
 docker compose up -d --build  # → http://localhost:8080
 ```
 
-`nginx（唯一入口） → web（Next standalone）/ api（uvicorn） → qdrant` 四个容器；业务库与 checkpointer 落宿主机 `data/`，容器重建不丢。换端口：`MARDA_PORT=9000 docker compose up -d`。
+`nginx（唯一入口） → web（Next standalone）/ api（uvicorn）`，背靠 `qdrant`（向量）与 `embedding`（本地 BGE-M3）——共五个容器；业务库与 checkpointer 落宿主机 `data/`，容器重建不丢。首次构建要下载模型权重（数分钟）。换端口：`MARDA_PORT=9000 docker compose up -d`。
 
 ### 开发模式（热重载）
 
 ```bash
-docker compose up -d qdrant                     # 只起向量库（回环 6333）
+docker compose up -d qdrant embedding           # 向量库 + 嵌入服务（回环 6333 / 8091）
 cd backend && uv sync && uv run uvicorn app.main:app --reload    # http://127.0.0.1:8000/healthz
 cd frontend && pnpm install && pnpm dev         # http://localhost:3000
 ```
@@ -84,7 +84,7 @@ JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 �
 .venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON
 .venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账
 .venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
-.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（幂等 upsert）
+.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（重嵌 dense+sparse，需 embedding 在跑）
 ```
 
 **语料合规**：入库语料必须有明确 license，每条带 `source`/`license`/`url` 三要素；
@@ -99,7 +99,7 @@ JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 �
 - **断线续面**：checkpointer（SQLite）以场次为粒度持久化，中断后 resume 状态一致（集成测试覆盖）
 
 ```bash
-uv run pytest -q                                    # 后端 174 个测试
+uv run pytest -q                                    # 后端 188 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 

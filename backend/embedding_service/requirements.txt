@@ -1,0 +1,7 @@
+# 嵌入服务依赖（与 api 的 uv.lock 隔离：torch 只进这个镜像）
+# ⚠️ torch 故意不在这里：它必须 pin +cpu（PyPI 默认 wheel 含 arm64 也会拖进 CUDA 运行时，
+#    实测 nvidia-cudnn 单包 651MB，CPU 推理用不上），由 Dockerfile 先单独装。别加回来。
+fastapi>=0.115
+uvicorn[standard]>=0.30
+numpy>=1.26
+FlagEmbedding>=1.3,<2

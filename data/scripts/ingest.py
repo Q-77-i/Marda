@@ -1,12 +1,12 @@
 """入库：富化后的题目 JSON → SQLite（业务库）+ Qdrant（向量库）双写，幂等。
 
 - SQLite 表结构见 SPEC §8；这里只建/写 questions 表（interviews 等由 T4/T5 负责）
-- Qdrant collection `questions`：每题一 doc，dense-only（SiliconFlow BGE-M3 1024d）
-  ⚠️ demo 阶段不做 sparse/RRF：SiliconFlow 的 embedding API 只返回 dense，
-     混合检索留到落地阶段换本地 BGE-M3 时启用（接口不变）
+- Qdrant collection `questions`：每题一 doc，**命名双向量**（M3）
+  dense（本地 BGE-M3 1024d）+ sparse（BGE-M3 lexical weights，服务端 RRF 用）
+  布局与 embedding 服务见 backend/embedding_service/
 - 只入 status=enabled 的题；draft 题只进 SQLite，不进向量库
 
-用法：python data/scripts/ingest.py [--dry-run]
+用法：docker compose up -d embedding && python data/scripts/ingest.py [--dry-run]
 """
 
 from __future__ import annotations
@@ -20,17 +20,23 @@ import uuid
 from pathlib import Path
 
 import bootstrap  # noqa: F401  # 把 backend/ 加进 sys.path
-from openai import AsyncOpenAI
+import httpx
 from qdrant_client import AsyncQdrantClient
-from qdrant_client.models import Distance, PointStruct, VectorParams
+from qdrant_client.models import (
+    Distance,
+    PointStruct,
+    SparseVectorParams,
+    VectorParams,
+)
 
 from app.config import get_settings
+from app.tools.embedding import EmbeddingClient, to_sparse_vector
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_IN = REPO_ROOT / "data" / "parsed" / "questions_enriched.json"
 COLLECTION = "questions"
-EMBED_BATCH = 16
-EMBED_CONCURRENCY = 4
+DENSE = "dense"
+SPARSE = "sparse"
 VECTOR_SIZE = 1024  # BGE-M3
 
 DDL = """
@@ -65,6 +71,15 @@ def _qdrant_payload(question: dict) -> dict:
     }
 
 
+def doc_text(question: dict) -> str:
+    """嵌入文本 = 题干 + 关键点（M3 拍板）。
+
+    关键点是答案的要点提炼：M6 题库搜索要按考点召回靠它；答案全文过长会稀释题干。
+    """
+    points = [str(p).strip() for p in (question.get("key_points") or []) if p]
+    return "\n".join([question["question"], *(p for p in points if p)])
+
+
 def point_id(question_id: str) -> str:
     """确定性 point id：md5(question_id) → UUID。
 
@@ -72,21 +87,6 @@ def point_id(question_id: str) -> str:
     旧点残留错位。内容寻址才能让 upsert 真幂等。
     """
     return str(uuid.UUID(bytes=hashlib.md5(question_id.encode("utf-8")).digest()))
-
-
-async def embed_all(texts: list[str], settings) -> list[list[float]]:
-    client = AsyncOpenAI(api_key=settings.siliconflow_api_key, base_url=settings.siliconflow_base_url, timeout=120.0)
-    semaphore = asyncio.Semaphore(EMBED_CONCURRENCY)
-
-    async def batch(chunk: list[str]) -> list[list[float]]:
-        async with semaphore:
-            response = await client.embeddings.create(model=settings.embedding_model, input=chunk)
-            return [item.embedding for item in response.data]
-
-    chunks = [texts[i:i + EMBED_BATCH] for i in range(0, len(texts), EMBED_BATCH)]
-    results = await asyncio.gather(*(batch(chunk) for chunk in chunks))
-    await client.close()
-    return [vector for group in results for vector in group]
 
 
 def write_sqlite(questions: list[dict], db_path: Path) -> None:
@@ -132,28 +132,44 @@ def write_sqlite(questions: list[dict], db_path: Path) -> None:
         conn.commit()
 
 
-async def write_qdrant(questions: list[dict], settings) -> int:
-    client = AsyncQdrantClient(url=settings.qdrant_url, timeout=60)
+async def write_qdrant(questions: list[dict], settings, *, client=None, embedder=None) -> int:
+    """重建 collection 并全量写入 dense + sparse 双向量（幂等：每次都是重建）。
 
-    existing = await client.get_collections()
-    if COLLECTION not in {c.name for c in existing.collections}:
-        await client.create_collection(
-            collection_name=COLLECTION,
-            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-        )
-        print(f"已创建 collection：{COLLECTION}（{VECTOR_SIZE}d, cosine）")
+    重建而非增量：命名双向量布局是 RRF prefetch 的硬前提，Qdrant 不支持把
+    无名字段在线改成命名；出题检索走 payload 过滤、不碰向量，重建期间无停机影响。
+    client/embedder 可注入（单测用 fake，不打真实 Qdrant/嵌入服务）。
+    """
+    own_client = client is None
+    client = client or AsyncQdrantClient(url=settings.qdrant_url, timeout=60)
+    embedder = embedder or EmbeddingClient(settings.embedding_url)
 
-    texts = [f"{q['question']}\n{q['topic']}" for q in questions]
-    vectors = await embed_all(texts, settings)
+    if COLLECTION in {c.name for c in (await client.get_collections()).collections}:
+        await client.delete_collection(COLLECTION)
+    await client.create_collection(
+        collection_name=COLLECTION,
+        vectors_config={DENSE: VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE)},
+        sparse_vectors_config={SPARSE: SparseVectorParams()},
+    )
+
+    vectors = await embedder.embed([doc_text(q) for q in questions])
     if len(vectors) != len(questions):
         raise RuntimeError(f"向量数 {len(vectors)} 与题目数 {len(questions)} 不一致")
 
-    points = [
-        PointStruct(id=point_id(question["question_id"]), vector=vector, payload=_qdrant_payload(question))
-        for question, vector in zip(questions, vectors)
-    ]
+    points = []
+    for question, vector in zip(questions, vectors):
+        if len(vector.dense) != VECTOR_SIZE:
+            raise RuntimeError(f"{question['question_id']} dense 维度 {len(vector.dense)} != {VECTOR_SIZE}")
+        points.append(
+            PointStruct(
+                id=point_id(question["question_id"]),
+                vector={DENSE: vector.dense, SPARSE: to_sparse_vector(vector.sparse)},
+                payload=_qdrant_payload(question),
+            )
+        )
     await client.upsert(collection_name=COLLECTION, points=points, wait=True)
-    await client.close()
+    if own_client:
+        await client.close()
+    print(f"已重建 collection：{COLLECTION}（命名双向量 dense {VECTOR_SIZE}d cosine + sparse）")
     return len(points)
 
 
@@ -182,8 +198,11 @@ def main() -> None:
         print("--dry-run：跳过 Qdrant")
         return
 
-    written = asyncio.run(write_qdrant(enabled, settings))
-    print(f"Qdrant：{settings.qdrant_url} collection `{COLLECTION}` → upsert {written} 点")
+    try:
+        written = asyncio.run(write_qdrant(enabled, settings))
+    except httpx.TransportError as exc:  # 最常见的失手：忘了起嵌入服务
+        raise SystemExit(f"嵌入服务不可达（{settings.embedding_url}）：先 docker compose up -d embedding") from exc
+    print(f"Qdrant：{settings.qdrant_url} collection `{COLLECTION}` → upsert {written} 点（dense + sparse）")
 
 
 if __name__ == "__main__":

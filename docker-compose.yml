@@ -1,4 +1,4 @@
-# Marda 一键起：nginx（唯一入口） + web + api + qdrant
+# Marda 一键起：nginx（唯一入口） + web + api + qdrant + embedding
 # 本地演示：docker compose up -d --build → http://localhost:8080
 # 阶段 1 的部署形态就是它本身；阶段 3 如需部署到服务器，同一份文件直接复用（方案届时再定）
 name: marda
@@ -13,6 +13,19 @@ services:
       # 只绑回环：本机开发（uvicorn 直跑）要连它；Qdrant 无鉴权，绝不对外暴露
       - "127.0.0.1:6333:6333"
 
+  embedding:
+    build: ./backend/embedding_service
+    restart: unless-stopped
+    ports:
+      # 只绑回环：宿主机跑 data/scripts/ingest.py（重嵌）要连它
+      - "127.0.0.1:8091:8091"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8091/healthz', timeout=3).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
   api:
     build: ./backend
     restart: unless-stopped
@@ -22,6 +35,7 @@ services:
       DB_PATH: /app/data/marda.sqlite3
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
       QDRANT_URL: http://qdrant:6333
+      EMBEDDING_URL: http://embedding:8091
     volumes:
       - ./data:/app/data      # 业务库 + checkpointer 落宿主机，容器重建不丢
     depends_on:

@@ -267,7 +267,7 @@ stateDiagram-v2
 | --- | --- | --- | --- |
 | P1-M1 | FR-25 复盘回放 + 报告换 v4-pro（1 会话） | — | 报告 payload 新字段齐、条数=已答题数；旧场次前端兜底；回放只读；pytest/smoke 通过 |
 | P1-M2 | FR-23 账号：JWT + 多用户隔离（2 会话） | — | A 看不到 B 的场次（集成测试）；未登录 401；全量测试绿 |
-| P1-M3 | 混合检索 + rerank：本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank（1–2 会话） | — | 342 题重嵌 sparse 就位；RRF+rerank 生效；检索相关性抽查通过 |
+| P1-M3 | 混合检索 + rerank：本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank（2 会话） | — | **基础设施就位**：324 题（342 − 18 draft）重嵌 dense+sparse 双向量、embedding 独立容器、hybrid_search 接口；RRF+rerank 相关性抽查通过。**用户可见零变化**——出题无查询文本、不走向量，「用户能搜题」是 M6 的验收 |
 | P1-M4 | Langfuse + Trace 回放 FR-21（1–2 会话） | — | Langfuse 按场次可查 trace；新场次逐轮回放完整 |
 | P1-M5 | WenQu 扩充 + question_sources 拆表（1–2 会话） | M3 | 拆表后出题/检索无回归；字段完整率 ≥95%；幂等 |
 | P1-M6 | 题库页 FR-12 + 容量校验 FR-14（1 会话） | M5 | 筛选/搜索 API 测试通过；容量不足禁用+提示 |

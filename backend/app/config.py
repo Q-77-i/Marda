@@ -27,10 +27,12 @@ class Settings(BaseSettings):
     # 长度下限 32（HS256 推荐）：弱密钥启动即报错，而不是静默签出可爆破的 token
     jwt_secret: str = Field(min_length=32)
 
-    # 嵌入（SiliconFlow BGE-M3，demo 阶段）
+    # 嵌入：本地 BGE-M3 容器（M3 起，dense + sparse 双向量，见 embedding_service/）
+    embedding_url: str = "http://localhost:8091"
+
+    # SiliconFlow：M3 起只留 rerank（嵌入退为本地 BGE-M3）
     siliconflow_api_key: str
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
-    embedding_model: str = "BAAI/bge-m3"
 
     # 数据
     db_path: Path = REPO_ROOT / "data" / "marda.sqlite3"

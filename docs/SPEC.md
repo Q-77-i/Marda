@@ -41,13 +41,13 @@ marda/
 │   └── licenses/                 # 语料来源清单（入库）
 ├── docker/
 │   └── nginx.conf                # 唯一入口：/api → api，其余 → web（本地与阶段 3 同构）
-└── docker-compose.yml            # nginx + web + api + qdrant 一键起
+└── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
 - 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、sqlite3（内置）
 - 前端依赖：next@15、react、tailwindcss、shadcn/ui、framer-motion、recharts
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
-- 嵌入：SiliconFlow `BAAI/bge-m3`（1024d，免费，需 `SILICONFLOW_API_KEY`）
+- 嵌入：**本地 BGE-M3 独立容器**（M3 起，`backend/embedding_service/`，torch 不进 api 镜像）；SiliconFlow 只留 rerank
 
 ## 3. LLM 集成（llm.py）
 
@@ -197,12 +197,16 @@ def update_difficulty(state) -> None:
 - **`chat_history` 全量保留、不截断**（T8-R1）：它同时是回放数据源与 SSE delta 的差分依据（服务层按「本次长度 − 上次长度」取新增消息），从头部截断会让差分失效 → 面试官文案漏发、回放丢开场。面试官/LLM 的记忆来自结构化 state（`answered_questions` / `candidate_profile`），本字段不参与 prompt 组装；将来若要喂 LLM，在调用点按需切片。
 - 历史 payload（T8 之前）无上述字段，前端按缺失兜底（复盘卡退化为「题干 + 点评」）。
 
-## 5. RAG（阶段 1 简版）
+## 5. RAG
 
-- 分块：**每题一 doc**（PRD §4.6 字段即 payload）；embedding 用 `question + topic 前缀`（"科目>章节"式上下文前缀）。
-- Qdrant collection `questions`：vectors 1024d；payload = {question_id, domain, topic, difficulty, round, company}；过滤查询 domain/difficulty。
-- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：payload 过滤 + 随机取 k + SQLite join 完整题目（出题场景没有查询文本，dense 检索没有输入；dense top-k 保留给阶段 2 追问/学习推送，接口不变）。
-- 建库脚本 ingest.py：parsed JSON → SQLite + Qdrant 双写，幂等（按 question_id upsert）。
+### 5.1 向量层（M3 会话 1 落地）
+
+- 分块：**每题一 doc**（PRD §4.6 字段即 payload）；嵌入文本 = **题干 + 关键点**（M3 定：关键点是答案的要点提炼，M6 题库搜索按考点召回靠它；答案全文过长会稀释题干）。
+- 嵌入服务：本地 BGE-M3 **独立容器**（`backend/embedding_service/`，`POST /embed` → dense + sparse），模型权重 build 时烤进镜像；api 侧客户端 `app/tools/embedding.py`（`EMBEDDING_URL`，容器内 `http://embedding:8091`）。SiliconFlow 嵌入退场，只留 rerank。
+- Qdrant collection `questions`：**命名双向量** `dense`（1024d cosine，L2 归一）+ `sparse`（BGE-M3 lexical weights，Qdrant 默认 modifier 不叠 IDF）；payload = {question_id, domain, topic, difficulty, round, company}。
+- 建库脚本 ingest.py：parsed JSON → SQLite + Qdrant 双写；**Qdrant 侧每次 drop 重建**（命名双向量布局是 RRF prefetch 的硬前提，Qdrant 不支持无名字段在线改命名；出题检索走 payload 过滤、不碰向量，重建无停机影响），SQLite 侧按 question_id upsert + `DELETE NOT IN` 全量同步。
+- 检索工具 `search_questions(domain, difficulty, exclude_ids, k=3)`：**出题场景不走向量**——无查询文本，dense/sparse 都没有输入。payload 过滤 + 随机取 k + SQLite join 完整题目。
+- 混合检索 `hybrid_search`：M3 会话 2 交付（dense + sparse 双路 RRF → SiliconFlow rerank → join），消费方为 M6 题库搜索 / M9 学习推荐。
 
 ## 6. 语料解析与入库（data/scripts/）
 
