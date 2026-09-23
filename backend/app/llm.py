@@ -82,12 +82,13 @@ async def _create(
     max_tokens: int,
     temperature: float,
     response_format: dict | None = None,
+    model: str | None = None,
 ) -> Any:
     kwargs: dict[str, Any] = {}
     if response_format is not None:
         kwargs["response_format"] = response_format
     return await _get_client().chat.completions.create(
-        model=get_settings().deepseek_model,
+        model=model or get_settings().deepseek_model,
         messages=messages,
         max_tokens=max_tokens,
         temperature=temperature,
@@ -102,11 +103,16 @@ async def _request(
     max_tokens: int,
     temperature: float,
     response_format: dict | None = None,
+    model: str | None = None,
 ) -> str:
     """发一次请求并取正文；网络层异常统一转 LLMError。"""
     try:
         response = await _create(
-            messages, max_tokens=max_tokens, temperature=temperature, response_format=response_format
+            messages,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            model=model,
         )
     except Exception as exc:
         raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
@@ -121,14 +127,19 @@ async def chat(
     *,
     max_tokens: int = 2048,
     temperature: float = 0.7,
+    model: str | None = None,
 ) -> str:
-    """文案类调用（开场/出题/追问/结束语）。空输出重请求 1 次，仍空才报错。"""
-    content = await _request(messages, max_tokens=max_tokens, temperature=temperature)
+    """文案类调用（开场/出题/追问/结束语）。空输出重请求 1 次，仍空才报错。
+
+    model 缺省走 flash；深度档（v4-pro）由调用方显式传入（SPEC §3）。
+    """
+    content = await _request(messages, max_tokens=max_tokens, temperature=temperature, model=model)
     if not content:
         content = await _request(
             [*messages, {"role": "user", "content": "（请继续输出）"}],
             max_tokens=max_tokens,
             temperature=temperature,
+            model=model,
         )
     if not content:
         raise LLMError("LLM 返回空内容", retryable=False)
@@ -153,14 +164,22 @@ async def chat_json(
     schema: type[T],
     max_tokens: int = 2048,
     temperature: float = 0.3,
+    model: str | None = None,
 ) -> T:
-    """结构化类调用（评分/提炼/报告）。json_object 模式 + Pydantic 校验，失败重请求 1 次。"""
+    """结构化类调用（评分/提炼/报告）。json_object 模式 + Pydantic 校验，失败重请求 1 次。
+
+    model 缺省走 flash；深度档（v4-pro）由调用方显式传入（SPEC §3）。
+    """
     response_format = {"type": "json_object"}
     current = _with_schema_hint(messages, schema)
     last_error = ""
     for attempt in range(JSON_REASK_ATTEMPTS + 1):
         content = await _request(
-            current, max_tokens=max_tokens, temperature=temperature, response_format=response_format
+            current,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+            model=model,
         )
         try:
             return schema.model_validate_json(content)

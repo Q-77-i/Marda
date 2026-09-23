@@ -51,6 +51,17 @@ def test_多轮只发增量():
     assert [_data(d)["text"] for d in deltas] == ["追问"]  # 只发新增
 
 
+def test_长会话新增消息仍发delta():
+    """历史很长时也要发：差分靠长度比对，一旦从头部截断就永远算不出新增（曾漏发面试官文案）。"""
+    history = [{"role": "assistant", "content": f"第 {i} 条"} for i in range(30)]
+    events, _ = map_updates(
+        {"ask": {"chat_history": history + [{"role": "assistant", "content": "第 31 条"}]}},
+        {"chat_history": history},
+    )
+    deltas = [e for e in events if e["event"] == "delta"]
+    assert [_data(d)["text"] for d in deltas] == ["第 31 条"]
+
+
 def test_出题事件带序号与元数据():
     events, _ = map_updates(
         {"ask": {"current_question": QuestionRecord(

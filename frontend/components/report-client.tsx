@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
+import { ReviewCard } from "@/components/review-card";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -79,12 +80,20 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
     <div className="min-h-[100dvh]">
       <AppHeader
         right={
-          <Link
-            href="/"
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            返回首页
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link
+              href={`/interview/${interviewId}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+            >
+              查看面试回放
+            </Link>
+            <Link
+              href="/"
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+            >
+              返回首页
+            </Link>
+          </div>
         }
       />
       <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10">
@@ -166,20 +175,16 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
         <div className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:items-start">
           <Card>
             <CardHeader>
-              <CardTitle>逐题点评</CardTitle>
+              <CardTitle>逐题复盘</CardTitle>
             </CardHeader>
             <CardContent>
               <ol className="flex flex-col gap-4">
                 {report.per_question_comments.map((item, index) => (
-                  <li key={`${item.question_id}-${index}`} className="flex flex-col gap-1">
-                    <span className="tabular text-xs font-medium text-muted-foreground">
-                      {labels[index]}
-                    </span>
-                    {item.text && (
-                      <p className="text-xs text-muted-foreground">{item.text}</p>
-                    )}
-                    <p className="text-sm leading-relaxed">{item.comment}</p>
-                  </li>
+                  <ReviewCard
+                    key={`${item.question_id}-${index}`}
+                    item={item}
+                    label={labels[index]}
+                  />
                 ))}
               </ol>
             </CardContent>

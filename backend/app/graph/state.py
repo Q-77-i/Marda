@@ -11,7 +11,16 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
-CHAT_HISTORY_LIMIT = 24  # SPEC §4.1：LLM 上下文保留最近 24 条
+# 追问轮回答拼接标记（SPEC §4.1）：复盘卡按它分段展示（首答 / 追问补充 N），
+# 是给前端的契约（frontend/lib/constants.ts 同值），改文案要同步改前端。
+FOLLOWUP_ANSWER_MARKER = "【追问补充】"
+
+
+def merge_answer(previous: str | None, current: str) -> str:
+    """合并同一题的多轮作答（SPEC §4.1）：首答原样，追问补充带标记追加。"""
+    if not previous:
+        return current
+    return f"{previous}\n\n{FOLLOWUP_ANSWER_MARKER}{current}"
 
 
 class Phase(str, Enum):
@@ -110,7 +119,12 @@ class InterviewState(BaseModel):
 
 
 def add_history(state: InterviewState, role: str, content: str) -> None:
-    """追加对话历史并截断到 CHAT_HISTORY_LIMIT（原地，节点显式返回该字段）。"""
+    """追加对话历史（原地，节点显式返回该字段）。**不截断**。
+
+    chat_history 是回放（GET /interviews/{id}）与 SSE delta 差分的唯一来源，
+    两者都要求完整：服务层用「本次长度 − 上次长度」找新增消息，一旦从头部截断，
+    长度差分就算不出新增 → 面试官文案漏发；回放也会丢掉开场。别在这里砍。
+    （面试官与 LLM 的记忆来自结构化 state——answered_questions / candidate_profile，
+    chat_history 不参与 prompt 组装。）
+    """
     state.chat_history.append({"role": role, "content": content})
-    if len(state.chat_history) > CHAT_HISTORY_LIMIT:
-        del state.chat_history[: len(state.chat_history) - CHAT_HISTORY_LIMIT]

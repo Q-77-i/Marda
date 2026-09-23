@@ -127,6 +127,23 @@ async def test_chat_choices为空也按空内容处理(install):
     assert len(client.calls) == 2
 
 
+async def test_chat_json_可指定模型(install):
+    """报告节点走深度档（SPEC §3）：model 参数覆盖默认 flash。"""
+    client = install([_response('{"technical_depth": 4, "comment": "好"}')])
+
+    await llm.chat_json(MESSAGES, schema=Review, model="deepseek-v4-pro")
+
+    assert client.calls[0]["model"] == "deepseek-v4-pro"
+
+
+async def test_chat_不指定模型时用默认(install):
+    client = install([_response("文案")])
+
+    await llm.chat(MESSAGES)
+
+    assert client.calls[0]["model"] == llm.get_settings().deepseek_model
+
+
 async def test_chat_json_注入schema提示并用json_object模式(install):
     client = install([_response('{"technical_depth": 4, "comment": "不错"}')])
 

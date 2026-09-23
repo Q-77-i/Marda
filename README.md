@@ -97,7 +97,7 @@ SILICONFLOW_API_KEY=
 - **断线续面**：checkpointer（SQLite）以场次为粒度持久化，中断后 resume 状态一致（集成测试覆盖）
 
 ```bash
-uv run pytest -q                                    # 后端 129 个测试
+uv run pytest -q                                    # 后端 143 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
@@ -116,12 +116,14 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 - **SSE 走 POST**：`EventSource` 只支持 GET，[lib/sse.ts](frontend/lib/sse.ts) 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断
 - **打字机在前端**：后端 `delta` 发完整文案，前端 [TypewriterQueue](frontend/lib/typewriter.ts) 逐字渲染（FIFO，前一题吐完才吐下一题；单测钉死顺序性）
 - **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器明暗双模式检查
-- **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表，已结束场次直接跳报告页；网络失败与 HTTP 4xx 均转中文文案 + 重试按钮，重试不重复插入消息
+- **逐题复盘（FR-25）**：报告页每题一张复盘卡——我的回答（按 `【追问补充】` 标记分成「首答 / 追问补充 N」，不混成一大段）、五维得分、关键点覆盖对比（✓ 覆盖 / ✗ 遗漏）、题库题参考答案折叠展示（场景题无权威答案不渲染）；历史报告缺这些字段时退化为「题干 + 点评」
+- **只读回放（FR-25）**：已结束场次进面试页即完整回放（复用会话恢复接口，隐藏输入框、顶栏换「查看报告」），报告页与回放页互链；结束当刻仍自动跳报告。完整是有前提的——对话历史在状态里全量保留、不截断（截断会让 SSE 差分失效、面试官文案漏发，长场次尤其明显）
+- **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表，已结束场次进只读回放；网络失败与 HTTP 4xx 均转中文文案 + 重试按钮，重试不重复插入消息
 - **输入体验**：Enter 发送、Shift + Enter 换行，输入法"上屏回车"不误发送；输入框随内容长高，约 40% 视口高封顶后框内滚动
 - **题量与记录**：题量 = 全场问答轮次（选 N 就是 N 轮，进度与报告自然一致）；历史记录带物理删除（确认弹窗）
 
 ```bash
-cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（43 个）
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（48 个）
 pnpm lint && pnpm build
 ```
 
@@ -142,7 +144,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b），阶段 2 进行中。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro），后续 M2–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     deepseek_api_key: str
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"
+    deepseek_pro_model: str = "deepseek-v4-pro"  # 深度档：报告生成（SPEC §3）
 
     # 嵌入（SiliconFlow BGE-M3，demo 阶段）
     siliconflow_api_key: str

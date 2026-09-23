@@ -85,3 +85,15 @@ async def search_questions(
         return []
     rows = await asyncio.to_thread(_fetch_by_ids, get_settings().db_path, ids)
     return random.sample(rows, min(k, len(rows)))
+
+
+async def fetch_reference_answers(question_ids: list[str]) -> dict[str, str]:
+    """按 id 批量取参考答案全文（报告复盘用，FR-25 / SPEC §4.6）。
+
+    与出题检索同源（SQLite join，只含 enabled 题）：生成题/场景题无 id、已归档题查不到，
+    都自然缺席，调用方按 id 取即可，取不到为 None（前端不渲染参考区）。
+    """
+    if not question_ids:
+        return {}
+    rows = await asyncio.to_thread(_fetch_by_ids, get_settings().db_path, question_ids)
+    return {row["question_id"]: row["answer"] for row in rows}

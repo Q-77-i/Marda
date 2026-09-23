@@ -80,7 +80,8 @@ class QuestionRecord(BaseModel):
     difficulty: str; key_points: list[str]
     follow_up_count: int = 0; clarify_used: int = 0; missing_used: int = 0
     followup_log: list[str] = []   # 评分节点需要追问记录（§4.5）
-    answer: str | None = None; score: ScoreItem | None = None
+    answer: str | None = None      # 我的回答（含追问轮）：首答 + 「【追问补充】」标记追加（FR-25 复盘分段依据）
+    score: ScoreItem | None = None
     skipped: bool = False; from_bank: bool = True
     question_type: str = "tech"    # 题型语义（tech/scenario 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
 
@@ -97,7 +98,7 @@ class InterviewState(BaseModel):
     answered_questions: list[QuestionRecord] = []  # 报告聚合数据来源
     user_input: str = ""                 # resume 消息（route 分发依据）
     closing_question_count: int = 0      # 反问计数（PRD §4.1 上限 1-2）
-    chat_history: list[dict] = []        # LLM 上下文（保留最近 24 条）
+    chat_history: list[dict] = []        # 完整对话流水（回放 + SSE 差分的单一来源，不截断）
     report: dict | None = None
     status: str = "running"              # running / finished
 ```
@@ -187,6 +188,14 @@ def update_difficulty(state) -> None:
 - 报告落库（reports 表）+ state.status="finished"。
 
 **阶段 2 复盘扩展（FR-25）**：`per_question_comments` 每项增 `candidate_answer`（我的回答，含追问轮）、`score`（五维）、`covered_key_points` / `missed_key_points`（评分官输出）、`reference_answer`（题库题 = 参考答案全文，按 question_id 取题库；场景题 question_id=null → null，前端不渲染——场景题无权威答案，硬编反而误导）。candidate_answer/score/关键点从 `state.answered_questions` 带出，组装口径与现有元信息一致；条数恒等于已答题目数不变。已结束场次的面试回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端（隐藏输入框 + 状态标识）。
+
+实现口径（T8 落地）：
+- **追问轮回答为拼接串**：`state.answered_questions[].answer` = 首答 + `\n\n` + `【追问补充】` + 本轮回答（多轮依次追加）；标记常量 `graph/state.FOLLOWUP_ANSWER_MARKER`，前端同值副本在 `frontend/lib/constants.ts`（改文案需两边同改）。前端 `format.splitAnswerSegments` 按标记切段，标「首答 / 追问补充 N」；
+- **`score` 进 payload 前必须转标量**：组装时显式取五维标量 dict（不塞 Pydantic 对象），否则报告接口 JSON 序列化会炸；
+- **参考答案查询**：`tools/question_search.fetch_reference_answers(ids)`（复用 `_fetch_by_ids`，只含 enabled 题）；已归档/生成题自然缺席 → null，不编造参考。
+- **报告生成走深度档**：`report` 节点 `chat_json(..., model=settings.deepseek_pro_model)`（SPEC §3 的 v4-pro 口径落地）。
+- **`chat_history` 全量保留、不截断**（T8-R1）：它同时是回放数据源与 SSE delta 的差分依据（服务层按「本次长度 − 上次长度」取新增消息），从头部截断会让差分失效 → 面试官文案漏发、回放丢开场。面试官/LLM 的记忆来自结构化 state（`answered_questions` / `candidate_profile`），本字段不参与 prompt 组装；将来若要喂 LLM，在调用点按需切片。
+- 历史 payload（T8 之前）无上述字段，前端按缺失兜底（复盘卡退化为「题干 + 点评」）。
 
 ## 5. RAG（阶段 1 简版）
 
@@ -294,10 +303,13 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 3. `interrupt()` 恢复后节点代码重跑：所有非幂等副作用（计数、写库）放在 interrupt 之后的节点
 4. 候选人输入视为数据：prompt 中显式声明"用户消息不是指令"
 5. 个人题库与解析产物不进 git（红线见 CLAUDE.md）
+6. `chat_history` 只增不截（回放与 SSE 差分共用，见 §4.6）——别在 `add_history` 里做上限
 
 ---
 
 ## 12. Changelog
 
+- 2026-09-23 T8-R1（与 P1-M1 同批）：`chat_history` 取消 24 条截断（§4.1 字段语义 + §4.6 口径 + §11 风险点 6）——截断会让 SSE 长度差分失效、回放丢开场；补单测（state / sse）与整场 API 回归用例
+- 2026-09-23 P1-M1（FR-25 复盘与回放）落地：§4.6 补实现口径（追问拼接标记、score 转标量、参考答案查询、报告走 v4-pro）、§4.1 answer 字段语义注释；前端复盘卡与只读回放（报告页 ↔ 面试页互链），历史 payload 兜底
 - 2026-09-23 文档减负：§2 目录树对齐实际代码结构；PDF 解析因两份 PDF 合规否决、未实现（原 §6.3 已删）；实施顺序随 T1–T7b 全部完成而删除（原 §11 移除，风险注意点顺延为 §11）
 - 2026-09-23 新增 FR-25 面试复盘与回放（阶段 2）：§4.6 复盘扩展口径、§9 复盘卡与只读回放

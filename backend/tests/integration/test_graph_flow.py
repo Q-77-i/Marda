@@ -12,7 +12,7 @@ from langgraph.types import Command
 
 from app import llm
 from app.graph.graph import build_graph, run_config
-from app.graph.state import InterviewState
+from app.graph.state import FOLLOWUP_ANSWER_MARKER, InterviewState
 from app.tools import question_search
 from fake_llm import DEFAULT_SCORE, FakeLLMClient
 
@@ -41,17 +41,25 @@ def install_llm(monkeypatch):
 
 @pytest.fixture
 def install_search(monkeypatch):
-    """注入 fake 题库检索：按 (domain, difficulty) 查表，记录调用序列。"""
+    """注入 fake 题库检索：按 (domain, difficulty) 查表，记录调用序列。
+
+    报告节点的参考答案查询（FR-25）同源 fake，保证整场流程离线、不碰真实题库。
+    """
 
     def _install(bank: dict | None = None):
         calls: list[tuple] = []
+        items = [i for group in (bank or {}).values() for i in group]
 
         async def _search(*, domain, difficulty, exclude_ids=None, k=3):
             calls.append((domain, difficulty))
-            items = (bank or {}).get((domain, difficulty), [])
-            return [i for i in items if i["question_id"] not in (exclude_ids or [])][:k]
+            return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
+                    and i["question_id"] not in (exclude_ids or [])][:k]
+
+        async def _reference_answers(question_ids):
+            return {i["question_id"]: i["answer"] for i in items if i["question_id"] in question_ids}
 
         monkeypatch.setattr(question_search, "search_questions", _search)
+        monkeypatch.setattr(question_search, "fetch_reference_answers", _reference_answers)
         return _search, calls
 
     return _install
@@ -191,6 +199,32 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     # 题型语义：技术题/场景题都计入轮次，按序编号
     assert [c["question_type"] for c in comments] == ["tech", "scenario"]
     assert [c["number"] for c in comments] == [1, 2]
+    # FR-25 复盘扩展：回答带出、题库题附参考答案全文、场景题无权威答案
+    assert comments[0]["candidate_answer"] == "我的答案是……"
+    assert comments[0]["reference_answer"] == "参考答案"
+    assert comments[1]["candidate_answer"] == "我的场景题方案是……"
+    assert comments[1]["reference_answer"] is None
+    assert comments[0]["score"]["technical_depth"] == 4
+
+
+async def test_追问轮回答保留首答并带标记(install_llm, install_search, graph_env):
+    """SPEC §4.1：candidate_answer 含追问轮——首答保留 + 【追问补充】标记追加（FR-25 复盘分段依据）。"""
+    missed = {**DEFAULT_SCORE, "covered_key_points": ["k1"], "missed_key_points": ["k2"]}  # 50% < 70%
+    scores = iter([missed, DEFAULT_SCORE])
+    install_llm(score=lambda: next(scores))
+    install_search(_bank("agent-architecture", "rag"))
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
+
+    await _run(graph, config, state)
+    await _run(graph, config, Command(resume="我是应届生"))
+    values = await _run(graph, config, Command(resume="首答内容……"))
+    assert values["current_question"]["follow_up_count"] == 1  # 遗漏 → 追问
+
+    values = await _run(graph, config, Command(resume="追问补充内容……"))
+
+    record = values["answered_questions"][0]
+    assert record["answer"] == f"首答内容……\n\n{FOLLOWUP_ANSWER_MARKER}追问补充内容……"
+    assert record["score"]["covered_key_points"] == ["k1", "k2"]  # 最终记录为重评结果
 
 
 async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, install_search, graph_env):

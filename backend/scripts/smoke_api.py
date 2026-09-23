@@ -148,11 +148,27 @@ async def main() -> None:
             print("总评:", report["total_comment"])
             for item in report["study_advice"]:
                 print(f"  学习建议 - {item['domain']}: {item['advice']}")
-            print("逐题点评（轮次语义 number/question_type）:")
+            print("逐题复盘（FR-25：我的回答 / 五维 / 关键点 / 参考答案）:")
             for item in report["per_question_comments"]:
                 assert item["number"] is not None, "计入轮次的题型必须有序号"
+                # 复盘扩展：已答题必须带回答与五维（标量 dict，不能是 Pydantic 对象）
+                assert item["candidate_answer"], f"第{item['number']}轮缺我的回答"
+                assert set(item["score"]) == {
+                    "technical_depth", "fundamentals", "project_experience",
+                    "communication", "problem_solving",
+                }, f"第{item['number']}轮五维不全：{item['score']}"
+                assert isinstance(item["covered_key_points"], list)
+                # 题库题附参考答案全文；生成题/场景题无权威答案 → null
+                if item["question_id"]:
+                    assert item["reference_answer"], f"题库题缺参考答案：{item['question_id']}"
+                    ref = "有参考答案"
+                else:
+                    assert item["reference_answer"] is None, "场景题/生成题不该有参考答案"
+                    ref = "无参考答案（生成题）"
                 print(f"  第{item['number']}轮 [{item['question_type']}/{item['domain']}] "
-                      f"{item['comment'][:30]}…")
+                      f"五维均分={sum(item['score'].values()) / 5:.1f} {ref} "
+                      f"覆盖{len(item['covered_key_points'])}/遗漏{len(item['missed_key_points'])}"
+                      f" · {item['comment'][:24]}…")
 
             # 会话恢复 + 历史列表
             r = await client.get(f"{BASE}/api/interviews/{interview_id}")

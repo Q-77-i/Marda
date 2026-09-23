@@ -1,7 +1,7 @@
 /** 展示格式化工具。 */
 
 import type { PerQuestionComment } from "@/lib/api";
-import { QUESTION_TYPE_LABELS } from "@/lib/constants";
+import { FOLLOWUP_ANSWER_MARKER, QUESTION_TYPE_LABELS } from "@/lib/constants";
 
 /** 后端时间为 UTC ISO 串，转为本地 "MM-DD HH:mm"。 */
 export function formatTime(iso: string): string {
@@ -75,4 +75,26 @@ export function commentLabels(
     if (answered > total && index === items.length - 1) return "场景题";
     return `第 ${index + 1} 题`;
   });
+}
+
+/** 复盘卡的一段回答（FR-25）：首答 / 追问补充 N。 */
+export type AnswerSegment = { label: string; text: string };
+
+/**
+ * 拆分「我的回答」为多段（FR-25 复盘卡）。
+ *
+ * 追问轮回答在数据层是一个拼接串（后端 graph/state.merge_answer：
+ * 首答 + 每轮追问以 FOLLOWUP_ANSWER_MARKER 追加）。整段渲染会让用户分不清
+ * 哪段是首答、哪段是补充，故按标记切段并标序号；无标记（未追问、历史数据）即整段「首答」。
+ */
+export function splitAnswerSegments(answer: string | null | undefined): AnswerSegment[] {
+  const text = (answer ?? "").trim();
+  if (!text) return [];
+  return text
+    .split(FOLLOWUP_ANSWER_MARKER)
+    .map((part, index) => ({
+      label: index === 0 ? "首答" : `追问补充 ${index}`,
+      text: part.trim(),
+    }))
+    .filter((segment) => segment.text !== "");
 }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { PerQuestionComment } from "@/lib/api";
+import { FOLLOWUP_ANSWER_MARKER } from "@/lib/constants";
 import {
   commentLabels,
   completedCount,
@@ -8,6 +9,7 @@ import {
   formatScore,
   formatTime,
   progressLabel,
+  splitAnswerSegments,
 } from "@/lib/format";
 
 describe("progressLabel", () => {
@@ -143,5 +145,39 @@ describe("formatScore", () => {
 describe("formatTime", () => {
   it("非法时间串返回空", () => {
     expect(formatTime("not-a-date")).toBe("");
+  });
+});
+
+describe("splitAnswerSegments", () => {
+  it("未追问：整段即首答", () => {
+    expect(splitAnswerSegments("我的回答是这样的")).toEqual([
+      { label: "首答", text: "我的回答是这样的" },
+    ]);
+  });
+
+  it("追问轮：按后端标记拆段并标序号（数据层是拼接串）", () => {
+    const answer = `首答内容\n\n${FOLLOWUP_ANSWER_MARKER}补充一\n\n${FOLLOWUP_ANSWER_MARKER}补充二`;
+
+    expect(splitAnswerSegments(answer)).toEqual([
+      { label: "首答", text: "首答内容" },
+      { label: "追问补充 1", text: "补充一" },
+      { label: "追问补充 2", text: "补充二" },
+    ]);
+  });
+
+  it("标记文案是前后端契约（后端 graph/state.FOLLOWUP_ANSWER_MARKER）", () => {
+    expect(FOLLOWUP_ANSWER_MARKER).toBe("【追问补充】");
+  });
+
+  it("空值与空白返回空数组（历史 payload 无 candidate_answer）", () => {
+    expect(splitAnswerSegments(null)).toEqual([]);
+    expect(splitAnswerSegments(undefined)).toEqual([]);
+    expect(splitAnswerSegments("   ")).toEqual([]);
+  });
+
+  it("多行回答保留段内换行", () => {
+    expect(splitAnswerSegments("第一行\n第二行")).toEqual([
+      { label: "首答", text: "第一行\n第二行" },
+    ]);
   });
 });

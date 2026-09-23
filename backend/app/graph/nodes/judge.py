@@ -1,7 +1,8 @@
 """评分节点（SPEC §4.5）：LLM 结构化评分 + 确定性副作用（计数/难度/记录）。
 
 副作用只在首次评分时做（追问补充重评只覆盖 score）——计数/难度一题一次，
-answered_questions 保持每题一条最终记录。
+answered_questions 保持每题一条最终记录；回答则累加保留（首答 + 追问补充，SPEC §4.1），
+复盘卡（FR-25）据此展示「我的回答（含追问轮）」。
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 from app import llm
 from app.agents.prompts import JUDGE_TEMPLATE
 from app.graph.rules.difficulty import update_difficulty
-from app.graph.state import InterviewState, ScoreItem, add_history
+from app.graph.state import InterviewState, ScoreItem, add_history, merge_answer
 
 
 async def judge_node(state: InterviewState) -> dict:
@@ -25,7 +26,7 @@ async def judge_node(state: InterviewState) -> dict:
         temperature=0.3,
     )
     is_first = question.score is None
-    question.answer = state.user_input
+    question.answer = merge_answer(question.answer, state.user_input)
     question.score = score
     add_history(state, "user", state.user_input)
     updates: dict = {"current_question": question, "chat_history": state.chat_history}

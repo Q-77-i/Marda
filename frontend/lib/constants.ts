@@ -51,6 +51,12 @@ export function domainLabel(domain: string): string {
 /** 主动结束指令（与 backend rules/advance.END_COMMANDS 一致）。 */
 export const END_COMMAND = "结束面试";
 
+/**
+ * 追问轮回答分段标记（与 backend graph/state.FOLLOWUP_ANSWER_MARKER 一致）。
+ * 复盘卡按它把 candidate_answer 拆成「首答 / 追问补充 N」（FR-25）。
+ */
+export const FOLLOWUP_ANSWER_MARKER = "【追问补充】";
+
 /** 题量可选项（SPEC §9 仪表盘表单）。 */
 export const QUESTION_COUNT_OPTIONS = [5, 10, 15] as const;
 

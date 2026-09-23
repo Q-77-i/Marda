@@ -1,11 +1,13 @@
 "use client";
 
+import { cn } from "cn";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
 import { MessageBubble, type ChatItem } from "@/components/message-bubble";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
   dispatcher,
@@ -30,6 +32,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [reportReady, setReportReady] = useState(false);
+  const [readonly, setReadonly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedInput, setFailedInput] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -45,16 +48,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
   const nextId = () => `m${idRef.current++}`;
 
-  /* 恢复会话（验收 4：刷新后历史不丢）；已结束直接进报告页 */
+  /* 恢复会话（验收 4：刷新后历史不丢）；已结束场次进只读回放（FR-25） */
   useEffect(() => {
     let active = true;
     getSession(interviewId)
       .then((session) => {
         if (!active) return;
-        if (session.status === "finished") {
-          router.replace(`/report/${interviewId}`);
-          return;
-        }
         setMessages(
           session.chat_history.map((m) => ({
             id: nextId(),
@@ -65,6 +64,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         setPhase(session.phase);
         setAnswered(session.answered_count);
         setTotal(session.question_count);
+        setReadonly(session.status === "finished");
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -224,14 +224,23 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             <span className="tabular text-xs font-medium">
               {progressLabel(answered, total)}
             </span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleEnd}
-              disabled={busy || finished || loading}
-            >
-              结束面试
-            </Button>
+            {readonly ? (
+              <Link
+                href={`/report/${interviewId}`}
+                className={cn(buttonVariants({ size: "sm" }))}
+              >
+                查看报告
+              </Link>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleEnd}
+                disabled={busy || finished || loading}
+              >
+                结束面试
+              </Button>
+            )}
           </div>
         }
       />
@@ -280,7 +289,17 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             </div>
           )}
 
-          {finished ? (
+          {readonly ? (
+            <p className="py-2 text-sm text-muted-foreground">
+              本场面试已结束，以上为完整回放 ·{" "}
+              <Link
+                href={`/report/${interviewId}`}
+                className="underline underline-offset-4"
+              >
+                查看能力报告
+              </Link>
+            </p>
+          ) : finished ? (
             <p className="py-2 text-sm text-muted-foreground">
               面试已结束，正在生成能力报告…
             </p>

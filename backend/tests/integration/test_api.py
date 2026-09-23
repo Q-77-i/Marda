@@ -55,11 +55,17 @@ def _test_env(monkeypatch, tmp_path):
 @pytest.fixture
 def install_search(monkeypatch):
     def _install(bank: dict | None = None):
+        items = [i for group in (bank or {}).values() for i in group]
+
         async def _search(*, domain, difficulty, exclude_ids=None, k=3):
-            items = (bank or {}).get((domain, difficulty), [])
-            return [i for i in items if i["question_id"] not in (exclude_ids or [])][:k]
+            return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
+                    and i["question_id"] not in (exclude_ids or [])][:k]
+
+        async def _reference_answers(question_ids):
+            return {i["question_id"]: i["answer"] for i in items if i["question_id"] in question_ids}
 
         monkeypatch.setattr(question_search, "search_questions", _search)
+        monkeypatch.setattr(question_search, "fetch_reference_answers", _reference_answers)
 
     return _install
 
@@ -180,14 +186,29 @@ async def test_完整一场落库与报告(client):
     assert set(report["payload"]["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving",
     }
+    # FR-25 复盘字段（SPEC §4.6）：题库题附参考答案、我的回答、五维、关键点对比
+    comments = report["payload"]["per_question_comments"]
+    assert len(comments) == 2
+    assert comments[0]["question_id"] == "q_arch"
+    assert comments[0]["candidate_answer"] == TURNS[1]
+    assert comments[0]["reference_answer"] == "参考答案"
+    assert comments[0]["score"]["fundamentals"] == 4
+    assert comments[0]["covered_key_points"] == ["k1", "k2"]
+    assert comments[0]["missed_key_points"] == []
+    assert comments[1]["question_id"] is None  # 场景题
+    assert comments[1]["candidate_answer"] == TURNS[2]
+    assert comments[1]["reference_answer"] is None
     # interviews 表收尾
     row = db.get_interview(get_settings().db_path, interview_id)
     assert row["status"] == "finished"
     assert row["ended_at"]
-    # 报告接口
+    # 报告接口：复盘字段经 JSON 序列化后仍完整（score 为标量 dict，不能是 Pydantic 对象）
     r = await client.get(f"/api/interviews/{interview_id}/report")
     assert r.status_code == 200
-    assert r.json()["report"]["answered_count"] == 2
+    payload = r.json()["report"]
+    assert payload["answered_count"] == 2
+    assert payload["per_question_comments"][0]["reference_answer"] == "参考答案"
+    assert payload["per_question_comments"][0]["score"]["technical_depth"] == 4
 
 
 async def test_会话状态恢复(client):
@@ -203,6 +224,40 @@ async def test_会话状态恢复(client):
     assert data["status"] == "running"
     assert data["report_ready"] is False
     assert any(m["role"] == "assistant" for m in data["chat_history"])
+
+
+async def test_长场次不漏发且回放完整(client, monkeypatch):
+    """T8-R1 回归：对话历史不截断。
+
+    两个消费者都要求完整：回放（GET /interviews/{id}）要含开场，SSE delta 靠
+    「本次长度 − 上次长度」找新增——一旦从头部截断，差分恒为空 → 面试官文案漏发。
+    本用例跑 10 轮 + 大量追问（消息数远超旧的 24 条上限），逐条核对。
+    """
+    low = {
+        "technical_depth": 1, "fundamentals": 1, "project_experience": 1,
+        "communication": 1, "problem_solving": 1,
+        "covered_key_points": [], "missed_key_points": ["k1"],
+        "error_flag": False, "comment": "继续追问",
+    }
+    monkeypatch.setattr(llm, "_get_client", lambda: FakeLLMClient(score=low))
+    interview_id, events = await _create(client, question_count=10)
+    deltas = sum(1 for e in events if e.get("event") == "delta")
+
+    for turn in range(40):
+        events = await _send(client, interview_id, f"第 {turn} 轮回答……")
+        deltas += sum(1 for e in events if e.get("event") == "delta")
+        if any(e.get("event") == "done" for e in events):
+            break
+    else:
+        pytest.fail("40 轮内未跑完，用例前提失效")
+
+    r = await client.get(f"/api/interviews/{interview_id}")
+    assert r.status_code == 200
+    history = r.json()["chat_history"]
+    assistant = [m for m in history if m["role"] == "assistant"]
+    assert history[0]["role"] == "assistant" and history[0]["content"], "开场白丢了 → 回放不完整"
+    assert deltas == len(assistant), f"面试官文案 {len(assistant)} 条，只发到前端 {deltas} 条"
+    assert len(history) > 24, "长场次对话历史被截断（本场消息数必定超出旧上限）"
 
 
 async def test_历史列表倒序(client):

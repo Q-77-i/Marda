@@ -55,13 +55,26 @@ export type InterviewRow = {
   report_ready: boolean;
 };
 
+/** 五维得分（FR-25 复盘卡逐题展示，与 backend aggregate.FIVE_DIMS 同源）。 */
+export type ScoreDimensions = {
+  technical_depth: number;
+  fundamentals: number;
+  project_experience: number;
+  communication: number;
+  problem_solving: number;
+};
+
 /**
- * 逐题点评。
+ * 逐题点评 / 复盘条目。
  *
  * 2026-09-19 起后端补上 `index`/`domain`/`text`（场景题 `domain="project"`、`question_id=null`）；
  * 2026-09-21（T7a）再补 `question_type`/`number`——题型语义由后端定义，前端只消费：
  * `number` 为计入配置题量的题型按作答顺序的编号（场景题为 null），`question_type`
  * 为题型种类（tech/scenario）。历史报告的 payload 没有这些字段，前端按 domain/位置兜底。
+ *
+ * 2026-09-23（FR-25）复盘扩展：`candidate_answer`（含追问轮，按 `【追问补充】` 分段）、
+ * `score`（五维）、`covered_key_points`/`missed_key_points`、`reference_answer`
+ * （题库题参考答案全文，场景题为 null 不渲染）。历史 payload 同样没有，全部可选。
  */
 export type PerQuestionComment = {
   question_id: string | null;
@@ -71,6 +84,11 @@ export type PerQuestionComment = {
   text?: string;
   number?: number | null;
   question_type?: string;
+  candidate_answer?: string | null;
+  score?: ScoreDimensions | null;
+  covered_key_points?: string[];
+  missed_key_points?: string[];
+  reference_answer?: string | null;
 };
 export type StudyAdvice = { domain: string; advice: string };
 
