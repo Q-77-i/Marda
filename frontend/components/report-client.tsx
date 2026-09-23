@@ -172,44 +172,43 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           </CardContent>
         </Card>
 
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:items-start">
-          <Card>
-            <CardHeader>
-              <CardTitle>逐题复盘</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ol className="flex flex-col gap-4">
-                {report.per_question_comments.map((item, index) => (
-                  <ReviewCard
-                    key={`${item.question_id}-${index}`}
-                    item={item}
-                    label={labels[index]}
-                  />
-                ))}
-              </ol>
-            </CardContent>
-          </Card>
+        {/* 逐题复盘与学习建议各占一行：两者长度差一个量级，并排会让短的一侧空一大片 */}
+        <Card>
+          <CardHeader>
+            <CardTitle>逐题复盘</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ol className="flex flex-col gap-4">
+              {report.per_question_comments.map((item, index) => (
+                <ReviewCard
+                  key={`${item.question_id}-${index}`}
+                  item={item}
+                  label={labels[index]}
+                />
+              ))}
+            </ol>
+          </CardContent>
+        </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>学习建议</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <ul className="flex flex-col gap-4">
-                {report.study_advice.map((item, index) => (
-                  <li key={`${item.domain}-${index}`} className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">{domainLabel(item.domain)}</Badge>
-                    </div>
-                    <p className="text-sm leading-relaxed text-foreground/90">
-                      {item.advice}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            </CardContent>
-          </Card>
-        </div>
+        <Card>
+          <CardHeader>
+            <CardTitle>学习建议</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid gap-4 lg:grid-cols-2">
+              {report.study_advice.map((item, index) => (
+                <li key={`${item.domain}-${index}`} className="flex flex-col gap-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">{domainLabel(item.domain)}</Badge>
+                  </div>
+                  <p className="text-sm leading-relaxed text-foreground/90">
+                    {item.advice}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
       </main>
     </div>
   );
