@@ -1,10 +1,12 @@
 /**
  * 后端 API 封装（SPEC §7 契约）：五端点 + SSE 事件分发。
  *
- * 请求走同源 /api/*（next.config.ts rewrites → 后端），避免 CORS。
+ * 请求走同源 /api/*（next.config.ts rewrites → 后端），避免 CORS；
+ * 登录态与 401 处置见 lib/http.ts、lib/session.ts（本文件不重复处理）。
  */
 
-import { networkMessage, postSSE, type SSEEvent } from "@/lib/sse";
+import { authorizedFetch, responseError } from "@/lib/http";
+import { postSSE, type SSEEvent } from "@/lib/sse";
 
 export type Phase =
   | "intro"
@@ -167,22 +169,8 @@ export async function sendMessage(
 }
 
 async function getJSON<T>(url: string): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(url);
-  } catch (err) {
-    throw new Error(networkMessage(err));
-  }
-  if (!response.ok) {
-    let detail = `请求失败（${response.status}）`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === "string") detail = payload.detail;
-    } catch {
-      // 非 JSON 响应，用通用文案
-    }
-    throw new Error(detail);
-  }
+  const response = await authorizedFetch(url);
+  if (!response.ok) throw new Error(await responseError(response));
   return response.json() as Promise<T>;
 }
 
@@ -200,20 +188,8 @@ export function listInterviews(): Promise<InterviewRow[]> {
 
 /** 物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。 */
 export async function deleteInterview(interviewId: string): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(`/api/interviews/${interviewId}`, { method: "DELETE" });
-  } catch (err) {
-    throw new Error(networkMessage(err));
-  }
-  if (!response.ok) {
-    let detail = `删除失败（${response.status}）`;
-    try {
-      const payload = await response.json();
-      if (typeof payload?.detail === "string") detail = payload.detail;
-    } catch {
-      // 非 JSON 响应，用通用文案
-    }
-    throw new Error(detail);
-  }
+  const response = await authorizedFetch(`/api/interviews/${interviewId}`, {
+    method: "DELETE",
+  });
+  if (!response.ok) throw new Error(await responseError(response));
 }

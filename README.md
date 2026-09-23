@@ -116,7 +116,9 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 
 ## 前端（三页面 + 流式联调）
 
-[frontend/](frontend/) 是 Next.js 15 App Router，三个页面：仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+[frontend/](frontend/) 是 Next.js 15 App Router，四个页面：登录 `/login`、仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+
+- **登录与路由守卫（FR-23）**：[lib/session.ts](frontend/lib/session.ts) 管 token（localStorage 优先，隐私模式等环境自动降级 sessionStorage，两者都禁用则明确提示而非静默失败），[lib/http.ts](frontend/lib/http.ts) 统一注入 Bearer 与 401 处置；未登录访问受保护页由 [AuthGuard](frontend/components/auth-guard.tsx) 跳登录（判断完成前先渲染载入态，不闪受保护内容）。**401 默认直跳登录页，唯独面试页弹确认再跳**——答题答到一半被直接踢走体感太差；登录接口自身的 401/409 只当表单错误展示，绝不触发全局跳转
 
 - **SSE 走 POST**：`EventSource` 只支持 GET，[lib/sse.ts](frontend/lib/sse.ts) 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断
 - **打字机在前端**：后端 `delta` 发完整文案，前端 [TypewriterQueue](frontend/lib/typewriter.ts) 逐字渲染（FIFO，前一题吐完才吐下一题；单测钉死顺序性）
@@ -128,7 +130,7 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 - **题量与记录**：题量 = 全场问答轮次（选 N 就是 N 轮，进度与报告自然一致）；历史记录带物理删除（确认弹窗）
 
 ```bash
-cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化（48 个）
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化 + 登录态（66 个）
 pnpm lint && pnpm build
 ```
 
@@ -149,7 +151,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系后端已完成**（注册登录 + JWT 鉴权 + 多用户隔离），前端登录页为 M2 第二会话。后续 M3–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）。后续 M3–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

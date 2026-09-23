@@ -7,6 +7,8 @@
  * - TextDecoder stream 模式处理 UTF-8 跨 chunk 截断（中文必踩）。
  */
 
+import { authorizedFetch, responseError } from "@/lib/http";
+
 export type SSEEvent = { event: string; data: string };
 
 /** 事件块边界：返回 [块结束位置, 下一块起始位置]，无边界返回 null。 */
@@ -74,40 +76,16 @@ export async function postSSE(
   onEvent: (event: SSEEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (err) {
-    throw new Error(networkMessage(err)); // fetch 只在网络层失败时 reject
-  }
-  if (!response.ok) {
-    throw new Error(await errorMessage(response));
-  }
+  // authorizedFetch 负责带登录态、网络异常文案与 401 统一处置
+  const response = await authorizedFetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) throw new Error(await responseError(response));
   if (!response.body) throw new Error("响应无流式内容");
   for await (const event of parseSSE(response.body)) {
     onEvent(event);
   }
-}
-
-/** 网络层失败（后端未启动/断开）转成中文提示；主动取消原样抛出。 */
-export function networkMessage(err: unknown): string {
-  if (err instanceof DOMException && err.name === "AbortError") {
-    return "请求已取消";
-  }
-  return "无法连接服务器，请确认后端已启动后重试";
-}
-
-async function errorMessage(response: Response): Promise<string> {
-  try {
-    const payload = await response.json();
-    if (typeof payload?.detail === "string") return payload.detail;
-  } catch {
-    // 非 JSON 响应，走通用文案
-  }
-  return `请求失败（${response.status}）`;
 }

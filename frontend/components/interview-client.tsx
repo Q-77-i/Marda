@@ -7,6 +7,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
 import { MessageBubble, type ChatItem } from "@/components/message-bubble";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -18,6 +27,7 @@ import {
 } from "@/lib/api";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { progressLabel } from "@/lib/format";
+import { UnauthorizedError, redirectToLogin, setUnauthorizedHandler } from "@/lib/session";
 import { TypewriterQueue } from "@/lib/typewriter";
 
 /** 吐字节拍：每 30ms 一次，字符数随积压自适应，长文案不落后于流。 */
@@ -34,6 +44,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [reportReady, setReportReady] = useState(false);
   const [readonly, setReadonly] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expired, setExpired] = useState(false);
   const [failedInput, setFailedInput] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
@@ -47,6 +58,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const nearBottomRef = useRef(true);
 
   const nextId = () => `m${idRef.current++}`;
+
+  /* 接管 401 处置：默认的「直接踢回登录页」在答题中途体感太差，改为弹确认后再跳 */
+  useEffect(() => {
+    setUnauthorizedHandler(() => setExpired(true));
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   /* 恢复会话（验收 4：刷新后历史不丢）；已结束场次进只读回放（FR-25） */
   useEffect(() => {
@@ -69,6 +86,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       })
       .catch((err: unknown) => {
         if (!active) return;
+        if (err instanceof UnauthorizedError) return; // 已由确认框接管
         setError(err instanceof Error ? err.message : "会话加载失败");
         setLoading(false);
       });
@@ -182,8 +200,11 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       try {
         await sendMessage(interviewId, text, dispatcher(handlers));
       } catch (err) {
-        setError(err instanceof Error ? err.message : "网络异常，请重试");
-        setFailedInput(text);
+        // 401 由全局确认框接管，不再重复提示（重试也只会再 401）
+        if (!(err instanceof UnauthorizedError)) {
+          setError(err instanceof Error ? err.message : "网络异常，请重试");
+          setFailedInput(text);
+        }
         queueRef.current.clear(); // 丢弃未吐完的残缺文案，避免与错误提示混淆
       } finally {
         streamingRef.current = false;
@@ -215,6 +236,21 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
   return (
     <div className="flex h-[100dvh] flex-col">
+      {/* 登录过期（补充点 ①）：只留「重新登录」一个出口——留在页面上每个请求都会 401 */}
+      <AlertDialog open={expired}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>登录已过期</AlertDialogTitle>
+            <AlertDialogDescription>
+              需要重新登录才能继续。已提交的回答都已保存，重新登录后可回到本场面试继续作答。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogAction onClick={redirectToLogin}>重新登录</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <AppHeader
         right={
           <div className="flex items-center gap-3">
