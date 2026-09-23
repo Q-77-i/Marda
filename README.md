@@ -30,7 +30,7 @@ backend/            FastAPI + LangGraph
     domain.py       知识域定义（单一来源：配额 / 映射 / 报告共用）
     graph/          状态机（state / graph / nodes / rules）
     agents/         角色节点与结构化输出 schema
-    tools/          RAG 检索工具（检索 / 嵌入客户端）
+    tools/          RAG 检索工具（出题检索 / 混合检索 / 嵌入 / rerank 客户端）
     api/            路由（SSE 流）
     service.py      服务层（图单例 / 事件翻译 / 落库编排）
     db.py           业务库持久化（interviews / answers / reports）
@@ -151,7 +151,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）。后续 M3–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）。后续 M4–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

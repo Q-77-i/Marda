@@ -1,6 +1,6 @@
 """question_search 单测：fake qdrant client 注入，覆盖过滤/排除/join/随机上限。
 
-_search 编排层打 fake；_fetch_by_ids 的真实 SQL/JSON 逻辑用 tmp SQLite 验证。
+search_questions 编排层打 fake；fetch_by_ids 的真实 SQL/JSON 逻辑用 tmp SQLite 验证。
 """
 
 from __future__ import annotations
@@ -59,8 +59,8 @@ def install(monkeypatch):
             calls["ids"] = ids
             return rows
 
-        monkeypatch.setattr(question_search, "_get_client", lambda: SimpleNamespace(scroll=scroll.scroll))
-        monkeypatch.setattr(question_search, "_fetch_by_ids", fake_fetch)
+        monkeypatch.setattr(question_search, "get_qdrant_client", lambda: SimpleNamespace(scroll=scroll.scroll))
+        monkeypatch.setattr(question_search, "fetch_by_ids", fake_fetch)
         return scroll, calls
 
     return _install
@@ -135,7 +135,7 @@ def db(tmp_path: Path) -> Path:
 
 
 def test_fetch_字段映射与JSON解析(db):
-    rows = question_search._fetch_by_ids(db, ["q1"])
+    rows = question_search.fetch_by_ids(db, ["q1"])
 
     assert rows[0]["question_id"] == "q1"
     assert rows[0]["question"] == "题目一"
@@ -144,8 +144,8 @@ def test_fetch_字段映射与JSON解析(db):
 
 
 def test_fetch_draft不入结果(db):
-    assert len(question_search._fetch_by_ids(db, ["q1", "q2"])) == 1
+    assert len(question_search.fetch_by_ids(db, ["q1", "q2"])) == 1
 
 
 def test_fetch_不存在id返回空(db):
-    assert question_search._fetch_by_ids(db, ["nope"]) == []
+    assert question_search.fetch_by_ids(db, ["nope"]) == []

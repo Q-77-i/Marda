@@ -117,3 +117,10 @@ async def test_默认取配置且归一末尾斜杠():
     await configured.embed(["a"])
     host = urlparse(embedding.get_settings().embedding_url).netloc
     assert urlparse(seen[-1]).netloc == host
+
+
+def test_question_doc_text_题干与关键点():
+    """doc 文本单一来源：ingest（嵌入）与 hybrid_search（rerank）共用此格式。"""
+    assert embedding.question_doc_text("题干？", ["甲", "乙"]) == "题干？\n甲\n乙"
+    assert embedding.question_doc_text("题干？", []) == "题干？"
+    assert embedding.question_doc_text("题干？", [" 甲 ", "", None]) == "题干？\n甲"

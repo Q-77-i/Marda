@@ -27,12 +27,12 @@ SCROLL_LIMIT = 100  # 单域×难度组合远小于此数，一次 scroll 足够
 
 
 @lru_cache
-def _get_client() -> AsyncQdrantClient:
+def get_qdrant_client() -> AsyncQdrantClient:
     """单例复用连接；测试 monkeypatch 此函数注入 fake。"""
     return AsyncQdrantClient(url=get_settings().qdrant_url)
 
 
-def _fetch_by_ids(db_path: Path, ids: list[str]) -> list[dict[str, Any]]:
+def fetch_by_ids(db_path: Path, ids: list[str]) -> list[dict[str, Any]]:
     """SQLite join 完整题目（同步，由 search_questions 以 to_thread 包裹）。
 
     出参 key 与 ingest 管道 JSON 一致（question_id/question/key_points/…）。
@@ -63,7 +63,7 @@ async def search_questions(
     k: int = 3,
 ) -> list[dict[str, Any]]:
     """按 domain/difficulty 过滤题库，排除已问，随机取至多 k 条完整题目。"""
-    points, _ = await _get_client().scroll(
+    points, _ = await get_qdrant_client().scroll(
         collection_name=COLLECTION,
         scroll_filter=qm.Filter(
             must=[
@@ -83,7 +83,7 @@ async def search_questions(
     ]
     if not ids:
         return []
-    rows = await asyncio.to_thread(_fetch_by_ids, get_settings().db_path, ids)
+    rows = await asyncio.to_thread(fetch_by_ids, get_settings().db_path, ids)
     return random.sample(rows, min(k, len(rows)))
 
 
@@ -95,5 +95,5 @@ async def fetch_reference_answers(question_ids: list[str]) -> dict[str, str]:
     """
     if not question_ids:
         return {}
-    rows = await asyncio.to_thread(_fetch_by_ids, get_settings().db_path, question_ids)
+    rows = await asyncio.to_thread(fetch_by_ids, get_settings().db_path, question_ids)
     return {row["question_id"]: row["answer"] for row in rows}

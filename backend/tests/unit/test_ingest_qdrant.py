@@ -77,13 +77,6 @@ def questions():
     ]
 
 
-def test_doc_text_题干与关键点():
-    assert ingest.doc_text({"question": "题干？", "key_points": ["甲", "乙"]}) == "题干？\n甲\n乙"
-    assert ingest.doc_text({"question": "题干？", "key_points": []}) == "题干？"
-    assert ingest.doc_text({"question": "题干？"}) == "题干？"
-    assert ingest.doc_text({"question": "题干？", "key_points": [" 甲 ", "", None]}) == "题干？\n甲"
-
-
 async def test_重建命名双向量(questions):
     client, embedder = FakeQdrant(existing=["questions"]), FakeEmbedder()
 

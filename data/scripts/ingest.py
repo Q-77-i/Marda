@@ -30,7 +30,7 @@ from qdrant_client.models import (
 )
 
 from app.config import get_settings
-from app.tools.embedding import EmbeddingClient, to_sparse_vector
+from app.tools.embedding import EmbeddingClient, question_doc_text, to_sparse_vector
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_IN = REPO_ROOT / "data" / "parsed" / "questions_enriched.json"
@@ -69,15 +69,6 @@ def _qdrant_payload(question: dict) -> dict:
         "company": question["company"],
         "round": question["round"],
     }
-
-
-def doc_text(question: dict) -> str:
-    """嵌入文本 = 题干 + 关键点（M3 拍板）。
-
-    关键点是答案的要点提炼：M6 题库搜索要按考点召回靠它；答案全文过长会稀释题干。
-    """
-    points = [str(p).strip() for p in (question.get("key_points") or []) if p]
-    return "\n".join([question["question"], *(p for p in points if p)])
 
 
 def point_id(question_id: str) -> str:
@@ -151,7 +142,9 @@ async def write_qdrant(questions: list[dict], settings, *, client=None, embedder
         sparse_vectors_config={SPARSE: SparseVectorParams()},
     )
 
-    vectors = await embedder.embed([doc_text(q) for q in questions])
+    vectors = await embedder.embed(
+        [question_doc_text(q["question"], q.get("key_points") or []) for q in questions]
+    )
     if len(vectors) != len(questions):
         raise RuntimeError(f"向量数 {len(vectors)} 与题目数 {len(questions)} 不一致")
 
