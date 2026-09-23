@@ -1,7 +1,10 @@
-"""业务库持久化（SPEC §8）：interviews / answers / reports 三表。
+"""业务库持久化（SPEC §8）：users / interviews / answers / reports 四表。
 
 分工口径（SPEC §8）：面试过程以 checkpointer state 为权威，本模块只承担
 「历史列表 + 落库产物」；answers/reports 在面试结束后一次写入。
+
+用户隔离（FR-23）：interviews.user_id 为归属列，列表查询按用户过滤；
+checkpointer 不需要隔离——thread_id = 全局唯一 uuid，本模块才是归属权威。
 
 全部为同步函数（sqlite3），异步调用方经 asyncio.to_thread 包裹
 （与 tools/question_search._fetch_by_ids 同模式）。
@@ -16,9 +19,16 @@ from pathlib import Path
 from typing import Any
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    created_at TEXT
+);
 CREATE TABLE IF NOT EXISTS interviews (
     id TEXT PRIMARY KEY,
     thread_id TEXT UNIQUE,
+    user_id TEXT,
     position TEXT,
     question_count INT,
     phase TEXT,
@@ -62,6 +72,51 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 def ensure_schema(db_path: Path) -> None:
     with _connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """轻量迁移（阶段 2 仍 SQLite，PG 迁移推阶段 3）：阶段 1 老库补 interviews.user_id。"""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(interviews)")}
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE interviews ADD COLUMN user_id TEXT")
+
+
+def create_user(db_path: Path, *, user_id: str, username: str, password_hash: str) -> bool:
+    """建账号；用户名已存在（UNIQUE 冲突）返回 False。username 由调用方保证已小写化。"""
+    try:
+        with _connect(db_path) as conn:
+            conn.execute(
+                "INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)",
+                (user_id, username, password_hash, _now()),
+            )
+    except sqlite3.IntegrityError:
+        return False
+    return True
+
+
+def get_user(db_path: Path, user_id: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user_by_username(db_path: Path, username: str) -> dict | None:
+    with _connect(db_path) as conn:
+        row = conn.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_orphan_interviews(db_path: Path, user_id: str) -> int:
+    """无归属场次（user_id IS NULL）归入该用户，返回认领数。
+
+    只在注册时调用：首个注册账号认领阶段 1 的历史数据；后续账号注册时已无 NULL 行，
+    自然认领 0 条（不依赖「用户数 == 0」判断，免并发竞态）。
+    """
+    with _connect(db_path) as conn:
+        return conn.execute(
+            "UPDATE interviews SET user_id=? WHERE user_id IS NULL", (user_id,)
+        ).rowcount
 
 
 def create_interview(
@@ -71,12 +126,22 @@ def create_interview(
     position: str,
     question_count: int,
     difficulty: str = "L1",
+    user_id: str | None = None,
 ) -> None:
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO interviews (id, thread_id, position, question_count, phase,"
-            " difficulty, status, started_at) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)",
-            (interview_id, interview_id, position, question_count, "intro", difficulty, _now()),
+            "INSERT INTO interviews (id, thread_id, user_id, position, question_count, phase,"
+            " difficulty, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            (
+                interview_id,
+                interview_id,
+                user_id,
+                position,
+                question_count,
+                "intro",
+                difficulty,
+                _now(),
+            ),
         )
 
 
@@ -138,10 +203,12 @@ def delete_interview(db_path: Path, interview_id: str) -> bool:
     return deleted > 0
 
 
-def list_interviews(db_path: Path, limit: int = 50) -> list[dict]:
+def list_interviews(db_path: Path, *, user_id: str, limit: int = 50) -> list[dict]:
+    """按用户过滤（FR-23）：user_id 必传，避免漏过滤导致跨用户泄漏。"""
     with _connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT * FROM interviews ORDER BY started_at DESC, id ASC LIMIT ?", (limit,)
+            "SELECT * FROM interviews WHERE user_id=? ORDER BY started_at DESC, id ASC LIMIT ?",
+            (user_id, limit),
         ).fetchall()
     return [dict(row) for row in rows]
 

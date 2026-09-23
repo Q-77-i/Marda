@@ -228,8 +228,13 @@ def update_difficulty(state) -> None:
 
 ## 7. API 契约
 
+**鉴权（FR-23）**：`/api/interviews/*` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）。
+
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
+| POST /api/auth/register | `{username, password}`（username 3–32 位 `[A-Za-z0-9_]`，**统一小写存储**；password 6–72） | **201** `{token, username}`；重名（含大小写变体）409 |
+| POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（不泄露账号是否注册，文案一致） |
+| GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
 | POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
@@ -249,14 +254,16 @@ def update_difficulty(state) -> None:
 
 工程要求：`stream_mode=["updates"]`（llm.py 走裸 openai SDK，无 LangChain messages token 流可推；打字机效果由前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
 
-## 8. 数据库（SQLite，阶段 1）
+## 8. 数据库（SQLite，阶段 2 仍 SQLite，PG 迁移推阶段 3）
 
 ```sql
 questions(id TEXT PK, question TEXT NOT NULL, answer TEXT NOT NULL,
   key_points JSON, follow_ups JSON, domain TEXT NOT NULL, topic TEXT NOT NULL,
   difficulty TEXT NOT NULL, company TEXT, round TEXT,
   source TEXT, license TEXT, url TEXT, status TEXT DEFAULT 'enabled')
-interviews(id TEXT PK, thread_id TEXT UNIQUE, position TEXT, question_count INT,
+users(id TEXT PK, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL, created_at TEXT)
+interviews(id TEXT PK, thread_id TEXT UNIQUE, user_id TEXT, position TEXT, question_count INT,
   phase TEXT, difficulty TEXT, status TEXT, started_at TEXT, ended_at TEXT)
 answers(id INTEGER PK AUTOINCREMENT, interview_id TEXT, question_id TEXT,
   domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT,
@@ -266,7 +273,9 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
 
-**删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（demo 单用户，逻辑删除的 `deleted_at` 过滤会污染所有查询）。
+**账号与归属（FR-23）**：密码 `hashlib.scrypt`（n=2^14/r=8/p=1，存储串自描述 `scrypt$n$r$p$salt$digest`）；JWT HS256，7 天有效，密钥 `JWT_SECRET` 走 `.env`（长度下限 32，弱密钥启动即失败）。归属列是 `interviews.user_id`——**checkpointer 不需要隔离**（thread_id = 全局唯一 uuid），业务库才是归属权威；隔离实现 = 列表按 user_id 过滤 + 其余端点先校验归属（`service._require_owner`）。老库启动时轻量迁移补 `user_id` 列（`PRAGMA table_info` 探测，阶段 1 的库免手工处理），历史孤儿行（`user_id IS NULL`）由首个注册账号认领一次（`claim_orphan_interviews`，不依赖「用户数为 0」判断，免并发竞态）。
+
+**删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（逻辑删除的 `deleted_at` 过滤会污染所有查询）。
 
 ### 8.1 多源扩充口径
 

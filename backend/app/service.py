@@ -142,8 +142,18 @@ class Service:
         snapshot = await self._g.aget_state({"configurable": {"thread_id": interview_id}})
         return _plain(snapshot.values)
 
-    async def check_can_send(self, interview_id: str) -> None:
+    async def _require_owner(self, interview_id: str, user_id: str) -> None:
+        """归属校验（FR-23）：业务库 interviews.user_id 为权威。
+
+        不存在与非本人一律按「不存在」抛出——不泄露场次存在性（与 SPEC §7 的 404 口径一致）。
+        """
+        row = await asyncio.to_thread(db.get_interview, self._settings.db_path, interview_id)
+        if row is None or row["user_id"] != user_id:
+            raise InterviewNotFoundError(interview_id)
+
+    async def check_can_send(self, interview_id: str, user_id: str) -> None:
         """发消息前置校验（route 层调用，保证 4xx 在流开始前返回）。"""
+        await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
         if not values:
             raise InterviewNotFoundError(interview_id)
@@ -165,8 +175,9 @@ class Service:
         async for event in self._run(state, config, state.model_dump()):
             yield event
 
-    async def send_message(self, interview_id: str, content: str) -> AsyncIterator[dict]:
+    async def send_message(self, interview_id: str, content: str, user_id: str) -> AsyncIterator[dict]:
         """resume 图到下一 interrupt 或结束；防御性复查（route 已查过）。"""
+        await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
         if not values:
             raise InterviewNotFoundError(interview_id)
@@ -209,20 +220,19 @@ class Service:
         )
         await asyncio.to_thread(db.finish_interview, self._settings.db_path, interview_id)
 
-    async def delete_interview(self, interview_id: str) -> None:
+    async def delete_interview(self, interview_id: str, user_id: str) -> None:
         """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表。
 
         checkpointer 先删（线程是会话权威，删后 resume 即 404），业务库三表再删；
         任一失败抛异常（500），保证不出现「列表没了但线程还在」的半删状态。
         """
-        exists = await asyncio.to_thread(db.get_interview, self._settings.db_path, interview_id)
-        if exists is None:
-            raise InterviewNotFoundError(interview_id)
+        await self._require_owner(interview_id, user_id)
         await self._g.checkpointer.adelete_thread(interview_id)
         await asyncio.to_thread(db.delete_interview, self._settings.db_path, interview_id)
 
-    async def get_session(self, interview_id: str) -> dict:
-        """UI 恢复数据（SPEC §7）：checkpoint 为权威。"""
+    async def get_session(self, interview_id: str, user_id: str) -> dict:
+        """UI 恢复数据（SPEC §7）：checkpoint 为权威，归属以业务库为准。"""
+        await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
         if not values:
             raise InterviewNotFoundError(interview_id)
@@ -237,11 +247,14 @@ class Service:
             "report_ready": values.get("status") == "finished",
         }
 
-    async def get_report(self, interview_id: str) -> dict | None:
+    async def get_report(self, interview_id: str, user_id: str) -> dict | None:
+        await self._require_owner(interview_id, user_id)
         return await asyncio.to_thread(db.get_report, self._settings.db_path, interview_id)
 
-    async def list_interviews(self, limit: int = 50) -> list[dict]:
-        rows = await asyncio.to_thread(db.list_interviews, self._settings.db_path, limit)
+    async def list_interviews(self, user_id: str, limit: int = 50) -> list[dict]:
+        rows = await asyncio.to_thread(
+            db.list_interviews, self._settings.db_path, user_id=user_id, limit=limit
+        )
         for row in rows:
             row["report_ready"] = row["status"] == "finished"
         return rows

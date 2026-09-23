@@ -2,9 +2,10 @@
 
 用法：cd backend && uv run python scripts/smoke_api.py
 
-流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → POST 创建（SSE 开场）→
-循环 POST 消息到 done → GET 报告 + 会话恢复 + 历史列表，验证落库。
-依赖：.env（DEEPSEEK_API_KEY）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
+流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → 注册账号（FR-23）→ 反向验证
+未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 会话恢复 +
+历史列表 → 核对场次归属，验证落库与用户隔离。
+依赖：.env（DEEPSEEK_API_KEY / JWT_SECRET）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
 
 隔离（T7a-R1）：业务库与 checkpointer 落 /tmp 临时文件，验证不污染正式数据
 （题库 Qdrant 只读，不受影响）。
@@ -44,6 +45,10 @@ from app.config import get_settings
 
 PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
+
+# 账号（FR-23）：临时库每次全新，用时间戳保证用户名不撞（规则 [A-Za-z0-9_]，3-32）
+SMOKE_USER = f"smoke_{int(time.time())}"
+SMOKE_PASSWORD = "smoke-secret-123"
 
 # 预置候选人回答（smoke 只验证链路，不验证回答质量；数量不足时循环喂通用作答）
 CANDIDATE_ANSWERS = [
@@ -99,6 +104,25 @@ async def main() -> None:
         print("=" * 60)
 
         async with httpx.AsyncClient(timeout=120) as client:
+            # 账号（FR-23）：注册即登录，后续请求全部带 Bearer
+            r = await client.post(
+                f"{BASE}/api/auth/register",
+                json={"username": SMOKE_USER, "password": SMOKE_PASSWORD},
+            )
+            assert r.status_code == 201, f"注册失败: {r.status_code} {r.text}"
+            token = r.json()["token"]
+            client.headers["Authorization"] = f"Bearer {token}"
+            me = (await client.get(f"{BASE}/api/auth/me")).json()
+            print(f"账号 OK：{SMOKE_USER}（id={me['id'][:8]}…）")
+            # 反向验证：未登录必须被拦
+            async with httpx.AsyncClient(timeout=30) as anon:
+                for path in ("/api/interviews", "/api/auth/me"):
+                    assert (await anon.get(f"{BASE}{path}")).status_code == 401, f"{path} 未拦截"
+                assert (await anon.post(
+                    f"{BASE}/api/interviews", json={"position": "x", "question_count": 2}
+                )).status_code == 401
+            print("未登录 401 OK（GET 列表 / GET me / POST 创建）")
+
             # 创建面试（SSE 开场）
             async with client.stream(
                 "POST", f"{BASE}/api/interviews",
@@ -186,7 +210,9 @@ async def main() -> None:
                 "SELECT COUNT(*) FROM answers WHERE interview_id=?", (interview_id,)
             ).fetchone()[0]
         row = db.get_interview(get_settings().db_path, interview_id)
-        print(f"落库 OK：answers {count} 行，interviews status={row['status']}")
+        assert row["user_id"] == me["id"], "场次未归属到当前用户"
+        print(f"落库 OK：answers {count} 行，interviews status={row['status']}，"
+              f"归属 user_id={row['user_id'][:8]}…")
         print("\nsmoke 完成 ✓")
     finally:
         proc.terminate()

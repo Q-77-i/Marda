@@ -3,6 +3,7 @@
 覆盖：创建/消息 SSE 事件序、完整一场落库（answers/reports/interviews）、
 会话恢复、历史列表、错误路径（404/400/409/422/LLM 失败 SSE error）。全部离线。
 
+共享 fixture 见 tests/integration/conftest.py（client 已带登录态）；
 SSE 响应由 httpx 逐行解析（不引第三方解析库）；心跳 ping=15s 测试内不会触发。
 """
 
@@ -12,73 +13,15 @@ import json
 import sqlite3
 from types import SimpleNamespace
 
-import httpx
 import pytest
 
 from app import db, llm
 from app.config import get_settings
-from app.main import app
-from app.tools import question_search
 from fake_llm import FakeLLMClient
 
 # 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 技术 + 1 场景 → 2 反问 → 报告）
 TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……",
          "场景题方案是……", "请问团队技术栈？", "晋升路径？"]
-
-
-def _bank() -> dict:
-    def _item(qid: str, domain: str) -> dict:
-        return {
-            "question_id": qid, "question": f"{domain} 方向的题目", "answer": "参考答案",
-            "key_points": ["k1"], "follow_ups": [], "domain": domain,
-            "topic": "测试主题", "difficulty": "L1", "company": None, "round": "一面",
-        }
-
-    return {
-        ("agent-architecture", "L1"): [_item("q_arch", "agent-architecture")],
-        ("rag", "L1"): [_item("q_rag", "rag")],
-    }
-
-
-@pytest.fixture(autouse=True)
-def _test_env(monkeypatch, tmp_path):
-    """注入假密钥与 tmp 库路径（get_settings 需要；同 T4 模式）。"""
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
-    monkeypatch.setenv("SILICONFLOW_API_KEY", "test-key")
-    monkeypatch.setenv("DB_PATH", str(tmp_path / "marda.sqlite3"))
-    monkeypatch.setenv("CHECKPOINT_DB_PATH", str(tmp_path / "ckpt.sqlite3"))
-    llm.get_settings.cache_clear()
-    yield
-    llm.get_settings.cache_clear()
-
-
-@pytest.fixture
-def install_search(monkeypatch):
-    def _install(bank: dict | None = None):
-        items = [i for group in (bank or {}).values() for i in group]
-
-        async def _search(*, domain, difficulty, exclude_ids=None, k=3):
-            return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
-                    and i["question_id"] not in (exclude_ids or [])][:k]
-
-        async def _reference_answers(question_ids):
-            return {i["question_id"]: i["answer"] for i in items if i["question_id"] in question_ids}
-
-        monkeypatch.setattr(question_search, "search_questions", _search)
-        monkeypatch.setattr(question_search, "fetch_reference_answers", _reference_answers)
-
-    return _install
-
-
-@pytest.fixture
-async def client(monkeypatch, install_search):
-    """app 生命周期内（lifespan_context 管理 service 起停）的 ASGI httpx 客户端。"""
-    monkeypatch.setattr(llm, "_get_client", lambda: FakeLLMClient())
-    install_search(_bank())
-    transport = httpx.ASGITransport(app=app)
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-            yield c
 
 
 async def _events(response) -> list[dict]:

@@ -51,7 +51,7 @@ docs/               PRD / SPEC（个人规划文档不进仓库）
 ### 一键起（演示 / 验收，Docker）
 
 ```bash
-cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY
+cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / JWT_SECRET
 docker compose up -d --build  # → http://localhost:8080
 ```
 
@@ -70,6 +70,8 @@ cd frontend && pnpm install && pnpm dev         # http://localhost:3000
 ```
 DEEPSEEK_API_KEY=
 SILICONFLOW_API_KEY=
+JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 会启动即失败
+                   # python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
 ## LLM 封装
@@ -97,13 +99,16 @@ SILICONFLOW_API_KEY=
 - **断线续面**：checkpointer（SQLite）以场次为粒度持久化，中断后 resume 状态一致（集成测试覆盖）
 
 ```bash
-uv run pytest -q                                    # 后端 143 个测试
+uv run pytest -q                                    # 后端 174 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
 ## API（SSE 流式）
 
-[backend/app/api/](backend/app/api/) 提供面试 REST API，契约定在 SPEC §7：SSE 流式（`meta` / `delta` / `question` / `done` / `error` 事件，首事件携带 `interview_id`）、会话恢复、报告与历史查询、场次物理删除；过程状态以 checkpoint 为权威，结束一次落库三表。
+[backend/app/api/](backend/app/api/) 提供面试 REST API，契约定在 SPEC §7：SSE 流式（`meta` / `delta` / `question` / `done` / `error` 事件，首事件携带 `interview_id`）、会话恢复、报告与历史查询、场次物理删除；过程状态以 checkpoint 为权威，结束一次落库。
+
+- **账号（FR-23）**：[app/api/auth.py](backend/app/api/auth.py) 提供注册 / 登录 / 当前用户，JWT 全端点鉴权（Bearer）。密码 scrypt 加盐哈希、用户名字母大小写不敏感；场次按 `user_id` 隔离，跨用户访问按「不存在」404（不泄露存在性），阶段 1 的历史场次由首个注册账号认领
+- **鉴权细节**：401 与 404 的分工——未登录/失效 token 401；他人场次 404（与「场次不存在」不可区分）
 
 ```bash
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
@@ -144,7 +149,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro），后续 M2–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系后端已完成**（注册登录 + JWT 鉴权 + 多用户隔离），前端登录页为 M2 第二会话。后续 M3–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

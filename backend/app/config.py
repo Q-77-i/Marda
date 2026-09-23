@@ -3,6 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # backend/app/config.py → 项目根目录
@@ -21,6 +22,10 @@ class Settings(BaseSettings):
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-flash"
     deepseek_pro_model: str = "deepseek-v4-pro"  # 深度档：报告生成（SPEC §3）
+
+    # 账号（FR-23）：JWT 签名密钥，本地 .env 生成随机值（不进仓库）；
+    # 长度下限 32（HS256 推荐）：弱密钥启动即报错，而不是静默签出可爆破的 token
+    jwt_secret: str = Field(min_length=32)
 
     # 嵌入（SiliconFlow BGE-M3，demo 阶段）
     siliconflow_api_key: str
