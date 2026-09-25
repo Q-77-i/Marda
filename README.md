@@ -114,7 +114,7 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 - **鉴权细节**：401 与 404 的分工——未登录/失效 token 401；他人场次 404（与「场次不存在」不可区分）
 - **`GET /interviews/{id}/trace`**：决策回放事件流（未结束的场次同样可查，做实时决策视图）
 
-**可观测（P1-M4）**：[app/observability.py](backend/app/observability.py) 把 Langfuse 接在轮次这一层——trace_id 由场次 id 派生，所以一场面试的多次 resume 落进同一个 trace（不是散成 N 个），`session_id` = 场次、`user_id` = 账号；LLM 调用经 `langfuse.openai` drop-in 自动成为带 usage 的 generation，token 成本按场次/按人可聚合。**没配 key 就整体降级为零开销**：不 import、不构造客户端、不联网，本地与 CI 无需账号。接线由单测离线钉死（注入内存导出器），「云端按场次可查」是人工核对项——smoke 末行直接打印该场次的 trace_id 供抄进控制台。
+**可观测（P1-M4）**：[app/observability.py](backend/app/observability.py) 把 Langfuse 接在轮次这一层——trace_id 由场次 id 派生，所以一场面试的多次 resume 落进同一个 trace（不是散成 N 个），`session_id` = 场次、`user_id` = 账号；LLM 调用经 `langfuse.openai` drop-in 自动成为带 usage 的 generation，token 成本按场次/按人可聚合。**没配 key 就整体降级为零开销**：不 import、不构造客户端、不联网，本地与 CI 无需账号。接线由单测离线钉死（注入内存导出器），「云端按场次可查」由 smoke 读回核对——按场次派生 trace_id 把观测拉回来，断言 session_id/user_id 归属、generation 归父、模型名（含报告走深度档）与 token/成本汇总，不靠抄 id 到控制台肉眼比对。**成本金额的单位是人民币**（Langfuse 的 `$` 是它硬编码的符号），前端显示一律 `¥` + 数值原样，不按汇率换算。
 
 ```bash
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证

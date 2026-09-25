@@ -234,8 +234,9 @@ def update_difficulty(state) -> None:
 - 每轮 `service._run` 整轮包在 `observability.turn_span()` 里（`propagate_attributes` + `start_as_current_observation`），LLM 调用经 `langfuse.openai` drop-in 自动成为 generation（带 usage）并挂在轮次 span 下；
 - **无 key 时整体降级为零开销**：不 import langfuse、不构造客户端、不联网，本地与 CI 无需账号（`.env` 缺 `LANGFUSE_*` 即此路径）；
 - 配置：`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`（默认 `https://cloud.langfuse.com`），走 `.env` 不进仓库；上报由 SDK 异步批量完成，面试主链路不等待（上报失败的可观测性留阶段 3）。
+- **成本金额的单位是人民币**：Langfuse 返回的数值就是人民币，控制台里的 `$` 是它硬编码的符号 → **前端一律显示 `¥` + 数值原样**（`0.0556` → `¥0.0556`），**禁止按汇率换算**。成本靠项目侧价格表（Settings → Models）匹配，配了才有值，为 0 属配置缺失而非链路故障。
 
-**验证口径**：接线由单测离线固化（注入 `InMemorySpanExporter`：同场次多轮同 trace_id、generation 挂在轮次 span 下、无 key 时零开销）；**「按场次可查」是人工核对项**——配好云 key 后跑 `scripts/smoke_api.py`，末行直接打印该场次的 trace_id 与 session_id，抄进控制台核对。
+**验证口径**：接线由单测离线固化（注入 `InMemorySpanExporter`：同场次多轮同 trace_id、generation 挂在轮次 span 下、无 key 时零开销）；**「按场次可查」由 smoke 读回核对**——`scripts/smoke_api.py` 按场次派生 trace_id 把观测从云端读回来，断言 session_id/user_id 归属、generation 归父、模型名（含报告走深度档）与 token/成本汇总，不靠抄 id 到控制台肉眼比对。
 
 ## 5. RAG
 

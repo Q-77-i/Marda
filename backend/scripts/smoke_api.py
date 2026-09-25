@@ -99,12 +99,17 @@ def _model_of(obs) -> str | None:
     return getattr(obs, "model", None) or (obs.model_extra or {}).get("model")
 
 
-async def _fetch_observations(langfuse_client, trace_id: str) -> list:
-    """读回云端观测（v2 observations API）；上报是异步批量的，等视图闭合再返回。
+async def _fetch_observations(langfuse_client, trace_id: str, *, report_model: str) -> list:
+    """读回云端观测（v2 observations API）；上报是异步批量的，等观测落全再返回。
 
-    等的是**树闭合**而不是「非空」：观测是逐条落库的，只判非空会拿到半棵树（generation
-    已到、它挂的轮次 span 还没到），此时的父子断言必然误报。判据 = 所有 generation 的
-    父节点都在返回集内。
+    判据三条，缺一都会拿到**偏小的快照**（断言本身不会错，但打印的轮次数/token/成本会少算，
+    实测漏过 2 个 span + 2 个 generation + 整条报告调用）：
+
+    1. **树闭合**——所有 generation 的父节点都在返回集内。观测逐条落库，只判「非空」会拿到
+       半棵树（generation 已到、它挂的轮次 span 还没到），此时的父子断言必然误报。
+    2. **报告调用已到**——报告是全场最后一次 LLM 调用，落库最晚，是「这一场观测齐了」的
+       天然哨兵；顺带把 SPEC §3「报告走深度档」变成断言。
+    3. **连续两次条数不变**——收尾确认没有更晚落下的观测。
 
     走 v2 而非 `api.trace.get`：**Langfuse 对 2026-09-16 之后新建的组织停用了 legacy
     trace 端点**（410 LEGACY_API_UNAVAILABLE_FOR_NEW_ORGANIZATION），v4 云上读数据只有
@@ -112,6 +117,7 @@ async def _fetch_observations(langfuse_client, trace_id: str) -> list:
     """
     last: Exception | None = None
     data: list = []
+    stable = 0
     for _ in range(30):
         try:
             # SDK 的 API 客户端是同步 httpx，扔线程池，别卡事件循环
@@ -119,11 +125,19 @@ async def _fetch_observations(langfuse_client, trace_id: str) -> list:
                 langfuse_client.api.observations.get_many,
                 trace_id=trace_id, fields="core,basic,usage,model", limit=100,
             )
-            data = resp.data
-            ids = {o.id for o in data}
-            if data and all(o.parent_observation_id in ids for o in data if o.type == "GENERATION"):
+            page = resp.data
+            ids = {o.id for o in page}
+            gens = [o for o in page if o.type == "GENERATION"]
+            done = (
+                bool(page)
+                and all(o.parent_observation_id in ids for o in gens)
+                and any(_model_of(o) == report_model for o in gens)
+            )
+            stable = stable + 1 if done and len(page) == len(data) else 0
+            last = RuntimeError(f"观测尚未落全（当前 {len(page)} 条）")
+            data = page
+            if stable >= 2:
                 return data
-            last = RuntimeError(f"观测尚未落全（当前 {len(data)} 条）")
         except Exception as exc:  # 未落库时是空/404，其余错误同样重试到超时
             last = exc
         await asyncio.sleep(1)
@@ -281,7 +295,8 @@ async def main() -> None:
                 lf = observability.get_client()
                 trace_id = lf.create_trace_id(seed=interview_id)
                 observability.flush()
-                obs = await _fetch_observations(lf, trace_id)
+                report_model = get_settings().deepseek_pro_model
+                obs = await _fetch_observations(lf, trace_id, report_model=report_model)
                 turns = [o for o in obs if o.name == "interview-turn"]
                 gens = [o for o in obs if o.type == "GENERATION"]
                 shapes = [(o.name, o.type) for o in obs]
@@ -294,11 +309,12 @@ async def main() -> None:
                     "generation 未挂在轮次 span 下"
                 models = {_model_of(g) for g in gens}
                 assert models and None not in models, f"generation 未带模型名（成本归属前提）：{models}"
+                assert report_model in models, f"报告未走深度档 {report_model}（SPEC §3）：{models}"
                 tokens = sum((g.usage_details or {}).get("total", 0) for g in gens)
                 cost = sum((g.cost_details or {}).get("total", 0) for g in gens)
                 print(f"Langfuse OK：trace_id={trace_id} session_id={interview_id}")
                 print(f"  轮次 span {len(turns)} 个 / generation {len(gens)} 个 "
-                      f"（模型 {sorted(models)}，token {tokens}，成本 ${cost:.4f}）")
+                      f"（模型 {sorted(models)}，token {tokens}，成本 ¥{cost:.4f}）")
                 if cost == 0:  # 成本靠价格表匹配，配不配不属于代码验收项，给条提示就好
                     print("  ⚠ 成本为 0：Langfuse 项目里没有这些模型的价格定义"
                           "（Settings → Models 按 DeepSeek 官方价目加一条即可）")
