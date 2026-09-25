@@ -307,3 +307,57 @@ async def test_LLM失败发error事件(client, monkeypatch):
     assert len(errs) == 1
     assert errs[0]["data"]["code"] == "llm_error"
     assert errs[0]["data"]["retryable"] is False
+
+
+# ---- 决策回放接口（P1-M4 / FR-21）----
+
+
+async def test_回放_整场事件流可查(client):
+    """一次面试的决策证据按场次取回；未结束的场次也能看（回放不依赖报告）。"""
+    interview_id, _ = await _create(client)
+    r = await client.get(f"/api/interviews/{interview_id}/trace")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["events"] == []  # 仅开场，尚无决策
+    assert data["status"] == "running"
+    assert data["question_count"] == 2
+    assert data["answered_count"] == 0
+    assert data["position"] == "Agent/AI 工程师"
+
+    for turn in TURNS:
+        await _send(client, interview_id, turn)
+
+    data = (await client.get(f"/api/interviews/{interview_id}/trace")).json()
+    assert data["status"] == "finished"
+    assert data["answered_count"] == 2
+    types = [e["type"] for e in data["events"]]
+    assert types[0] == "ask" and types[-1] == "report"
+    # 逐轮归属：技术题 1 / 场景题 2，收尾事件无轮次
+    assert [e["round"] for e in data["events"] if e["type"] == "ask"] == [1, 2]
+    assert data["events"][-1]["round"] is None
+    # 事件细节经 JSON 序列化后完整（score 为标量 dict，不是 Pydantic 对象）
+    ask = data["events"][0]["detail"]
+    assert ask["question_id"] == "q_arch" and ask["from_bank"] is True
+    judge = next(e for e in data["events"] if e["type"] == "judge")
+    assert judge["detail"]["answer"] == TURNS[1]
+    assert judge["detail"]["score"]["technical_depth"] == 4
+    assert judge["detail"]["coverage"] == 1.0
+
+
+async def test_回放_他人场次与不存在同为404(client, login_as):
+    interview_id, _ = await _create(client)
+    other = await login_as("bob")
+    r = await other.get(f"/api/interviews/{interview_id}/trace")
+    assert r.status_code == 404  # 不泄露场次存在性（FR-23 口径）
+    assert (await client.get("/api/interviews/nope/trace")).status_code == 404
+
+
+async def test_回放_删除场次后404(client):
+    interview_id, _ = await _create(client)
+    await _send(client, interview_id, TURNS[0])
+    assert (await client.delete(f"/api/interviews/{interview_id}")).status_code == 204
+    assert (await client.get(f"/api/interviews/{interview_id}/trace")).status_code == 404
+
+
+async def test_回放_未登录401(anon_client):
+    assert (await anon_client.get("/api/interviews/whatever/trace")).status_code == 401

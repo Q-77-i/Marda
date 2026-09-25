@@ -52,7 +52,7 @@ async def create_interview(
         user_id=user["id"],
     )
     return EventSourceResponse(
-        service.start_interview(interview_id, req.position, req.question_count),
+        service.start_interview(interview_id, req.position, req.question_count, user_id=user["id"]),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),
@@ -101,6 +101,18 @@ async def get_interview_report(
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
     return {"interview_id": interview_id, "report": row["payload"], "created_at": row["created_at"]}
+
+
+@router.get("/{interview_id}/trace")
+async def get_interview_trace(
+    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """决策回放事件流（FR-21）：未结束的场次同样可查。"""
+    service = request.app.state.service
+    try:
+        return await service.get_trace(interview_id, user["id"])
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="面试不存在") from exc
 
 
 @router.get("")

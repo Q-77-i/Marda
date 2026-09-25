@@ -7,7 +7,7 @@ from app.agents.prompts import REPORT_TEMPLATE
 from app.agents.schemas import ReportLLM
 from app.config import get_settings
 from app.graph.rules.aggregate import aggregate_scores, build_per_question_comments
-from app.graph.state import InterviewState, Phase, QuestionRecord
+from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_trace
 from app.tools import question_search
 
 
@@ -38,7 +38,13 @@ async def report_node(state: InterviewState) -> dict:
         ),
         "study_advice": [a.model_dump() for a in llm_part.study_advice],
     }
-    return {"report": report, "status": "finished", "phase": Phase.FINISHED}
+    # 回放证据（FR-21）：收尾事件（不属任何轮次）
+    add_trace(state, TraceEvent.REPORT, {
+        "answered_count": state.answered_count,
+        "question_count": state.question_count,
+        "weaknesses": report["weaknesses"],
+    })
+    return {"report": report, "status": "finished", "phase": Phase.FINISHED, "trace_log": state.trace_log}
 
 
 async def _load_reference_answers(questions: list[QuestionRecord]) -> dict[str, str]:

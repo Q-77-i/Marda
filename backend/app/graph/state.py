@@ -16,6 +16,17 @@ from pydantic import BaseModel, Field
 FOLLOWUP_ANSWER_MARKER = "【追问补充】"
 
 
+class TraceEvent(str, Enum):
+    """决策回放事件类型（P1-M4 / FR-21）：语义由后端定义，前端只消费。"""
+
+    ASK = "ask"  # 出题：目标域/难度 → 检索工具输出 → 新题
+    JUDGE = "judge"  # 评分：我的回答 → 五维/覆盖率 → 难度状态变化
+    FOLLOWUP = "followup"  # 追问决策：决策 + 原因 + 追问文案
+    ADVANCE = "advance"  # 换题：换题原因 + 阶段推进
+    END_REFUSED = "end_refused"  # 主动结束未达门槛被挽留（PRD §4.5）
+    REPORT = "report"  # 收尾：报告生成
+
+
 def merge_answer(previous: str | None, current: str) -> str:
     """合并同一题的多轮作答（SPEC §4.1）：首答原样，追问补充带标记追加。"""
     if not previous:
@@ -116,6 +127,7 @@ class InterviewState(BaseModel):
     chat_history: list[dict] = []
     report: dict | None = None
     status: str = "running"  # running / finished
+    trace_log: list[dict] = []  # 决策回放事件流（P1-M4 / FR-21）：只增不改，见 add_trace
 
 
 def add_history(state: InterviewState, role: str, content: str) -> None:
@@ -128,3 +140,21 @@ def add_history(state: InterviewState, role: str, content: str) -> None:
     chat_history 不参与 prompt 组装。）
     """
     state.chat_history.append({"role": role, "content": content})
+
+
+def add_trace(
+    state: InterviewState,
+    event_type: TraceEvent,
+    detail: dict,
+    *,
+    round_no: int | None = None,
+) -> None:
+    """追加决策回放事件（原地，节点显式返回该字段）。只增不改。
+
+    - `round` = 事件所属问答轮次（1 起）；与报告 `number` 同语义（后端定义，前端按它分组）。
+      无轮次归属的事件（报告收尾）传 None。
+    - trace_log 存的是**决策证据**（工具输出/原因/状态变化），题目与回答的正文在节点里
+      本就带出，不做二次快照——回放接口直接把它序列化给前端（服务层 `_plain` 负责归一）。
+    - `detail` 必须是纯标量结构（Enum/模型对象不许直接塞，见 SPEC §4.7）。
+    """
+    state.trace_log.append({"type": event_type.value, "round": round_no, "detail": detail})

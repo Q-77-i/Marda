@@ -19,7 +19,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from app import db, llm
+from app import db, llm, observability
 from app.config import Settings
 from app.graph.graph import build_graph, make_serde, run_config
 from app.graph.state import InterviewState
@@ -130,6 +130,7 @@ class Service:
         conn, self._conn = self._conn, None
         if conn is not None:
             await conn.close()
+        observability.flush()  # 冲刷 Langfuse 缓冲（未配置时为空操作）
 
     @property
     def _g(self):
@@ -161,7 +162,7 @@ class Service:
             raise InterviewFinishedError(interview_id)
 
     async def start_interview(
-        self, interview_id: str, position: str, question_count: int
+        self, interview_id: str, position: str, question_count: int, user_id: str = ""
     ) -> AsyncIterator[dict]:
         """创建场次后立即执行开场（SPEC §7）：首事件 meta 携带 interview_id。"""
         state = InterviewState(
@@ -172,7 +173,7 @@ class Service:
             "interview_id": interview_id, "phase": "intro",
             "answered_count": 0, "question_count": question_count,
         })
-        async for event in self._run(state, config, state.model_dump()):
+        async for event in self._run(state, config, state.model_dump(), user_id=user_id):
             yield event
 
     async def send_message(self, interview_id: str, content: str, user_id: str) -> AsyncIterator[dict]:
@@ -184,32 +185,38 @@ class Service:
         if values.get("status") == "finished":
             raise InterviewFinishedError(interview_id)
         config = run_config(interview_id, values["question_count"])
-        async for event in self._run(Command(resume=content), config, values):
+        async for event in self._run(Command(resume=content), config, values, user_id=user_id):
             yield event
 
-    async def _run(self, input_value: Any, config: dict, initial_values: dict) -> AsyncIterator[dict]:
-        """跑图至 interrupt/END，翻译 updates 为 SSE 事件；结束时落库并发 done。"""
+    async def _run(
+        self, input_value: Any, config: dict, initial_values: dict, *, user_id: str = ""
+    ) -> AsyncIterator[dict]:
+        """跑图至 interrupt/END，翻译 updates 为 SSE 事件；结束时落库并发 done。
+
+        整轮包在 Langfuse trace 上下文里（P1-M4）：trace_id 由场次派生，多轮 resume 同 trace。
+        """
         interview_id = config["configurable"]["thread_id"]
         snapshot = _plain(initial_values)
-        try:
-            # langgraph 1.2 单 stream_mode 时每次产出 (mode, {node: updates}) 二元组
-            async for item in self._g.astream(input_value, config=config, stream_mode=["updates"]):
-                _, chunk = item
-                events, snapshot = map_updates(chunk, snapshot, interview_id=interview_id)
-                for event in events:
-                    yield event
-            values = _plain((await self._g.aget_state(config)).values)
-            if values.get("status") == "finished":
-                await self._persist(interview_id, values)
-                yield _event("done", {"interview_id": interview_id, "report_ready": True})
-        except llm.LLMError as exc:
-            yield _event("error", {
-                "code": "llm_error", "message": str(exc), "retryable": exc.retryable,
-            })
-        except GraphRecursionError:
-            yield _event("error", {
-                "code": "recursion_error", "message": "面试流程超出步数上限，请稍后重试",
-            })
+        with observability.turn_span(interview_id, user_id=user_id):
+            try:
+                # langgraph 1.2 单 stream_mode 时每次产出 (mode, {node: updates}) 二元组
+                async for item in self._g.astream(input_value, config=config, stream_mode=["updates"]):
+                    _, chunk = item
+                    events, snapshot = map_updates(chunk, snapshot, interview_id=interview_id)
+                    for event in events:
+                        yield event
+                values = _plain((await self._g.aget_state(config)).values)
+                if values.get("status") == "finished":
+                    await self._persist(interview_id, values)
+                    yield _event("done", {"interview_id": interview_id, "report_ready": True})
+            except llm.LLMError as exc:
+                yield _event("error", {
+                    "code": "llm_error", "message": str(exc), "retryable": exc.retryable,
+                })
+            except GraphRecursionError:
+                yield _event("error", {
+                    "code": "recursion_error", "message": "面试流程超出步数上限，请稍后重试",
+                })
 
     async def _persist(self, interview_id: str, values: dict) -> None:
         """结束后一次落库（SPEC §8）：answers + report + interviews 收尾。"""
@@ -250,6 +257,25 @@ class Service:
     async def get_report(self, interview_id: str, user_id: str) -> dict | None:
         await self._require_owner(interview_id, user_id)
         return await asyncio.to_thread(db.get_report, self._settings.db_path, interview_id)
+
+    async def get_trace(self, interview_id: str, user_id: str) -> dict:
+        """决策回放数据（FR-21）：checkpoint 是权威，逐场取事件流。
+
+        未结束的场次同样可看（实时决策视图）；旧场次（P1-M4 之前的线程）无 trace_log
+        → 空列表，前端提示「该场次未记录决策」。
+        """
+        await self._require_owner(interview_id, user_id)
+        values = await self._current_values(interview_id)
+        if not values:
+            raise InterviewNotFoundError(interview_id)
+        return {
+            "interview_id": interview_id,
+            "position": values.get("position", ""),
+            "status": values.get("status", "running"),
+            "answered_count": values.get("answered_count", 0),
+            "question_count": values.get("question_count", 0),
+            "events": values.get("trace_log", []),
+        }
 
     async def list_interviews(self, user_id: str, limit: int = 50) -> list[dict]:
         rows = await asyncio.to_thread(

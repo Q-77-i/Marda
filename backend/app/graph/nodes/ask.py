@@ -11,15 +11,17 @@ from app.agents.schemas import GeneratedQuestion
 from app.domain import DOMAIN_LABELS
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
-from app.graph.state import InterviewState, Phase, QuestionRecord, add_history
+from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
 from app.tools import question_search
 
 
 async def ask_node(state: InterviewState) -> dict:
     if state.phase is Phase.PROJECT:
-        question = await _generate_scenario(state)
+        question, hits = await _generate_scenario(state), 0
     else:
-        question = await _pick_from_bank(state) or await _generate_tech(state)
+        question, hits = await _pick_from_bank(state)
+        if question is None:
+            question, hits = await _generate_tech(state), 0
     text = await llm.chat(
         [{"role": "system", "content": ASK_BANK_TEMPLATE.format(question=question.text)}]
     )
@@ -27,10 +29,21 @@ async def ask_node(state: InterviewState) -> dict:
     state.current_question = question
     if question.question_id:
         state.asked_ids.append(question.question_id)
+    # 回放证据（FR-21）：输入 = 配额选定的域/难度，工具输出 = 检索命中情况
+    add_trace(state, TraceEvent.ASK, {
+        "domain": question.domain,
+        "difficulty": question.difficulty,
+        "question_type": question.question_type,
+        "from_bank": question.from_bank,
+        "question_id": question.question_id,
+        "question": question.text,
+        "hits": hits,
+    }, round_no=state.answered_count + 1)
     updates: dict = {
         "current_question": question,
         "asked_ids": state.asked_ids,
         "chat_history": state.chat_history,
+        "trace_log": state.trace_log,
     }
     # 首次出题（WARMUP 之后）：进入技术问答阶段
     if state.phase not in (Phase.TECH_BASE, Phase.PROJECT):
@@ -38,8 +51,11 @@ async def ask_node(state: InterviewState) -> dict:
     return updates
 
 
-async def _pick_from_bank(state: InterviewState) -> QuestionRecord | None:
-    """配额选域 + 难度放宽检索（原难度 → ±1，保底 L1 封顶 L3）。"""
+async def _pick_from_bank(state: InterviewState) -> tuple[QuestionRecord | None, int]:
+    """配额选域 + 难度放宽检索（原难度 → ±1，保底 L1 封顶 L3）。
+
+    返回 (题目, 命中候选数)；命中候选数进回放事件（工具输出），未命中返回 (None, 0)。
+    """
     domain = pick_domain(state)
     for difficulty in _relax(state.difficulty):
         candidates = await question_search.search_questions(
@@ -54,8 +70,8 @@ async def _pick_from_bank(state: InterviewState) -> QuestionRecord | None:
                 topic=item["topic"],
                 difficulty=item["difficulty"],
                 key_points=item["key_points"],
-            )
-    return None
+            ), len(candidates)
+    return None, 0
 
 
 def _relax(difficulty: str) -> list[str]:

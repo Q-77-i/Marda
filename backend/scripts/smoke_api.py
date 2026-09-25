@@ -3,8 +3,8 @@
 用法：cd backend && uv run python scripts/smoke_api.py
 
 流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → 注册账号（FR-23）→ 反向验证
-未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 会话恢复 +
-历史列表 → 核对场次归属，验证落库与用户隔离。
+未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 决策回放
+（FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
 依赖：.env（DEEPSEEK_API_KEY / JWT_SECRET）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
 
 隔离（T7a-R1）：业务库与 checkpointer 落 /tmp 临时文件，验证不污染正式数据
@@ -40,7 +40,7 @@ with sqlite3.connect(os.environ["DB_PATH"]) as _dst:
 
 import httpx
 
-from app import db
+from app import db, observability
 from app.config import get_settings
 
 PORT = 8765
@@ -194,6 +194,56 @@ async def main() -> None:
                       f"覆盖{len(item['covered_key_points'])}/遗漏{len(item['missed_key_points'])}"
                       f" · {item['comment'][:24]}…")
 
+            # 决策回放（FR-21）：整场事件流一次取回，逐轮证据自包含
+            r = await client.get(f"{BASE}/api/interviews/{interview_id}/trace")
+            assert r.status_code == 200, f"回放查询失败: {r.status_code}"
+            trace = r.json()
+            events = trace["events"]
+            types = [e["type"] for e in events]
+            asked = [e["round"] for e in events if e["type"] == "ask"]
+            assert trace["status"] == "finished"
+            assert trace["answered_count"] == trace["question_count"] == 2  # 本场 1 技术 + 1 场景
+            assert types[0] == "ask" and types[-1] == "report", f"事件流首尾异常：{types}"
+            assert asked == [1, 2], f"出题轮次应为 1..question_count：{asked}"
+            assert set(types) <= {"ask", "judge", "followup", "advance", "end_refused", "report"}
+            print("=" * 60)
+            print("决策回放（FR-21）：逐轮事件流")
+            print("=" * 60)
+            for e in events:
+                d = e["detail"]
+                if e["type"] == "ask":
+                    print(f"  第{e['round']}轮 ASK      [{d['domain']}/{d['difficulty']}/{d['question_type']}] "
+                          f"{'题库' if d['from_bank'] else '生成'} 候选{d['hits']} · {d['question'][:26]}…")
+                elif e["type"] == "judge":
+                    five = {k: d["score"][k] for k in
+                            ("technical_depth", "fundamentals", "project_experience",
+                             "communication", "problem_solving")}
+                    print(f"  第{e['round']}轮 JUDGE    覆盖率={d['coverage']} "
+                          f"难度={d['difficulty']}{'(变)' if d['difficulty_changed'] else ''} "
+                          f"五维={list(five.values())}")
+                elif e["type"] == "followup":
+                    print(f"  第{e['round']}轮 FOLLOWUP 决策={d['decision']} 原因={d['reason']} "
+                          f"· {d['text'][:22]}…")
+                elif e["type"] == "advance":
+                    print(f"  第{e['round']}轮 ADVANCE  换题原因={d['reason']} 阶段={d['phase']}")
+                elif e["type"] == "end_refused":
+                    print(f"  第{e['round']}轮 END_REFUSED {d['answered_count']}/{d['threshold']} 未达门槛")
+                else:
+                    print(f"  REPORT  {d['answered_count']}/{d['question_count']} 短板={d['weaknesses']}")
+            # 回放三要素（SPEC §7）：每题有序号、轮次单调、追问决策与原因同源
+            rounds = [e["round"] for e in events if e["round"] is not None]
+            assert rounds == sorted(rounds), f"轮次非单调：{rounds}"
+            assert all(e["detail"] for e in events), "事件 detail 不得为空"
+            print(f"回放 OK：{len(events)} 个事件 / 轮次 1-{max(rounds)}")
+
+            # Langfuse（P1-M4）：按场次可查的 trace_id 可直接抄进控制台核对
+            if observability.enabled():
+                print(f"Langfuse 已启用：trace_id={observability.get_client().create_trace_id(seed=interview_id)}"
+                      f"（控制台按 Sessions / session_id={interview_id} 查）")
+                observability.flush()
+            else:
+                print("Langfuse 未配置（.env 缺 LANGFUSE_* key）→ 跳过云端核对")
+
             # 会话恢复 + 历史列表
             r = await client.get(f"{BASE}/api/interviews/{interview_id}")
             session = r.json()
@@ -204,11 +254,12 @@ async def main() -> None:
             assert any(x["id"] == interview_id and x["status"] == "finished" for x in rows)
             print(f"会话恢复 OK（{len(session['chat_history'])} 条消息），历史列表 {len(rows)} 场")
 
-        # 业务库落库验证（answers 行数 = 2 技术 + 1 场景）
+        # 业务库落库验证（answers 行数 = 已答题数 = 全场轮次）
         with __import__("sqlite3").connect(get_settings().db_path) as conn:
             count = conn.execute(
                 "SELECT COUNT(*) FROM answers WHERE interview_id=?", (interview_id,)
             ).fetchone()[0]
+        assert count == trace["question_count"], f"落库 {count} 行 ≠ 轮次 {trace['question_count']}"
         row = db.get_interview(get_settings().db_path, interview_id)
         assert row["user_id"] == me["id"], "场次未归属到当前用户"
         print(f"落库 OK：answers {count} 行，interviews status={row['status']}，"

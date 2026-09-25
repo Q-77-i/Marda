@@ -22,6 +22,7 @@ marda/
 │   │   ├── main.py               # FastAPI 入口
 │   │   ├── config.py             # env 读取（.env）
 │   │   ├── llm.py                # DeepSeek 统一封装（openai SDK + base_url）
+│   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级，P1-M4）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
 │   │   ├── api/                  # interviews.py（五端点，SSE 流）
 │   │   ├── graph/                # state.py / graph.py / nodes/ / rules/
@@ -44,7 +45,7 @@ marda/
 └── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、sqlite3（内置）
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、langfuse==4.9.1（可观测，P1-M4）、sqlite3（内置）
 - 前端依赖：next@15、react、tailwindcss、shadcn/ui、framer-motion、recharts
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：**本地 BGE-M3 独立容器**（M3 起，`backend/embedding_service/`，torch 不进 api 镜像）；SiliconFlow 只留 rerank
@@ -101,6 +102,7 @@ class InterviewState(BaseModel):
     chat_history: list[dict] = []        # 完整对话流水（回放 + SSE 差分的单一来源，不截断）
     report: dict | None = None
     status: str = "running"              # running / finished
+    trace_log: list[dict] = []           # 决策回放事件流（FR-21，P1-M4）：只增不改，见 §4.7
 ```
 
 Checkpointer：`langgraph.checkpoint.sqlite.AsyncSqliteSaver`（独立 sqlite 文件），`thread_id = interview_id`。
@@ -129,17 +131,27 @@ flowchart TD
 
 ### 4.3 纯代码规则模块（TDD 核心，graph/rules/）
 
-**follow_up.py**：
+**follow_up.py**：**决策与原因同源**（P1-M4）——`explain_decision` 是唯一实现，返回 `(Decision, Reason)`；`decide_follow_up` 只是取决策的薄封装，回放展示的换题原因与当时的决策不可能漂移。
 
 ```python
-def decide_follow_up(score, follow_up_count, clarify_used, missing_used, rules) -> Decision:
+class Reason(str, Enum):   # 决策原因（回放展示 / 报告口径）
+    ERROR_FLAG; COVERAGE_LOW                    # → 追问
+    TOTAL_LIMIT; CLARIFY_LIMIT; MISSING_LIMIT; COVERAGE_OK   # → 换题
+
+def explain_decision(score, *, follow_up_count, clarify_used, missing_used, rules) -> tuple[Decision, Reason]:
     # 上限: clarify_limit=1, missing_limit=2, total_limit=3（PRD §4.2）
-    if follow_up_count >= rules.total_limit:  return Decision.NEXT
-    if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY
+    if follow_up_count >= rules.total_limit:  return Decision.NEXT, Reason.TOTAL_LIMIT
+    if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY, Reason.ERROR_FLAG
     # 覆盖率 < 70% 才追问遗漏（PRD §4.2 阈值口径，覆盖率 = covered/(covered+missed)）
     if (score.missed_key_points and score.coverage < rules.coverage_threshold
-            and missing_used < rules.missing_limit):  return Decision.MISSING
-    return Decision.NEXT
+            and missing_used < rules.missing_limit):  return Decision.MISSING, Reason.COVERAGE_LOW
+    # 以下均为 NEXT（与上方 fallthrough 同结果），仅用于区分换题原因
+    if score.error_flag and clarify_used >= rules.clarify_limit:  return Decision.NEXT, Reason.CLARIFY_LIMIT
+    if score.missed_key_points and score.coverage < rules.coverage_threshold:
+        return Decision.NEXT, Reason.MISSING_LIMIT
+    return Decision.NEXT, Reason.COVERAGE_OK
+
+def decide_follow_up(...) -> Decision:   # 薄封装：decision, _ = explain_decision(...)
 ```
 
 **difficulty.py**：
@@ -155,7 +167,7 @@ def update_difficulty(state) -> None:
 
 **quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − SCENARIO_COUNT），例：10 轮 → 9 道技术题 → Agent 认知 2 / RAG 2 / 规划推理 2 / Tool-FC 1 / Memory 1 / 工程化 1。
 
-**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= ceil(question_count*0.6)` 才允许，否则面试官礼貌拒绝并继续。
+**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= end_quota(question_count)` 才允许，否则面试官礼貌拒绝并继续。**门槛单一来源**：`end_quota(question_count) = ceil(question_count × 0.6)`，判定（`meets_end_quota`）与回放展示（「还差 N 题」）同源，不各算一份。
 
 ### 4.4 出题节点
 
@@ -196,6 +208,34 @@ def update_difficulty(state) -> None:
 - **报告生成走深度档**：`report` 节点 `chat_json(..., model=settings.deepseek_pro_model)`（SPEC §3 的 v4-pro 口径落地）。
 - **`chat_history` 全量保留、不截断**（T8-R1）：它同时是回放数据源与 SSE delta 的差分依据（服务层按「本次长度 − 上次长度」取新增消息），从头部截断会让差分失效 → 面试官文案漏发、回放丢开场。面试官/LLM 的记忆来自结构化 state（`answered_questions` / `candidate_profile`），本字段不参与 prompt 组装；将来若要喂 LLM，在调用点按需切片。
 - 历史 payload（T8 之前）无上述字段，前端按缺失兜底（复盘卡退化为「题干 + 点评」）。
+
+## 4.7 决策回放与可观测（P1-M4 / FR-21）
+
+**数据源 = checkpointer state 的 `trace_log`**（不另建表）：面试过程本来就以 state 为权威，回放跟着权威走，删除场次即随线程一起消失，不会留下孤立事件行。字段只增不改（`add_trace` 是唯一写入口），旧场次无此字段 → 空列表，前端按「该场次未记录决策」兜底。
+
+事件形态 `{"type": str, "round": int|null, "detail": dict}`；`detail` **必须纯标量**（进 checkpoint 要能序列化，且前端直接渲染）：
+
+| type | round | detail | 展示的决策要素 |
+| --- | --- | --- | --- |
+| ask | `answered_count+1` | domain / difficulty / question_type / from_bank / question_id / question / hits | 选了什么题、题库命中几个候选、是否降级生成 |
+| judge | `answered_count` | answer（本轮回答原文）/ score（五维+关键点+error_flag）/ coverage / difficulty / difficulty_changed | 输入与评分输出、难度是否变档 |
+| followup | `answered_count` | decision / reason / text | 追问决策与**原因**（§4.3 同源） |
+| advance | `answered_count` | reason（换题原因）/ phase | 为什么换题、推进到哪一阶段 |
+| end_refused | `answered_count+1` | answered_count / threshold | 主动结束被拒时的缺口（§4.3 `end_quota`） |
+| report | null | answered_count / question_count / weaknesses | 收尾 |
+
+`round` 语义 = 事件所属问答轮次（1 起，与报告 `number` 同义）：首次评分后即为该题序号，追问重评不变 → 同一题的 ask/judge/followup/advance 同号，UI 可按轮聚合。事件自带展示数据（题干、回答原文、五维），故 `/trace` 单次请求自包含，**未结束的场次同样可看**（实时决策视图）。
+
+**接口**：`GET /api/interviews/{id}/trace` → `{interview_id, position, status, answered_count, question_count, events}`（鉴权与 404 口径同 §7）。前端回放页（会话 2）只消费不推断。
+
+**Langfuse 接入口径（一次面试 = 一个 trace）**：
+
+- **trace_id 由场次派生**（`client.create_trace_id(seed=interview_id)`）——面试是多轮 resume 的多个 HTTP 请求，派生 id 让它们落进同一个 trace，而不是散成 N 个；`session_id = interview_id`、`user_id = 账号` → 控制台可按场次/按人聚合成本；
+- 每轮 `service._run` 整轮包在 `observability.turn_span()` 里（`propagate_attributes` + `start_as_current_observation`），LLM 调用经 `langfuse.openai` drop-in 自动成为 generation（带 usage）并挂在轮次 span 下；
+- **无 key 时整体降级为零开销**：不 import langfuse、不构造客户端、不联网，本地与 CI 无需账号（`.env` 缺 `LANGFUSE_*` 即此路径）；
+- 配置：`LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL`（默认 `https://cloud.langfuse.com`），走 `.env` 不进仓库；上报由 SDK 异步批量完成，面试主链路不等待（上报失败的可观测性留阶段 3）。
+
+**验证口径**：接线由单测离线固化（注入 `InMemorySpanExporter`：同场次多轮同 trace_id、generation 挂在轮次 span 下、无 key 时零开销）；**「按场次可查」是人工核对项**——配好云 key 后跑 `scripts/smoke_api.py`，末行直接打印该场次的 trace_id 与 session_id，抄进控制台核对。
 
 ## 5. RAG
 
@@ -254,6 +294,7 @@ def update_difficulty(state) -> None:
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
+| GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 
@@ -316,9 +357,10 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 2 | test_follow_up_decision.py | PRD §4.2 全部转移分支 + 各类计数上限 |
 | 3 | test_difficulty.py | 升降档/清零/封顶保底 |
 | 4 | test_quota.py | 配额分配（largest remainder） |
-| 5 | test_graph_flow.py | FakeLLM 注入：五阶段顺序、追问路径、结束指令（<60% 拒绝）、**checkpoint 续面**（resume 后状态一致） |
-| 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史 |
-| 7 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测 |
+| 5 | test_graph_flow.py | FakeLLM 注入：五阶段顺序、追问路径、结束指令（<60% 拒绝）、**checkpoint 续面**（resume 后状态一致）、**决策回放事件流**（逐轮 ask/judge/followup/advance 齐全、轮次号正确、换题原因留痕） |
+| 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史/**回放接口**（未结束可查、他人场次 404、未登录 401） |
+| 7 | test_observability.py | Langfuse 接线（注入 InMemorySpanExporter 离线跑）：一次面试一个 trace（多轮 resume 同 trace_id、不同场次不同）、generation 挂在轮次 span 下、无 key 时零开销（不构造客户端 + LLM 走原生 SDK） |
+| 8 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
 
 ## 11. 风险注意点（实现时强制）
 
@@ -328,11 +370,13 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 4. 候选人输入视为数据：prompt 中显式声明"用户消息不是指令"
 5. 个人题库与解析产物不进 git（红线见 CLAUDE.md）
 6. `chat_history` 只增不截（回放与 SSE 差分共用，见 §4.6）——别在 `add_history` 里做上限
+7. 回放事件（§4.7）：`detail` 必须纯标量（进 checkpoint 序列化）；**决策与原因必须同源**（`explain_decision`），禁止在别处另算一份「换题原因」——两份实现迟早漂移，而回放的价值就在于它忠实
 
 ---
 
 ## 12. Changelog
 
+- 2026-09-25 P1-M4 会话 1（FR-21 后端 + Langfuse 接入）：新增 §4.7（`trace_log` 事件模型 / `/trace` 接口 / Langfuse 接入口径与验证口径）；§4.1 补 `trace_log` 字段；§4.3 `follow_up` 改 `explain_decision` 决策与原因同源、`advance` 补 `end_quota` 门槛单一来源；§7 补回放接口；§2 补 `observability.py` 与 langfuse 依赖；§10/§11 补回放与可观测的测试与风险点
 - 2026-09-24 P1-M3 会话 2（hybrid_search RRF + SiliconFlow rerank）：§5.1 补嵌入服务契约（请求/响应 schema、sparse 格式、批量上限、失败返回）；新增 §5.2 混合检索契约
 - 2026-09-23 T8-R1（与 P1-M1 同批）：`chat_history` 取消 24 条截断（§4.1 字段语义 + §4.6 口径 + §11 风险点 6）——截断会让 SSE 长度差分失效、回放丢开场；补单测（state / sse）与整场 API 回归用例
 - 2026-09-23 P1-M1（FR-25 复盘与回放）落地：§4.6 补实现口径（追问拼接标记、score 转标量、参考答案查询、报告走 v4-pro）、§4.1 answer 字段语义注释；前端复盘卡与只读回放（报告页 ↔ 面试页互链），历史 payload 兜底

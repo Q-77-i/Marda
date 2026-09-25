@@ -18,6 +18,7 @@ dependencies = [
     "qdrant-client>=1.12",
     "langgraph-checkpoint-sqlite==3.1.1",
     "pyjwt>=2.8",
+    "langfuse==4.9.1",
 ]
 
 [dependency-groups]

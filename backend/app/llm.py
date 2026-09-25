@@ -28,6 +28,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
+from app import observability
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -61,13 +62,22 @@ def _is_retryable(exc: BaseException) -> bool:
 
 @lru_cache
 def _get_client() -> AsyncOpenAI:
-    """单例复用连接池；测试通过 monkeypatch 此函数注入 fake。"""
+    """单例复用连接池；测试通过 monkeypatch 此函数注入 fake。
+
+    配了 Langfuse key 时换 drop-in 客户端（LLM 调用自动成为 generation，带 usage →
+    token 成本可统计，P1-M4）；未配置时用原生 SDK，零额外开销。
+    """
     settings = get_settings()
-    return AsyncOpenAI(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        timeout=REQUEST_TIMEOUT,
-    )
+    kwargs = {
+        "api_key": settings.deepseek_api_key,
+        "base_url": settings.deepseek_base_url,
+        "timeout": REQUEST_TIMEOUT,
+    }
+    if observability.enabled():
+        from langfuse.openai import AsyncOpenAI as TracingAsyncOpenAI
+
+        return TracingAsyncOpenAI(**kwargs)
+    return AsyncOpenAI(**kwargs)
 
 
 @retry(

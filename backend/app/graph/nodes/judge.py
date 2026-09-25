@@ -10,11 +10,12 @@ from __future__ import annotations
 from app import llm
 from app.agents.prompts import JUDGE_TEMPLATE
 from app.graph.rules.difficulty import update_difficulty
-from app.graph.state import InterviewState, ScoreItem, add_history, merge_answer
+from app.graph.state import InterviewState, ScoreItem, TraceEvent, add_history, add_trace, merge_answer
 
 
 async def judge_node(state: InterviewState) -> dict:
     question = state.current_question
+    difficulty_before = state.difficulty
     score = await llm.chat_json(
         [{"role": "system", "content": JUDGE_TEMPLATE.format(
             question=question.text,
@@ -44,4 +45,13 @@ async def judge_node(state: InterviewState) -> dict:
     else:
         state.answered_questions[-1] = question  # 追问重评：覆盖该题最终记录
         updates["answered_questions"] = state.answered_questions
+    # 回放证据（FR-21）：输入 = 本轮回答原文，输出 = 五维/覆盖率，状态变化 = 难度
+    add_trace(state, TraceEvent.JUDGE, {
+        "answer": state.user_input,
+        "score": score.model_dump(),
+        "coverage": round(score.coverage, 4),
+        "difficulty": state.difficulty,
+        "difficulty_changed": state.difficulty != difficulty_before,
+    }, round_no=state.answered_count)
+    updates["trace_log"] = state.trace_log
     return updates

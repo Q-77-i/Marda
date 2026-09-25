@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     siliconflow_api_key: str
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
 
+    # 可观测（P1-M4）：Langfuse 云形态；Key 缺失时整体降级零开销（本地/CI 无需账号）
+    langfuse_public_key: str = ""
+    langfuse_secret_key: str = ""
+    langfuse_base_url: str = "https://cloud.langfuse.com"
+
     # 数据
     db_path: Path = REPO_ROOT / "data" / "marda.sqlite3"
     checkpoint_db_path: Path = REPO_ROOT / "data" / "checkpoints.sqlite3"

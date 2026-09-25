@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from app import llm
 from app.agents.prompts import ANSWER_CANDIDATE_TEMPLATE, CLOSING_INVITE_TEMPLATE, REFUSE_END_TEMPLATE
-from app.graph.state import InterviewState, add_history
+from app.graph.rules.advance import end_quota
+from app.graph.state import InterviewState, TraceEvent, add_history, add_trace
 
 CLOSING_QUESTION_LIMIT = 2  # PRD §4.1：候选人提问 1-2 个后收尾
 
@@ -32,4 +33,9 @@ async def refuse_end_node(state: InterviewState) -> dict:
         [{"role": "system", "content": REFUSE_END_TEMPLATE.format(question=question)}]
     )
     add_history(state, "assistant", text)
-    return {"chat_history": state.chat_history}
+    # 回放证据（FR-21）：挽留归当前正在答的轮次，门槛与 meets_end_quota 同源
+    add_trace(state, TraceEvent.END_REFUSED, {
+        "answered_count": state.answered_count,
+        "threshold": end_quota(state.question_count),
+    }, round_no=state.answered_count + 1)
+    return {"chat_history": state.chat_history, "trace_log": state.trace_log}

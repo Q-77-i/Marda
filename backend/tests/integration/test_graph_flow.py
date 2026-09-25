@@ -288,6 +288,11 @@ async def test_提前结束未达门槛被挽留后继续(install_llm, install_s
     assert values["phase"] == "tech_base"
     assert values["answered_count"] == 1
     assert values["current_question"]["domain"] == "rag"  # 当前题不变
+    # 回放证据（FR-21）：挽留事件挂当前轮次，门槛口径与 rules.end_quota 同源
+    refused = [e for e in values["trace_log"] if e["type"] == "end_refused"]
+    assert len(refused) == 1
+    assert refused[0]["round"] == 2
+    assert refused[0]["detail"] == {"answered_count": 1, "threshold": 2}
 
     # 正常作答继续
     values = await _run(graph, config, Command(resume="第二题回答……"))
@@ -374,3 +379,93 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     assert question["text"] == "请设计一个带工具调用的 Agent 系统"  # DEFAULT_GENERATED
     assert values["asked_ids"] == []  # 生成题不入 asked_ids
     assert client.calls  # 出题官调用发生过
+
+
+async def test_决策回放事件流_逐轮证据完整(install_llm, install_search, graph_env):
+    """FR-21（P1-M4）：出题工具输出 / 评分状态变化 / 追问原因 / 换题原因 全程留痕。
+
+    事件流是回放页的唯一数据源，本用例逐条核对「输入 / 决策 / 工具输出 / 状态变化 / 换题原因」。
+    """
+    missed = {**DEFAULT_SCORE, "covered_key_points": ["k1"], "missed_key_points": ["k2"]}  # 50% < 70%
+    scores = iter([missed, DEFAULT_SCORE, DEFAULT_SCORE])
+    install_llm(score=lambda: next(scores))
+    install_search(_bank("agent-architecture", "rag"))
+    graph, _, config, state, _ = await graph_env(question_count=2)  # 1 技术 + 1 场景
+
+    await _run(graph, config, state)  # 开场
+    await _run(graph, config, Command(resume="我是应届生"))  # 提炼 → 出第 1 题
+    await _run(graph, config, Command(resume="首答……"))  # 评分 → 覆盖率低 → 遗漏追问
+    values = await _run(graph, config, Command(resume="补充……"))  # 重评 → 换题 → 第 2 题（场景）
+
+    events = values["trace_log"]
+    assert [e["type"] for e in events] == ["ask", "judge", "followup", "judge", "advance", "ask"]
+    assert [e["round"] for e in events] == [1, 1, 1, 1, 1, 2]
+
+    ask1, judge1, followup1, judge_re, advance1, ask2 = (e["detail"] for e in events)
+    # 出题：目标域/难度为输入，工具输出 = 检索命中（题库题带 question_id，生成题记 0）
+    assert ask1["domain"] == "agent-architecture"
+    assert ask1["difficulty"] == "L1"
+    assert ask1["from_bank"] is True
+    assert ask1["question_id"] == "q_agent-architecture"
+    assert ask1["question"] == "agent-architecture 方向的题目"
+    assert ask1["hits"] == 1
+    # 评分：输入 = 本轮回答原文，输出 = 五维 + 覆盖率，状态变化 = 难度
+    assert judge1["answer"] == "首答……"
+    assert judge1["coverage"] == 0.5
+    assert judge1["score"]["technical_depth"] == 4
+    assert judge1["score"]["missed_key_points"] == ["k2"]
+    assert judge1["difficulty"] == "L1"
+    assert judge1["difficulty_changed"] is False
+    # 追问决策：决策 + 原因 + 文案
+    assert followup1["decision"] == "missing"
+    assert followup1["reason"] == "coverage_low"
+    assert followup1["text"]
+    # 追问轮重评：同一轮次的第二条评分事件（回答为追问补充原文）
+    assert judge_re["answer"] == "补充……"
+    assert judge_re["coverage"] == 1.0
+    # 换题：原因 + 阶段推进
+    assert advance1["reason"] == "coverage_ok"
+    assert advance1["phase"] == "project"
+    # 场景题：LLM 生成，无检索命中
+    assert ask2["from_bank"] is False
+    assert ask2["question_id"] is None
+    assert ask2["hits"] == 0
+    assert ask2["domain"] == "project"
+
+    # 走完余下流程：场景题评分 → 换题 → 反问 → 报告收尾
+    await _run(graph, config, Command(resume="场景题方案……"))
+    await _run(graph, config, Command(resume="请问团队技术栈？"))
+    values = await _run(graph, config, Command(resume="再问一个？"))
+
+    tail = values["trace_log"][-3:]
+    assert [e["type"] for e in tail] == ["judge", "advance", "report"]
+    assert tail[1]["detail"]["phase"] == "closing"
+    assert tail[2]["round"] is None  # 收尾事件不属任何轮次
+    assert tail[2]["detail"]["answered_count"] == 2
+    assert tail[2]["detail"]["weaknesses"] == ["agent-architecture"]
+    # 全程只增不改：报告生成后事件数 ≥ 出题数 + 评分数
+    assert len(values["trace_log"]) == len(events) + 3
+
+
+async def test_决策回放_难度降档留痕(install_llm, install_search, graph_env):
+    """状态变化证据：连续两题低分降档，评分事件记录档位与变化标记。"""
+    low = {
+        **DEFAULT_SCORE,
+        "technical_depth": 1, "fundamentals": 1, "project_experience": 1,
+        "communication": 1, "problem_solving": 1,
+    }
+    install_llm(score=lambda: dict(low))
+    install_search(_bank("agent-architecture", "rag", difficulty="L2"))
+    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")
+
+    await _run(graph, config, state)
+    await _run(graph, config, Command(resume="我是应届生"))
+    await _run(graph, config, Command(resume="第一题回答……"))
+    values = await _run(graph, config, Command(resume="第二题回答……"))
+
+    judges = [e for e in values["trace_log"] if e["type"] == "judge"]
+    assert judges[-2]["detail"]["difficulty"] == "L2"
+    assert judges[-2]["detail"]["difficulty_changed"] is False
+    assert judges[-1]["detail"]["difficulty"] == "L1"  # 连差两次 → 降档
+    assert judges[-1]["detail"]["difficulty_changed"] is True
+

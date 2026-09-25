@@ -6,7 +6,13 @@ SPEC §4.3 伪代码「有遗漏即追问」已同步修订为阈值口径。
 
 from __future__ import annotations
 
-from app.graph.rules.follow_up import Decision, FollowUpRules, decide_follow_up
+from app.graph.rules.follow_up import (
+    Decision,
+    FollowUpRules,
+    Reason,
+    decide_follow_up,
+    explain_decision,
+)
 from app.graph.state import ScoreItem
 
 
@@ -100,3 +106,76 @@ def test_自定义规则参数生效():
     rules = FollowUpRules(clarify_limit=2, coverage_threshold=0.5)
     score = _score(error=True)
     assert decide_follow_up(score, follow_up_count=0, clarify_used=1, missing_used=0, rules=rules) is Decision.CLARIFY
+
+
+# ---- explain_decision（P1-M4：决策 + 原因单一来源，FR-21 换题原因/追问原因）----
+
+
+def _explain(score: ScoreItem, **counts) -> tuple[Decision, Reason]:
+    return explain_decision(
+        score,
+        follow_up_count=counts.get("follow_up_count", 0),
+        clarify_used=counts.get("clarify_used", 0),
+        missing_used=counts.get("missing_used", 0),
+    )
+
+
+def test_原因_总追问上限():
+    score = _score(error=True, missed=("k1",))
+    assert _explain(score, follow_up_count=3) == (Decision.NEXT, Reason.TOTAL_LIMIT)
+
+
+def test_原因_明确错误触发澄清():
+    assert _explain(_score(error=True)) == (Decision.CLARIFY, Reason.ERROR_FLAG)
+
+
+def test_原因_覆盖率低触发遗漏追问():
+    score = _score(covered=("k1", "k2"), missed=("k3", "k4"))  # 50%
+    assert _explain(score) == (Decision.MISSING, Reason.COVERAGE_LOW)
+
+
+def test_原因_澄清用满且无遗漏可追问():
+    assert _explain(_score(error=True), clarify_used=1) == (Decision.NEXT, Reason.CLARIFY_LIMIT)
+
+
+def test_原因_遗漏追问用满():
+    score = _score(covered=("k1",), missed=("k2", "k3"))  # 1/3 < 70%
+    assert _explain(score, missing_used=2) == (Decision.NEXT, Reason.MISSING_LIMIT)
+
+
+def test_原因_覆盖达标换题():
+    assert _explain(_score(covered=("k1", "k2"))) == (Decision.NEXT, Reason.COVERAGE_OK)
+
+
+def test_原因_关键点都空按覆盖达标换题():
+    assert _explain(_score()) == (Decision.NEXT, Reason.COVERAGE_OK)
+
+
+def test_原因_澄清用满但遗漏可追问时优先报覆盖率原因():
+    """原因必须与实际决策同一分支：此时真正触发的是遗漏追问，不是澄清用满。"""
+    score = _score(error=True, covered=("k1", "k2"), missed=("k3", "k4"))
+    assert _explain(score, clarify_used=1) == (Decision.MISSING, Reason.COVERAGE_LOW)
+
+
+def test_原因与决策同源_遍历组合不漂移():
+    """explain_decision 是 decide_follow_up 的唯一实现：任何组合下决策一致。"""
+    scores = [
+        _score(),
+        _score(error=True),
+        _score(missed=("k1",)),
+        _score(covered=("k1",), missed=("k2", "k3")),
+        _score(error=True, covered=("k1",), missed=("k2",)),
+        _score(covered=("k1", "k2", "k3")),
+    ]
+    for score in scores:
+        for follow_up_count in (0, 1, 3):
+            for clarify_used in (0, 1):
+                for missing_used in (0, 2):
+                    counts = dict(
+                        follow_up_count=follow_up_count,
+                        clarify_used=clarify_used,
+                        missing_used=missing_used,
+                    )
+                    decision, reason = explain_decision(score, **counts)
+                    assert decision is decide_follow_up(score, **counts), (score, counts)
+                    assert isinstance(reason, Reason)

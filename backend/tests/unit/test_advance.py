@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-from app.graph.rules.advance import meets_end_quota, phase_after_answer
+from app.graph.rules.advance import end_quota, meets_end_quota, phase_after_answer
 from app.graph.state import Phase
+
+
+def test_结束门槛题数_与判定同源():
+    """门槛题数单独暴露给回放（P1-M4 展示「未达门槛被挽留」的证据），口径必须一致。"""
+    assert end_quota(10) == 6
+    assert end_quota(15) == 9
+    assert end_quota(3) == 2
+    for question_count in range(2, 21):
+        assert meets_end_quota(end_quota(question_count), question_count) is True
+        assert meets_end_quota(end_quota(question_count) - 1, question_count) is False
 
 
 def test_十题答五题不可主动结束():

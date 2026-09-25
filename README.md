@@ -18,6 +18,7 @@
 | 向量库 | **Qdrant** | 原生稀疏+服务端 RRF，阶段2 混合检索不用换库 |
 | 后端 | FastAPI + uvicorn + sse-starlette | Python 生态 + SSE 原生支持 |
 | 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | App Router + AI 生态组件最全 |
+| 可观测 | **Langfuse**（云形态） | 一次面试一个 trace：LLM 调用/成本按场次可查，面试过程可解释 |
 | 业务库 | SQLite（阶段 1）→ PostgreSQL | checkpointer 同步升级 |
 
 **设计原则**：确定性逻辑（阶段推进、轮数上限、追问决策、配额）全部用代码写死——可解释、可单测、UI 可回放；LLM 只负责出题、评分、追问文案这类语义任务。
@@ -33,6 +34,7 @@ backend/            FastAPI + LangGraph
     tools/          RAG 检索工具（出题检索 / 混合检索 / 嵌入 / rerank 客户端）
     api/            路由（SSE 流）
     service.py      服务层（图单例 / 事件翻译 / 落库编排）
+    observability.py Langfuse 接入（一次面试一个 trace / 无 key 降级零开销）
     db.py           业务库持久化（interviews / answers / reports）
   embedding_service/  本地 BGE-M3 嵌入服务（独立镜像，torch 不进 api）
   tests/
@@ -97,9 +99,10 @@ JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 �
 - **确定性规则全在代码**（[graph/rules/](backend/app/graph/rules/)）：追问决策、难度连击升降档、知识域配额、阶段推进、结束门槛，全部有单测钉死状态转移
 - **LLM 只产出文案与评分**（[graph/nodes/](backend/app/graph/nodes/)）：出题（题库检索 → 难度放宽 → LLM 生成三级降级）、评分（五维 1-5 结构化）、追问文案、场景题（结合候选人项目经历定制）、报告
 - **断线续面**：checkpointer（SQLite）以场次为粒度持久化，中断后 resume 状态一致（集成测试覆盖）
+- **决策回放（FR-21）**：每个节点把「输入 / 决策 / 原因 / 状态变化」追加进 state 的 `trace_log`，`GET /interviews/{id}/trace` 一次取回整场事件流——为什么追问（覆盖率低还是答错）、为什么换题（追问额度用尽还是覆盖完整）、难度何时变档，逐轮可查。决策与原因**同源**（`explain_decision` 是唯一实现），回放里的原因不是旁白，是当时真正生效的那一条
 
 ```bash
-uv run pytest -q                                    # 后端 188 个测试
+uv run pytest -q                                    # 后端 226 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
@@ -109,6 +112,9 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 
 - **账号（FR-23）**：[app/api/auth.py](backend/app/api/auth.py) 提供注册 / 登录 / 当前用户，JWT 全端点鉴权（Bearer）。密码 scrypt 加盐哈希、用户名字母大小写不敏感；场次按 `user_id` 隔离，跨用户访问按「不存在」404（不泄露存在性），阶段 1 的历史场次由首个注册账号认领
 - **鉴权细节**：401 与 404 的分工——未登录/失效 token 401；他人场次 404（与「场次不存在」不可区分）
+- **`GET /interviews/{id}/trace`**：决策回放事件流（未结束的场次同样可查，做实时决策视图）
+
+**可观测（P1-M4）**：[app/observability.py](backend/app/observability.py) 把 Langfuse 接在轮次这一层——trace_id 由场次 id 派生，所以一场面试的多次 resume 落进同一个 trace（不是散成 N 个），`session_id` = 场次、`user_id` = 账号；LLM 调用经 `langfuse.openai` drop-in 自动成为带 usage 的 generation，token 成本按场次/按人可聚合。**没配 key 就整体降级为零开销**：不 import、不构造客户端、不联网，本地与 CI 无需账号。接线由单测离线钉死（注入内存导出器），「云端按场次可查」是人工核对项——smoke 末行直接打印该场次的 trace_id 供抄进控制台。
 
 ```bash
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
@@ -151,7 +157,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）。后续 M4–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 会话 1 已完成**（决策回放事件流 + `/trace` 接口 + Langfuse 接入；回放页留会话 2）。后续 M4–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

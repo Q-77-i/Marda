@@ -9,7 +9,9 @@ from __future__ import annotations
 from app.graph.state import (
     FOLLOWUP_ANSWER_MARKER,
     InterviewState,
+    TraceEvent,
     add_history,
+    add_trace,
     merge_answer,
 )
 
@@ -40,3 +42,26 @@ def test_对话历史全量保留不截断():
     assert len(state.chat_history) == 30
     assert state.chat_history[0]["content"] == "第 0 条"
     assert state.chat_history[-1]["content"] == "第 29 条"
+
+
+# ---- trace_log（P1-M4：决策回放唯一数据源，FR-21）----
+
+
+def test_决策日志追加为可序列化事件():
+    state = InterviewState()
+    add_trace(state, TraceEvent.ASK, {"domain": "rag", "from_bank": True}, round_no=1)
+
+    assert state.trace_log == [
+        {"type": "ask", "round": 1, "detail": {"domain": "rag", "from_bank": True}},
+    ]
+    # 事件类型落库为字符串（Enum 成员不许漏进来，否则 JSON 序列化会带类名）
+    assert isinstance(state.trace_log[0]["type"], str)
+
+
+def test_决策日志_轮次可空_按序累积():
+    state = InterviewState()
+    add_trace(state, TraceEvent.END_REFUSED, {"answered_count": 1}, round_no=2)
+    add_trace(state, TraceEvent.REPORT, {"answered_count": 2})
+
+    assert [e["round"] for e in state.trace_log] == [2, None]
+    assert [e["type"] for e in state.trace_log] == ["end_refused", "report"]

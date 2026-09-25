@@ -24,9 +24,14 @@ def is_end_command(text: str) -> bool:
     return text.strip() in END_COMMANDS
 
 
+def end_quota(question_count: int) -> int:
+    """主动结束所需的已答题量门槛（题数）。回放展示「未达门槛被挽留」用同一口径。"""
+    return ceil(question_count * END_QUOTA_RATIO - FLOAT_EPSILON)
+
+
 def meets_end_quota(answered_count: int, question_count: int) -> bool:
     """主动结束（结束按钮 / 结束指令）是否达到已答题量门槛。"""
-    return answered_count >= ceil(question_count * END_QUOTA_RATIO - FLOAT_EPSILON)
+    return answered_count >= end_quota(question_count)
 
 
 def phase_after_answer(phase: Phase, answered_count: int, question_count: int) -> Phase:
