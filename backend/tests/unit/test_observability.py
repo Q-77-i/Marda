@@ -1,7 +1,7 @@
 """Langfuse 接入单测（P1-M4）：一次面试 = 一个 trace，且带场次/账号归属。
 
 用 InMemorySpanExporter 顶替 OTLP 上报（SDK 支持注入 span_exporter），全程离线可重复——
-云端「按场次可查」是人工核对项（SPEC §7），这里固化的是**我们自己的接线**：
+云端「按场次可查」由 smoke_api 读回核对（那里才是真链路），这里固化的是**我们自己的接线**：
 trace_id 由场次派生、多轮 resume 归同一 trace、generation 挂在轮次 span 下。
 
 注意：每个用例用独立 public_key —— Langfuse 的资源管理器按 key 做进程级单例，
@@ -17,26 +17,25 @@ from langfuse import Langfuse
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from app import llm, observability
+from app.config import Settings
+
+_REAL_ENABLED = observability.enabled  # conftest 的 autouse 夹具会把它换成 False，先留原引用
 
 
 @pytest.fixture
 def langfuse_env(monkeypatch):
-    """启用 Langfuse（假 key + 内存导出器）：返回 (导出器, 客户端, public_key)。"""
-    public_key = f"pk-lf-test-{uuid.uuid4().hex[:8]}"
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", public_key)
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    llm.get_settings.cache_clear()
-    observability.get_client.cache_clear()
+    """启用 Langfuse（假 key + 内存导出器）：返回 (导出器, 客户端, public_key)。
 
+    conftest 的 autouse 夹具默认断开（enabled→False），这里把它接回来。
+    """
+    public_key = f"pk-lf-test-{uuid.uuid4().hex[:8]}"
     exporter = InMemorySpanExporter()
     client = Langfuse(public_key=public_key, secret_key="sk-lf-test", span_exporter=exporter)
-    real_get_client = observability.get_client  # monkeypatch 会换掉模块属性，先留原引用
+    monkeypatch.setattr(observability, "enabled", lambda: True)
     monkeypatch.setattr(observability, "get_client", lambda: client)
     yield exporter, client, public_key
 
     client.flush()
-    real_get_client.cache_clear()
-    llm.get_settings.cache_clear()
 
 
 def _attrs(span) -> dict:
@@ -44,12 +43,16 @@ def _attrs(span) -> dict:
 
 
 def test_无key时零开销(monkeypatch):
-    """未配 key：不构造客户端（不 import langfuse 也不联网），LLM 走原生 SDK。"""
-    monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
-    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
-    llm.get_settings.cache_clear()
-    observability.get_client.cache_clear()
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    """未配 key：不构造客户端（不 import langfuse 也不联网），LLM 走原生 SDK。
+
+    必须显式造一份「无 Langfuse key」的配置并撤掉 autouse 夹具的断连——否则测的是夹具而不是
+    代码。也不能靠删环境变量：key 在 .env 文件里，dotenv 兜在 os.environ 下面。
+    """
+    monkeypatch.setattr(observability, "enabled", _REAL_ENABLED)
+    monkeypatch.setattr(observability, "get_settings", lambda: Settings(
+        _env_file=None, deepseek_api_key="test-key", siliconflow_api_key="test-key",
+        jwt_secret="t" * 32, langfuse_public_key="", langfuse_secret_key="",
+    ))
 
     def _boom():  # 一旦被调用即说明降级失效
         raise AssertionError("未配 key 时不该构造 Langfuse 客户端")
@@ -64,8 +67,6 @@ def test_无key时零开销(monkeypatch):
     llm._get_client.cache_clear()
     client = llm._get_client()
     assert client.__class__.__module__.startswith("openai")  # 原生客户端，非 drop-in
-    llm._get_client.cache_clear()
-    llm.get_settings.cache_clear()
 
 
 def test_一次面试一个trace且多轮归并(langfuse_env):

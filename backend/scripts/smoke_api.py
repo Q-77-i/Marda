@@ -6,7 +6,8 @@
 未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 决策回放
 （FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
 依赖：.env（DEEPSEEK_API_KEY / JWT_SECRET）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
-
+Langfuse（P1-M4）：.env 配了 LANGFUSE_* 时把该场次的 trace 从云端读回来核对
+（session_id / 轮次 span / generation 归父），未配置则跳过——这也是 FR-21 的验收口径。
 隔离（T7a-R1）：业务库与 checkpointer 落 /tmp 临时文件，验证不污染正式数据
 （题库 Qdrant 只读，不受影响）。
 """
@@ -90,6 +91,45 @@ async def wait_ready() -> None:
             pass
         await asyncio.sleep(0.5)
     raise RuntimeError("uvicorn 未在 30s 内就绪")
+
+
+def _model_of(obs) -> str | None:
+    """观测的模型名。v2 API 把它放在 `model` 字段，而 SDK 4.9.1 没声明该字段（落在
+    model_extra），别用 `provided_model_name`——那个恒为 None，会误判成「没上报模型名」。"""
+    return getattr(obs, "model", None) or (obs.model_extra or {}).get("model")
+
+
+async def _fetch_observations(langfuse_client, trace_id: str) -> list:
+    """读回云端观测（v2 observations API）；上报是异步批量的，等视图闭合再返回。
+
+    等的是**树闭合**而不是「非空」：观测是逐条落库的，只判非空会拿到半棵树（generation
+    已到、它挂的轮次 span 还没到），此时的父子断言必然误报。判据 = 所有 generation 的
+    父节点都在返回集内。
+
+    走 v2 而非 `api.trace.get`：**Langfuse 对 2026-09-16 之后新建的组织停用了 legacy
+    trace 端点**（410 LEGACY_API_UNAVAILABLE_FOR_NEW_ORGANIZATION），v4 云上读数据只有
+    v2 observations / metrics 这一条路。
+    """
+    last: Exception | None = None
+    data: list = []
+    for _ in range(30):
+        try:
+            # SDK 的 API 客户端是同步 httpx，扔线程池，别卡事件循环
+            resp = await asyncio.to_thread(
+                langfuse_client.api.observations.get_many,
+                trace_id=trace_id, fields="core,basic,usage,model", limit=100,
+            )
+            data = resp.data
+            ids = {o.id for o in data}
+            if data and all(o.parent_observation_id in ids for o in data if o.type == "GENERATION"):
+                return data
+            last = RuntimeError(f"观测尚未落全（当前 {len(data)} 条）")
+        except Exception as exc:  # 未落库时是空/404，其余错误同样重试到超时
+            last = exc
+        await asyncio.sleep(1)
+    if data:  # 超时但有数据：交给断言去报真正的问题，别在这里吞掉
+        return data
+    raise RuntimeError(f"trace {trace_id} 30s 内未在云端可见：{last}")
 
 
 async def main() -> None:
@@ -236,11 +276,32 @@ async def main() -> None:
             assert all(e["detail"] for e in events), "事件 detail 不得为空"
             print(f"回放 OK：{len(events)} 个事件 / 轮次 1-{max(rounds)}")
 
-            # Langfuse（P1-M4）：按场次可查的 trace_id 可直接抄进控制台核对
+            # Langfuse（P1-M4）：云端「按场次可查」——把观测读回来核对，不靠肉眼
             if observability.enabled():
-                print(f"Langfuse 已启用：trace_id={observability.get_client().create_trace_id(seed=interview_id)}"
-                      f"（控制台按 Sessions / session_id={interview_id} 查）")
+                lf = observability.get_client()
+                trace_id = lf.create_trace_id(seed=interview_id)
                 observability.flush()
+                obs = await _fetch_observations(lf, trace_id)
+                turns = [o for o in obs if o.name == "interview-turn"]
+                gens = [o for o in obs if o.type == "GENERATION"]
+                shapes = [(o.name, o.type) for o in obs]
+                assert len(turns) >= 2, f"轮次 span 少于 2 个（每轮一个）：{shapes}"
+                assert len(gens) >= 4, f"generation 少于 4 个（每轮至少一次 LLM 调用）：{shapes}"
+                assert {o.session_id for o in obs} == {interview_id}, "session_id 与场次不一致"
+                assert {o.user_id for o in obs} == {me["id"]}, "user_id 与账号不一致"
+                turn_ids = {t.id for t in turns}
+                assert all(g.parent_observation_id in turn_ids for g in gens), \
+                    "generation 未挂在轮次 span 下"
+                models = {_model_of(g) for g in gens}
+                assert models and None not in models, f"generation 未带模型名（成本归属前提）：{models}"
+                tokens = sum((g.usage_details or {}).get("total", 0) for g in gens)
+                cost = sum((g.cost_details or {}).get("total", 0) for g in gens)
+                print(f"Langfuse OK：trace_id={trace_id} session_id={interview_id}")
+                print(f"  轮次 span {len(turns)} 个 / generation {len(gens)} 个 "
+                      f"（模型 {sorted(models)}，token {tokens}，成本 ${cost:.4f}）")
+                if cost == 0:  # 成本靠价格表匹配，配不配不属于代码验收项，给条提示就好
+                    print("  ⚠ 成本为 0：Langfuse 项目里没有这些模型的价格定义"
+                          "（Settings → Models 按 DeepSeek 官方价目加一条即可）")
             else:
                 print("Langfuse 未配置（.env 缺 LANGFUSE_* key）→ 跳过云端核对")
 
