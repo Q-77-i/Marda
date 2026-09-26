@@ -16,18 +16,20 @@ from app.graph.state import InterviewState, ScoreItem, TraceEvent, add_history, 
 async def judge_node(state: InterviewState) -> dict:
     question = state.current_question
     difficulty_before = state.difficulty
+    is_first = question.score is None
+    # 先合并再评分（P1-M4.5-R1）：判官看到累计回答（首答+全部追问补充，按标记分段），
+    # 「评分以当前掌握程度为准」的 prompt 口径才真正可执行；覆盖率允许下降，反映真实掌握程度
+    question.answer = merge_answer(question.answer, state.user_input)
     score = await llm.chat_json(
         [{"role": "system", "content": JUDGE_TEMPLATE.format(
             question=question.text,
             key_points="\n".join(f"- {k}" for k in question.key_points),
             followup_log="\n".join(f"- {line}" for line in question.followup_log) or "无",
-            content=state.user_input,
+            content=question.answer,
         )}],
         schema=ScoreItem,
         temperature=0.3,
     )
-    is_first = question.score is None
-    question.answer = merge_answer(question.answer, state.user_input)
     question.score = score
     add_history(state, "user", state.user_input)
     updates: dict = {"current_question": question, "chat_history": state.chat_history}

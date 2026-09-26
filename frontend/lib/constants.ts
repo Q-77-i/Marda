@@ -84,15 +84,19 @@ export const TRACE_EVENT_LABELS: Record<string, string> = {
 export const DECISION_LABELS: Record<string, string> = {
   clarify: "澄清追问",
   missing: "追问遗漏",
+  deepen: "深挖追问",
   next: "换题",
 };
 
 export const REASON_LABELS: Record<string, string> = {
   error_flag: "回答有明确错误",
   coverage_low: "关键点覆盖不足",
+  deepen_ok: "覆盖达标，深挖边界",
   total_limit: "单题追问已达上限",
+  remedy_limit: "全场补救额度用尽",
   clarify_limit: "澄清追问机会已用完",
   missing_limit: "遗漏追问已达上限",
+  missing_asked: "遗漏点均已追问",
   coverage_ok: "覆盖率达标",
 };
 

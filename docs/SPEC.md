@@ -116,7 +116,7 @@ flowchart TD
     ROUTE -- 自我介绍阶段 --> PROFILE[自我介绍提炼 LLM 结构化] --> ASK[出题节点]
     ROUTE -- 作答阶段 --> JUDGE[评分节点 LLM 关thinking 结构化]
     JUDGE --> FD{追问决策 纯代码}
-    FD -- 追问 --> FU[追问节点 LLM] --> INTERRUPT
+    FD -- 追问 --> FU[追问节点 题库元数据直发或LLM] --> INTERRUPT
     FD -- 换题 --> ADV{轮数判断 纯代码}
     ADV -- 继续技术题 --> ASK
     ADV -- 进场景题 --> ASK
@@ -135,24 +135,35 @@ flowchart TD
 
 ```python
 class Reason(str, Enum):   # 决策原因（回放展示 / 报告口径）
-    ERROR_FLAG; COVERAGE_LOW                    # → 追问
-    TOTAL_LIMIT; CLARIFY_LIMIT; MISSING_LIMIT; COVERAGE_OK   # → 换题
+    ERROR_FLAG; COVERAGE_LOW; DEEPEN_OK          # → 追问
+    REMEDY_LIMIT; CLARIFY_LIMIT; MISSING_LIMIT; MISSING_ASKED; COVERAGE_OK   # → 换题
+    # TOTAL_LIMIT 为 P0 遗留值（旧事件数据），不再产出
 
-def explain_decision(score, *, follow_up_count, clarify_used, missing_used, rules) -> tuple[Decision, Reason]:
-    # 上限: clarify_limit=1, missing_limit=2, total_limit=3（PRD §4.2）
-    if follow_up_count >= rules.total_limit:  return Decision.NEXT, Reason.TOTAL_LIMIT
+def remedy_budget(question_count): return max(3, ceil(question_count * 0.7))
+    # 全场补救预算（P1-M4.5-R1）：5 题 4 次 / 10 题 7 次 / 15 题 11 次；单一来源（仿 end_quota）
+def remedy_used_total(state): return sum(q.missing_used for q in state.answered_questions)
+    # 补救已用量从已答题计数派生（含当前题），零独立 state 字段；澄清/深挖豁免，skipped 自然不计
+def unasked_missed(score, asked): return [k for k in score.missed_key_points if k not in asked]
+    # 同一 key_point 只追问一次（覆盖率跳变不触发重复追问）
+
+def explain_decision(score, *, question_count, clarify_used, missing_used, deepen_used, remedy_used, asked_key_points, rules) -> tuple[Decision, Reason]:
+    # 优先级（P1-M4.5-R1）：澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题
     if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY, Reason.ERROR_FLAG
-    # 覆盖率 < 70% 才追问遗漏（PRD §4.2 阈值口径，覆盖率 = covered/(covered+missed)）
-    if (score.missed_key_points and score.coverage < rules.coverage_threshold
-            and missing_used < rules.missing_limit):  return Decision.MISSING, Reason.COVERAGE_LOW
-    # 以下均为 NEXT（与上方 fallthrough 同结果），仅用于区分换题原因
-    if score.error_flag and clarify_used >= rules.clarify_limit:  return Decision.NEXT, Reason.CLARIFY_LIMIT
-    if score.missed_key_points and score.coverage < rules.coverage_threshold:
-        return Decision.NEXT, Reason.MISSING_LIMIT
-    return Decision.NEXT, Reason.COVERAGE_OK
+    if score.error_flag:  return Decision.NEXT, Reason.CLARIFY_LIMIT      # 错误仍在 → 换题（不深挖）
+    if score.coverage >= rules.coverage_threshold:
+        if deepen_used < rules.deepen_limit:  return Decision.DEEPEN, Reason.DEEPEN_OK
+        return Decision.NEXT, Reason.COVERAGE_OK
+    unasked = unasked_missed(score, asked_key_points)
+    if unasked and missing_used < rules.missing_limit:
+        if remedy_used < remedy_budget(question_count):  return Decision.MISSING, Reason.COVERAGE_LOW
+        return Decision.NEXT, Reason.REMEDY_LIMIT
+    if missing_used >= rules.missing_limit:  return Decision.NEXT, Reason.MISSING_LIMIT
+    return Decision.NEXT, Reason.MISSING_ASKED   # 有遗漏但遗漏点均已追问过
 
 def decide_follow_up(...) -> Decision:   # 薄封装：decision, _ = explain_decision(...)
 ```
+
+**追问密度口径（P1-M4.5-R1，实测 3 题 10 次追问后修订）**：单题上限 澄清 1 / 遗漏 2 / 深挖 1（单题最大 5 轮 = 首答 + 澄清 1 + 遗漏 2 + 深挖 1）；全场补救池 `remedy_budget` 管总量，澄清（error 纠错）与深挖（边界深挖）豁免——两者由单题上限约束、不占池。
 
 **difficulty.py**：
 
@@ -172,13 +183,23 @@ def update_difficulty(state) -> None:
 ### 4.4 出题节点
 
 1. 纯代码算目标 domain（配额剩余最多的）+ difficulty；
-2. 调 `search_questions` 工具（Qdrant：payload 过滤 domain/difficulty + 排除 asked_ids + 随机）→ 命中则用题库题（`from_bank=True`）；
+2. 调 `search_questions` 工具（Qdrant：payload 过滤 domain/difficulty + 排除 asked_ids + 随机）→ 命中则用题库题（`from_bank=True`，`follow_ups` 元数据一并带出，深挖追问用）；
 3. 未命中 → 放宽难度 ±1 再检索；仍未命中 → LLM 生成（`from_bank=False`，不入正式库）；
 4. LLM 生成"面试官口吻"的提问文案（题库题：按 text 出题，禁止透露参考答案）。
 
+**出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
+
+1. **question_id 不变**：口吻层只产出面试官文案（`chat_history`），`state.current_question` 恒为原题记录——题库题的 question_id/key_points 原值保留，回放/评分/参考答案对齐不受改写影响；
+2. **评分用原 key_points**：judge 的 key_points 恒取自 `QuestionRecord.key_points`（题库原值），不因口吻改写重新推导；
+3. **prompt 显式禁改考察点**：口吻层模板写死「不得改变考察点、不得新增或删减考察要求」（生成模板同口径约束「考察方向与难度不变」）。
+
+**深挖追问（P1-M4.5-B）**：followup 节点新增 DEEPEN 分支（决策见 §4.3）。文案来源按拍板分两路：题库题直接发 `follow_ups[deepen_used-1]` 元数据（**零 LLM 调用**，确定性可回放；D 的人味层统一处理衔接）；生成题/场景题（`from_bank=False`）由 LLM 经 `FOLLOWUP_DEEPEN_TEMPLATE` 从问答上下文现场生成。深挖统一生效不特判题型；观察点：C 之后项目深挖阶段自身即深挖，DEEPEN 在项目题上可能冗余，C 之后观察。
+
+**遗漏追问去重（P1-M4.5-R1）**：`QuestionRecord.asked_key_points` 记录已追问过的 key_points，MISSING 只问未问过的漏点（`unasked_missed`），发出即写入 asked 集合——覆盖率跳变不再触发重复追问。
+
 ### 4.5 评分节点（结构化输出，关 thinking）
 
-输入：题目（含 key_points）、候选人回答、追问记录、rubric 定义。输出 `ScoreItem`。追问提示词允许候选人在下一轮补充（评分口径以"当前掌握程度"为准）。
+输入：题目（含 key_points）、**累计回答**（首答 + 全部追问补充，按 `【追问补充】` 分段标记，P1-M4.5-R1：先 `merge_answer` 再评分）、追问记录、rubric 定义。输出 `ScoreItem`。评分口径以**累计掌握程度**为准（补充后更扎实可提分，暴露理解偏差应降级）；覆盖率允许下降，反映真实掌握程度，不锁单调。
 
 ### 4.6 报告生成节点
 
@@ -378,6 +399,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-26 P1-M4.5-R1（追问密度修复，实测 3 题 10 次追问）：§4.3 规则重写——优先级 澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题；`asked_key_points` 同一漏点只问一次（覆盖率跳变不重复追问）；全场补救池 `remedy_budget(N)=max(3, ceil(N×0.7))`（5 题 4 / 10 题 7 / 15 题 11），`remedy_used_total` 从已答题计数派生，澄清/深挖豁免、skipped 自然不计；新 reason `remedy_limit` / `missing_asked`，`TOTAL_LIMIT` 退役仅留旧事件映射；§4.4 补遗漏追问去重口径；§4.5 judge 输入改累计回答（先合并再评分，覆盖率允许下降不锁单调）
+- 2026-09-26 P1-M4.5（A 出题接上下文 + B 深挖追问）：§4.3 `follow_up` 新增 DEEPEN 分支（`Decision.DEEPEN` / `Reason.DEEPEN_OK` / `deepen_limit=1`；优先级 澄清→遗漏→深挖；深挖要求无 error_flag，达标但深挖用尽仍报 `COVERAGE_OK`——旧原因值语义不漂移）；§4.4 出题接上下文（profile 进口吻层与生成模板 + 三条防漂移约束：question_id 不变 / 评分用原 key_points / prompt 禁改考察点）与深挖文案两路来源（题库元数据直发零 LLM / LLM 现场生成）；§4.1 `QuestionRecord` 补 `follow_ups`/`deepen_used`；§4.2 图注追问节点文案来源
 - 2026-09-26 P1-M4 会话 2（FR-21 前端决策回放页）：§9 补决策回放页（`/trace/[id]` 逐轮时间线、只映射不重算、旧场次空态、入口仅报告页）与报告页入口；前端 `lib/trace.ts` 分组与取值守卫、`constants` 三类文案映射（事件/决策/原因，**原因标签不含阈值数字**，阈值只在后端 rules）。会话 2 收尾：评分小节补漏掉的关键点与评分官点评（`judgeEvidence` 守卫），`coverage_ok` 文案改「覆盖率达标」（原「关键点覆盖完整」与 70–100% 达标区间不符）；`lib/http.ts` 错误文案 CJK 守卫（框架英文兜底不端给用户）
 - 2026-09-25 P1-M4 会话 1（FR-21 后端 + Langfuse 接入）：新增 §4.7（`trace_log` 事件模型 / `/trace` 接口 / Langfuse 接入口径与验证口径）；§4.1 补 `trace_log` 字段；§4.3 `follow_up` 改 `explain_decision` 决策与原因同源、`advance` 补 `end_quota` 门槛单一来源；§7 补回放接口；§2 补 `observability.py` 与 langfuse 依赖；§10/§11 补回放与可观测的测试与风险点
 - 2026-09-24 P1-M3 会话 2（hybrid_search RRF + SiliconFlow rerank）：§5.1 补嵌入服务契约（请求/响应 schema、sparse 格式、批量上限、失败返回）；新增 §5.2 混合检索契约

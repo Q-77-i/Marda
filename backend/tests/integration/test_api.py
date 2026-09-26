@@ -17,11 +17,13 @@ import pytest
 
 from app import db, llm
 from app.config import get_settings
+from app.graph.state import FOLLOWUP_ANSWER_MARKER
 from fake_llm import FakeLLMClient
 
-# 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 技术 + 1 场景 → 2 反问 → 报告）
-TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……",
-         "场景题方案是……", "请问团队技术栈？", "晋升路径？"]
+# 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 技术 + 1 场景；
+# 每题首答达标 → 深挖（P1-M4.5）→ 深挖补充换题 → 2 反问 → 报告）
+TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……", "第一题深挖补充……",
+         "场景题方案是……", "场景题深挖补充……", "请问团队技术栈？", "晋升路径？"]
 
 
 async def _events(response) -> list[dict]:
@@ -129,17 +131,17 @@ async def test_完整一场落库与报告(client):
     assert set(report["payload"]["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving",
     }
-    # FR-25 复盘字段（SPEC §4.6）：题库题附参考答案、我的回答、五维、关键点对比
+    # FR-25 复盘字段（SPEC §4.6）：题库题附参考答案、我的回答（首答 + 深挖补充分段）、五维、关键点对比
     comments = report["payload"]["per_question_comments"]
     assert len(comments) == 2
     assert comments[0]["question_id"] == "q_arch"
-    assert comments[0]["candidate_answer"] == TURNS[1]
+    assert comments[0]["candidate_answer"] == f"{TURNS[1]}\n\n{FOLLOWUP_ANSWER_MARKER}{TURNS[2]}"
     assert comments[0]["reference_answer"] == "参考答案"
     assert comments[0]["score"]["fundamentals"] == 4
     assert comments[0]["covered_key_points"] == ["k1", "k2"]
     assert comments[0]["missed_key_points"] == []
     assert comments[1]["question_id"] is None  # 场景题
-    assert comments[1]["candidate_answer"] == TURNS[2]
+    assert comments[1]["candidate_answer"] == f"{TURNS[3]}\n\n{FOLLOWUP_ANSWER_MARKER}{TURNS[4]}"
     assert comments[1]["reference_answer"] is None
     # interviews 表收尾
     row = db.get_interview(get_settings().db_path, interview_id)

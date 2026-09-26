@@ -23,7 +23,10 @@ async def ask_node(state: InterviewState) -> dict:
         if question is None:
             question, hits = await _generate_tech(state), 0
     text = await llm.chat(
-        [{"role": "system", "content": ASK_BANK_TEMPLATE.format(question=question.text)}]
+        [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
+            question=question.text,
+            profile=state.candidate_profile or "（候选人未提供项目背景）",
+        )}]
     )
     add_history(state, "assistant", text)
     state.current_question = question
@@ -70,6 +73,7 @@ async def _pick_from_bank(state: InterviewState) -> tuple[QuestionRecord | None,
                 topic=item["topic"],
                 difficulty=item["difficulty"],
                 key_points=item["key_points"],
+                follow_ups=item["follow_ups"],
             ), len(candidates)
     return None, 0
 
@@ -87,7 +91,10 @@ async def _generate_tech(state: InterviewState) -> QuestionRecord:
     domain = pick_domain(state)
     generated = await llm.chat_json(
         [{"role": "system", "content": ASK_GENERATE_TEMPLATE.format(
-            domain_label=DOMAIN_LABELS[domain], difficulty=state.difficulty)}],
+            domain_label=DOMAIN_LABELS[domain],
+            difficulty=state.difficulty,
+            profile=state.candidate_profile or "（候选人未提供项目背景）",
+        )}],
         schema=GeneratedQuestion,
         temperature=0.7,
     )

@@ -89,9 +89,12 @@ class QuestionRecord(BaseModel):
     topic: str
     difficulty: str
     key_points: list[str] = []
+    follow_ups: list[str] = []  # 题库题深挖追问素材（enrich 产物；生成题为空 → LLM 现场生成）
     follow_up_count: int = 0
     clarify_used: int = 0
     missing_used: int = 0
+    deepen_used: int = 0
+    asked_key_points: list[str] = []  # 已追问过的 key_points（P1-M4.5-R1：同一漏点只追问一次）
     followup_log: list[str] = []
     answer: str | None = None
     score: ScoreItem | None = None

@@ -26,7 +26,7 @@ from app.graph.nodes import (
 )
 from app.graph.nodes.closing import CLOSING_QUESTION_LIMIT
 from app.graph.rules.advance import is_end_command, meets_end_quota
-from app.graph.rules.follow_up import Decision, decide_follow_up
+from app.graph.rules.follow_up import Decision, decide_follow_up, remedy_used_total
 from app.graph.state import InterviewState, Phase
 
 
@@ -56,11 +56,18 @@ def followup_decision(state: InterviewState) -> str:
     question = state.current_question
     decision = decide_follow_up(
         question.score,
-        follow_up_count=question.follow_up_count,
+        question_count=state.question_count,
         clarify_used=question.clarify_used,
         missing_used=question.missing_used,
+        deepen_used=question.deepen_used,
+        remedy_used=remedy_used_total(state),
+        asked_key_points=question.asked_key_points,
     )
-    return "followup" if decision in (Decision.CLARIFY, Decision.MISSING) else "advance"
+    return (
+        "followup"
+        if decision in (Decision.CLARIFY, Decision.MISSING, Decision.DEEPEN)
+        else "advance"
+    )
 
 
 def advance_route(state: InterviewState) -> str:

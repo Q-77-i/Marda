@@ -108,9 +108,10 @@ describe("traceEventLabel", () => {
 });
 
 describe("decisionLabel", () => {
-  it("三种追问决策有中文标签", () => {
+  it("四种追问决策有中文标签", () => {
     expect(decisionLabel("clarify")).toBe("澄清追问");
     expect(decisionLabel("missing")).toBe("追问遗漏");
+    expect(decisionLabel("deepen")).toBe("深挖追问");
     expect(decisionLabel("next")).toBe("换题");
   });
 
@@ -120,12 +121,15 @@ describe("decisionLabel", () => {
 });
 
 describe("reasonLabel", () => {
-  it("六种决策原因有中文标签（与 backend rules/follow_up.Reason 同键）", () => {
+  it("九种决策原因有中文标签（与 backend rules/follow_up.Reason 同键）", () => {
     expect(reasonLabel("error_flag")).toBe("回答有明确错误");
     expect(reasonLabel("coverage_low")).toBe("关键点覆盖不足");
+    expect(reasonLabel("deepen_ok")).toBe("覆盖达标，深挖边界");
     expect(reasonLabel("total_limit")).toBe("单题追问已达上限");
+    expect(reasonLabel("remedy_limit")).toBe("全场补救额度用尽");
     expect(reasonLabel("clarify_limit")).toBe("澄清追问机会已用完");
     expect(reasonLabel("missing_limit")).toBe("遗漏追问已达上限");
+    expect(reasonLabel("missing_asked")).toBe("遗漏点均已追问");
     expect(reasonLabel("coverage_ok")).toBe("覆盖率达标");
   });
 
