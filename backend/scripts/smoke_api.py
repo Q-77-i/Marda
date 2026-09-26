@@ -256,7 +256,7 @@ async def main() -> None:
             types = [e["type"] for e in events]
             asked = [e["round"] for e in events if e["type"] == "ask"]
             assert trace["status"] == "finished"
-            assert trace["answered_count"] == trace["question_count"] == 2  # 本场 1 技术 + 1 场景
+            assert trace["answered_count"] == trace["question_count"] == 2  # 本场 1 项目深挖 + 1 技术
             assert types[0] == "ask" and types[-1] == "report", f"事件流首尾异常：{types}"
             assert asked == [1, 2], f"出题轮次应为 1..question_count：{asked}"
             assert set(types) <= {"ask", "judge", "followup", "advance", "end_refused", "report"}

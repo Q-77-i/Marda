@@ -4,6 +4,7 @@
 避免 domain 字符串散落各处。权重口径见 CLAUDE.md「岗位与题库」。
 """
 
+from math import ceil
 from typing import Final
 
 # 六大域（阶段 1 主出题域），权重按规划报告 §5.3
@@ -37,7 +38,12 @@ DIFFICULTIES: Final[frozenset[str]] = frozenset({"L1", "L2", "L3"})
 #（question_type 见 state.QuestionRecord，默认 tech）。
 COUNTED_QUESTION_TYPES: Final[frozenset[str]] = frozenset({"tech", "scenario"})
 
-# 组成规则（T7a-R1 轮次语义，2026-09-21 拍板）：question_count = 全场问答轮次，
-# 场景题固定 SCENARIO_COUNT 道、技术题 = question_count − SCENARIO_COUNT；
-# 内部组成是引擎事务，不对用户暴露（UI 只讲「N 轮问答」）。
-SCENARIO_COUNT: Final[int] = 1
+
+def project_count(question_count: int) -> int:
+    """项目深挖题数量（P1-M4.6-C）：min(3, max(2, ceil(N/3)), N−1)。
+
+    N−1 保底 1 道技术题（N=2 → 1 项目 + 1 技术）；5 题场 2 项目 + 3 技术；
+    10/15 题场 3 项目封顶。技术题 = question_count − project_count(question_count)。
+    组成规则是引擎事务，不对用户暴露（UI 只讲「N 轮问答」）。
+    """
+    return min(3, max(2, ceil(question_count / 3)), question_count - 1)

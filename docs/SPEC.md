@@ -88,7 +88,7 @@ class QuestionRecord(BaseModel):
 
 class InterviewState(BaseModel):
     interview_id: str; position: str
-    question_count: int = 10   # 全场问答轮次（组成 = 技术 N−1 + 场景 1，见 domain.SCENARIO_COUNT）
+    question_count: int = 10   # 全场问答轮次（P1-M4.6-C 组成 = 项目深挖 project_count(N) + 技术 N−project_count(N)，见 domain.project_count）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
@@ -118,8 +118,8 @@ flowchart TD
     JUDGE --> FD{追问决策 纯代码}
     FD -- 追问 --> FU[追问节点 题库元数据直发或LLM] --> INTERRUPT
     FD -- 换题 --> ADV{轮数判断 纯代码}
-    ADV -- 继续技术题 --> ASK
-    ADV -- 进场景题 --> ASK
+    ADV -- 继续项目深挖 --> ASK
+    ADV -- 进技术题 --> ASK
     ADV -- 收尾 --> CLOSING[反问邀请 LLM] --> INTERRUPT
     ROUTE -- 反问阶段 --> CANS[面试官作答 LLM] --> REPORT[报告生成 聚合纯代码+LLM]
     ROUTE -- 结束指令 --> REPORT
@@ -176,9 +176,9 @@ def update_difficulty(state) -> None:
     good>=2 → difficulty 升一档（封顶 L3）并清零；bad>=2 → 降一档（保底 L1）并清零
 ```
 
-**quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − SCENARIO_COUNT），例：10 轮 → 9 道技术题 → Agent 认知 2 / RAG 2 / 规划推理 2 / Tool-FC 1 / Memory 1 / 工程化 1。
+**quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − project_count），例：10 轮 → 3 项目深挖 + 7 道技术题 → Agent 认知 2 / RAG 1 / 规划推理 1 / Tool-FC 1 / Memory 1 / 工程化 1。
 
-**advance.py**：`answered_count+1`；技术轮答满（`answered_count >= question_count - SCENARIO_COUNT`）→ `phase=PROJECT`（场景题）；场景题完成 → `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= end_quota(question_count)` 才允许，否则面试官礼貌拒绝并继续。**门槛单一来源**：`end_quota(question_count) = ceil(question_count × 0.6)`，判定（`meets_end_quota`）与回放展示（「还差 N 题」）同源，不各算一份。
+**advance.py**：`answered_count+1`；阶段顺序（P1-M4.6-C）**项目深挖前置**——`phase=PROJECT` 答满 `project_count(question_count)` 道 → `phase=TECH_BASE`；技术轮答满（`answered_count >= question_count`）→ `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= end_quota(question_count)` 才允许，否则面试官礼貌拒绝并继续。**门槛单一来源**：`end_quota(question_count) = ceil(question_count × 0.6)`，判定（`meets_end_quota`）与回放展示（「还差 N 题」）同源，不各算一份。
 
 ### 4.4 出题节点
 
@@ -187,13 +187,15 @@ def update_difficulty(state) -> None:
 3. 未命中 → 放宽难度 ±1 再检索；仍未命中 → LLM 生成（`from_bank=False`，不入正式库）；
 4. LLM 生成"面试官口吻"的提问文案（题库题：按 text 出题，禁止透露参考答案）。
 
+**项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
+
 **出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
 
 1. **question_id 不变**：口吻层只产出面试官文案（`chat_history`），`state.current_question` 恒为原题记录——题库题的 question_id/key_points 原值保留，回放/评分/参考答案对齐不受改写影响；
 2. **评分用原 key_points**：judge 的 key_points 恒取自 `QuestionRecord.key_points`（题库原值），不因口吻改写重新推导；
 3. **prompt 显式禁改考察点**：口吻层模板写死「不得改变考察点、不得新增或删减考察要求」（生成模板同口径约束「考察方向与难度不变」）。
 
-**深挖追问（P1-M4.5-B）**：followup 节点新增 DEEPEN 分支（决策见 §4.3）。文案来源按拍板分两路：题库题直接发 `follow_ups[deepen_used-1]` 元数据（**零 LLM 调用**，确定性可回放；D 的人味层统一处理衔接）；生成题/场景题（`from_bank=False`）由 LLM 经 `FOLLOWUP_DEEPEN_TEMPLATE` 从问答上下文现场生成。深挖统一生效不特判题型；观察点：C 之后项目深挖阶段自身即深挖，DEEPEN 在项目题上可能冗余，C 之后观察。
+**深挖追问（P1-M4.5-B）**：followup 节点新增 DEEPEN 分支（决策见 §4.3）。文案来源按拍板分两路：题库题直接发 `follow_ups[deepen_used-1]` 元数据（**零 LLM 调用**，确定性可回放；D 的人味层统一处理衔接）；生成题/项目深挖题（`from_bank=False`）由 LLM 经 `FOLLOWUP_DEEPEN_TEMPLATE` 从问答上下文现场生成。深挖统一生效不特判题型；观察点：C 之后项目深挖阶段自身即深挖，DEEPEN 在项目题上可能冗余，C 之后观察。
 
 **遗漏追问去重（P1-M4.5-R1）**：`QuestionRecord.asked_key_points` 记录已追问过的 key_points，MISSING 只问未问过的漏点（`unasked_missed`），发出即写入 asked 集合——覆盖率跳变不再触发重复追问。
 
@@ -216,11 +218,11 @@ def update_difficulty(state) -> None:
 { "per_question_comments": [{ "index": int, "number": int|null, "question_id": str|null, "question_type": str, "domain": str, "text": str, "comment": str }] }
 ```
 
-  场景题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
-- **题型语义由后端定义**：`question_type` 为题型种类（tech/scenario），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（场景题计入轮次，编号为其轮次序号）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
+  项目深挖题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
+- **题型语义由后端定义**：`question_type` 为题型种类（tech/scenario，值不变；展示标签「项目深挖」），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（项目深挖题计入轮次，编号为其轮次序号）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
 - 报告落库（reports 表）+ state.status="finished"。
 
-**阶段 2 复盘扩展（FR-25）**：`per_question_comments` 每项增 `candidate_answer`（我的回答，含追问轮）、`score`（五维）、`covered_key_points` / `missed_key_points`（评分官输出）、`reference_answer`（题库题 = 参考答案全文，按 question_id 取题库；场景题 question_id=null → null，前端不渲染——场景题无权威答案，硬编反而误导）。candidate_answer/score/关键点从 `state.answered_questions` 带出，组装口径与现有元信息一致；条数恒等于已答题目数不变。已结束场次的面试回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端（隐藏输入框 + 状态标识）。
+**阶段 2 复盘扩展（FR-25）**：`per_question_comments` 每项增 `candidate_answer`（我的回答，含追问轮）、`score`（五维）、`covered_key_points` / `missed_key_points`（评分官输出）、`reference_answer`（题库题 = 参考答案全文，按 question_id 取题库；项目深挖题 question_id=null → null，前端不渲染——项目深挖题无权威答案，硬编反而误导）。candidate_answer/score/关键点从 `state.answered_questions` 带出，组装口径与现有元信息一致；条数恒等于已答题目数不变。已结束场次的面试回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端（隐藏输入框 + 状态标识）。
 
 实现口径（T8 落地）：
 - **追问轮回答为拼接串**：`state.answered_questions[].answer` = 首答 + `\n\n` + `【追问补充】` + 本轮回答（多轮依次追加）；标记常量 `graph/state.FOLLOWUP_ANSWER_MARKER`，前端同值副本在 `frontend/lib/constants.ts`（改文案需两边同改）。前端 `format.splitAnswerSegments` 按标记切段，标「首答 / 追问补充 N」；
@@ -368,7 +370,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 - **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口））。
 - **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏标「已结束」，复用同一恢复接口）。
-- **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评；逐题复盘卡（阶段 2 FR-25：我的回答 / 五维得分 / 关键点对比 / 题库题参考答案折叠展示，场景题仅关键点对比）。页头「决策回放」入口（P1-M4）。
+- **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评；逐题复盘卡（阶段 2 FR-25：我的回答 / 五维得分 / 关键点对比 / 题库题参考答案折叠展示，项目深挖题仅关键点对比）。页头「决策回放」入口（P1-M4）。
 - **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：只读时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
 - 设计：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。
 
@@ -399,6 +401,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-26 P1-M4.6（C 阶段重排，项目深挖前置）：§4.3 advance 重写——PROJECT 答满 `project_count(question_count)`（min(3, max(2, ceil(N/3)), N−1)，保底 1 道技术题）→ TECH_BASE，答满 question_count → CLOSING；quota 技术轮数改 `question_count − project_count`；§4.1/§4.4 补项目深挖前置口径（首题与 PROJECT 阶段走 `_generate_scenario`：按轮出题、难度随 `state.difficulty`、domain="project" 不参与域统计保留）；展示标签「场景题」→「项目深挖」（question_type 值 scenario 不变，phase 枚举不变）；图边一条不动
 - 2026-09-26 P1-M4.5-R1（追问密度修复，实测 3 题 10 次追问）：§4.3 规则重写——优先级 澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题；`asked_key_points` 同一漏点只问一次（覆盖率跳变不重复追问）；全场补救池 `remedy_budget(N)=max(3, ceil(N×0.7))`（5 题 4 / 10 题 7 / 15 题 11），`remedy_used_total` 从已答题计数派生，澄清/深挖豁免、skipped 自然不计；新 reason `remedy_limit` / `missing_asked`，`TOTAL_LIMIT` 退役仅留旧事件映射；§4.4 补遗漏追问去重口径；§4.5 judge 输入改累计回答（先合并再评分，覆盖率允许下降不锁单调）
 - 2026-09-26 P1-M4.5（A 出题接上下文 + B 深挖追问）：§4.3 `follow_up` 新增 DEEPEN 分支（`Decision.DEEPEN` / `Reason.DEEPEN_OK` / `deepen_limit=1`；优先级 澄清→遗漏→深挖；深挖要求无 error_flag，达标但深挖用尽仍报 `COVERAGE_OK`——旧原因值语义不漂移）；§4.4 出题接上下文（profile 进口吻层与生成模板 + 三条防漂移约束：question_id 不变 / 评分用原 key_points / prompt 禁改考察点）与深挖文案两路来源（题库元数据直发零 LLM / LLM 现场生成）；§4.1 `QuestionRecord` 补 `follow_ups`/`deepen_used`；§4.2 图注追问节点文案来源
 - 2026-09-26 P1-M4 会话 2（FR-21 前端决策回放页）：§9 补决策回放页（`/trace/[id]` 逐轮时间线、只映射不重算、旧场次空态、入口仅报告页）与报告页入口；前端 `lib/trace.ts` 分组与取值守卫、`constants` 三类文案映射（事件/决策/原因，**原因标签不含阈值数字**，阈值只在后端 rules）。会话 2 收尾：评分小节补漏掉的关键点与评分官点评（`judgeEvidence` 守卫），`coverage_ok` 文案改「覆盖率达标」（原「关键点覆盖完整」与 70–100% 达标区间不符）；`lib/http.ts` 错误文案 CJK 守卫（框架英文兜底不端给用户）

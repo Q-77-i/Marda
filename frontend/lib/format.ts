@@ -28,9 +28,8 @@ export function formatScore(value: number): string {
 /**
  * 完成题量（分子，封顶到配置题量）。
  *
- * 分母永远是用户创建面试时选的题量（`question_count`），否则"我明明选的 15 题，
- * 报告上却是 16"本身就是矛盾。超出部分来自场景题：它不属于配置的题量，
- * 由阶段标签（场景题 / 反问环节）表达，不参与计数。
+ * 分母永远是用户创建面试时选的题量（`question_count`）。项目深挖题计入配置题量
+ * （P1-M4.6-C），answered 不会超出；封顶保留兼容历史 payload（旧场次场景题为额外加问）。
  */
 export function completedCount(answered: number, total: number): number {
   return Math.min(answered, total);
@@ -39,9 +38,9 @@ export function completedCount(answered: number, total: number): number {
 /**
  * 进度文案「已答/题量」。
  *
- * `answered_count` 在 judge 节点对每道首次作答 +1（含场景题，追问重评不加），
- * 而 `question_count` 只统计技术题，因此 answered 会超出 total；封顶避免出现
- * "16/15" 或"进度满了还在提问"这类与配置矛盾的展示。
+ * `answered_count` 在 judge 节点对每道首次作答 +1（追问重评不加），
+ * 项目深挖题计入配置题量（P1-M4.6-C），answered 不会超出 total；封顶避免
+ * 历史 payload 出现 "16/15" 这类与配置矛盾的展示。
  */
 export function progressLabel(answered: number, total: number): string {
   return `${completedCount(answered, total)}/${total}`;
@@ -50,9 +49,9 @@ export function progressLabel(answered: number, total: number): string {
 /**
  * 逐题点评标题（T7a/T7a-R1：题型语义由后端定义，前端零推断）。
  *
- * 新 payload 每条带 `number`（计入问答轮次的题型按作答顺序编号，含场景题）与
+ * 新 payload 每条带 `number`（计入问答轮次的题型按作答顺序编号，含项目深挖题）与
  * `question_type`：有 number 的按「第 N 题」，非技术题型追加题型标签
- * （如「第 3 题 · 场景题」）；无 number 只有 type 的按标签（未知题型显示原值，不猜）。
+ * （如「第 3 题 · 项目深挖」）；无 number 只有 type 的按标签（未知题型显示原值，不猜）。
  * 2026-09-19 之前的报告 payload 无新字段，保留 domain/位置推断兜底。
  */
 export function commentLabels(
@@ -70,9 +69,9 @@ export function commentLabels(
     if (item.question_type) {
       return QUESTION_TYPE_LABELS[item.question_type] ?? item.question_type;
     }
-    // 旧 payload 兜底：场景题（domain="project"）单列，不参与编号
-    if (item.domain === "project") return "场景题";
-    if (answered > total && index === items.length - 1) return "场景题";
+    // 旧 payload 兜底：项目深挖题（domain="project"）单列，不参与编号
+    if (item.domain === "project") return "项目深挖";
+    if (answered > total && index === items.length - 1) return "项目深挖";
     return `第 ${index + 1} 题`;
   });
 }

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from app.domain import DOMAIN_WEIGHTS, SCENARIO_COUNT
+from app.domain import DOMAIN_WEIGHTS, project_count
 from app.graph.state import InterviewState
 
 
@@ -29,10 +29,10 @@ def allocate_quota(total: int, weights: dict[str, float]) -> dict[str, int]:
 def remaining_quota(state: InterviewState) -> dict[str, int]:
     """剩余配额 = 总配额 − 已出题域计数（含正在答的当前题）。
 
-    总配额 = 技术轮数（question_count − SCENARIO_COUNT，轮次语义）；
+    总配额 = 技术轮数（question_count − project_count(question_count)，轮次语义）；
     max(…, 0) 兜底存量 checkpoint（旧数据可能 question_count=1）。
     """
-    base = allocate_quota(max(state.question_count - SCENARIO_COUNT, 0), DOMAIN_WEIGHTS)
+    base = allocate_quota(max(state.question_count - project_count(state.question_count), 0), DOMAIN_WEIGHTS)
     # 用 Counter 统计已经回答过的题目中，每个领域出现了多少次。
     used = Counter(q.domain for q in state.answered_questions)
     if state.current_question and state.current_question.domain in base:
@@ -43,7 +43,7 @@ def remaining_quota(state: InterviewState) -> dict[str, int]:
 def pick_domain(state: InterviewState) -> str:
     """出题选域：剩余配额最多的域，平局按权重表顺序（SPEC §4.4）。
 
-    配额耗尽时兜底取权重表首域——正常流程答满即进场景题，不会走到。
+    配额耗尽时兜底取权重表首域——正常流程答满即进反问，不会走到。
     """
     remaining = remaining_quota(state)
     if max(remaining.values()) <= 0:

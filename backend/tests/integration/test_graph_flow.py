@@ -154,35 +154,35 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     assert values["phase"] == "warmup"
     assert values["chat_history"][-1]["role"] == "assistant"
 
-    # WARMUP：自我介绍 → 提炼 + 出第 1 题（配额：agent-architecture 优先）
+    # WARMUP：自我介绍 → 提炼 + 出第 1 题（P1-M4.6-C：项目深挖前置，结合 profile 定制）
     values = await _run(graph, config, Command(resume="我是应届生，做过 RAG 项目"))
-    assert values["phase"] == "tech_base"
-    assert values["candidate_profile"]
-    assert values["current_question"]["domain"] == "agent-architecture"
-    assert values["current_question"]["from_bank"] is True
-
-    # 技术题作答 → 覆盖达标 → 深挖追问（P1-M4.5：答得好也往边界追，不换题）
-    values = await _run(graph, config, Command(resume="我的答案是……"))
-    assert values["answered_count"] == 1
-    assert values["phase"] == "tech_base"
-    assert values["current_question"]["follow_up_count"] == 1
-    assert values["current_question"]["deepen_used"] == 1
-
-    # 深挖补充 → 重评达标、深挖额度用尽 → 换题 → 答满（2 轮 = 1 技术 + 1 场景）→ PROJECT 场景题
-    values = await _run(graph, config, Command(resume="深挖补充……"))
-    assert values["answered_count"] == 1
     assert values["phase"] == "project"
+    assert values["candidate_profile"]
     assert values["current_question"]["domain"] == "project"
     assert values["current_question"]["from_bank"] is False
     assert values["current_question"]["question_type"] == "scenario"
 
-    # 场景题作答 → 同样深挖（统一生效，不特判；from_bank=False → LLM 现场生成深挖）
-    values = await _run(graph, config, Command(resume="我的场景题方案是……"))
+    # 项目题作答 → 覆盖达标 → 深挖追问（P1-M4.5：答得好也往边界追，不换题）
+    values = await _run(graph, config, Command(resume="我的答案是……"))
+    assert values["answered_count"] == 1
     assert values["phase"] == "project"
+    assert values["current_question"]["follow_up_count"] == 1
     assert values["current_question"]["deepen_used"] == 1
 
-    # 场景题深挖补充 → CLOSING 反问邀请
-    values = await _run(graph, config, Command(resume="场景深挖补充……"))
+    # 深挖补充 → 重评达标、深挖额度用尽 → 换题 → 项目题答满（1/1）→ TECH_BASE 技术题
+    values = await _run(graph, config, Command(resume="深挖补充……"))
+    assert values["answered_count"] == 1
+    assert values["phase"] == "tech_base"
+    assert values["current_question"]["domain"] == "agent-architecture"
+    assert values["current_question"]["from_bank"] is True
+
+    # 技术题作答 → 同样深挖（统一生效，不特判；题库题无 follow_ups 元数据 → LLM 现场生成）
+    values = await _run(graph, config, Command(resume="技术题方案是……"))
+    assert values["phase"] == "tech_base"
+    assert values["current_question"]["deepen_used"] == 1
+
+    # 技术题深挖补充 → 答满全场 → CLOSING 反问邀请
+    values = await _run(graph, config, Command(resume="技术深挖补充……"))
     assert values["phase"] == "closing"
     assert values["closing_question_count"] == 0
 
@@ -195,7 +195,7 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     values = await _run(graph, config, Command(resume="再问一个：晋升路径？"))
     assert values["status"] == "finished"
     report = values["report"]
-    assert report["answered_count"] == 2  # 1 技术 + 1 场景
+    assert report["answered_count"] == 2  # 1 项目 + 1 技术
     assert set(report["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving"
     }
@@ -206,17 +206,17 @@ async def test_五阶段完整流程(install_llm, install_search, graph_env):
     assert len(comments) == report["answered_count"] == 2
     assert [c["index"] for c in comments] == [1, 2]
     assert all(c["question_id"] != "q1" for c in comments)
-    assert comments[-1]["domain"] == "project"  # 场景题
+    assert comments[0]["domain"] == "project"  # 项目深挖题（前置）
     assert all(c["text"] for c in comments)
-    # 题型语义：技术题/场景题都计入轮次，按序编号
-    assert [c["question_type"] for c in comments] == ["tech", "scenario"]
+    # 题型语义：项目题/技术题都计入轮次，按序编号
+    assert [c["question_type"] for c in comments] == ["scenario", "tech"]
     assert [c["number"] for c in comments] == [1, 2]
-    # FR-25 复盘扩展：回答带出（首答 + 追问补充分段）、题库题附参考答案全文、场景题无权威答案
+    # FR-25 复盘扩展：回答带出（首答 + 追问补充分段）、题库题附参考答案全文、项目题无权威答案
     assert comments[0]["candidate_answer"] == f"我的答案是……\n\n{FOLLOWUP_ANSWER_MARKER}深挖补充……"
-    assert comments[0]["reference_answer"] == "参考答案"
-    assert comments[1]["candidate_answer"] == f"我的场景题方案是……\n\n{FOLLOWUP_ANSWER_MARKER}场景深挖补充……"
-    assert comments[1]["reference_answer"] is None
-    assert comments[0]["score"]["technical_depth"] == 4
+    assert comments[0]["reference_answer"] is None
+    assert comments[1]["candidate_answer"] == f"技术题方案是……\n\n{FOLLOWUP_ANSWER_MARKER}技术深挖补充……"
+    assert comments[1]["reference_answer"] == "参考答案"
+    assert comments[1]["score"]["technical_depth"] == 4
 
 
 async def test_追问轮回答保留首答并带标记(install_llm, install_search, graph_env):
@@ -225,7 +225,7 @@ async def test_追问轮回答保留首答并带标记(install_llm, install_sear
     scores = iter([missed, DEFAULT_SCORE])
     install_llm(score=lambda: next(scores))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -247,7 +247,7 @@ async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, in
     ])
     install_llm(score=lambda: next(scores))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -267,10 +267,11 @@ async def test_错误触发澄清追问_重评覆盖最终记录(install_llm, in
     assert values["answered_questions"][0]["score"]["error_flag"] is False  # 最终记录为重评结果
     assert values["current_question"]["deepen_used"] == 1
 
-    # 深挖补充 → 重评 → 深挖用尽 → 换题
+    # 深挖补充 → 重评 → 深挖用尽 → 换题（1/2 项目题未答满 → 第 2 道项目题）
     values = await _run(graph, config, Command(resume="深挖补充……"))
     assert values["answered_count"] == 1
-    assert values["current_question"]["domain"] == "rag"  # 已换到第 2 题
+    assert values["phase"] == "project"
+    assert values["current_question"]["domain"] == "project"
 
 
 async def test_遗漏追问_逐次追问不同漏点_用满上限(install_llm, install_search, graph_env):
@@ -282,7 +283,7 @@ async def test_遗漏追问_逐次追问不同漏点_用满上限(install_llm, i
     ])
     client = install_llm(score=lambda: next(scores))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 技术 + 1 场景
+    graph, _, config, state, _ = await graph_env(question_count=3)  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -293,7 +294,8 @@ async def test_遗漏追问_逐次追问不同漏点_用满上限(install_llm, i
 
     values = await _run(graph, config, Command(resume="再补充……"))  # 漏点全问过 → 换题（不再追问）
     assert values["answered_count"] == 1
-    assert values["current_question"]["domain"] == "rag"
+    assert values["phase"] == "project"
+    assert values["current_question"]["domain"] == "project"  # 已换到第 2 道项目题
     # 追问文案只提未问过的漏点：k2/k3 只出现在第一轮，k4 只出现在第二轮
     missing_prompts = [c["system"] for c in client.calls if "回答未覆盖的方面" in c["system"]]
     assert len(missing_prompts) == 2
@@ -335,7 +337,7 @@ async def test_覆盖率跳变不触发重复追问(install_llm, install_search,
 
 async def test_深挖追问_题库元数据直接发与生成题现场生成(install_llm, install_search, graph_env):
     """P1-M4.5 拍板：题库题深挖直接发 follow_ups 元数据（零 LLM 调用、可回放）；
-    生成题（场景题 from_bank=False）深挖由 LLM 从问答上下文现场生成。"""
+    生成题（项目题 from_bank=False）深挖由 LLM 从问答上下文现场生成。"""
     bank = _bank("agent-architecture", "rag")
     bank[("agent-architecture", "L1")][0]["follow_ups"] = ["深挖追问：为什么选向量检索？"]
     client = install_llm()
@@ -346,7 +348,19 @@ async def test_深挖追问_题库元数据直接发与生成题现场生成(ins
     await _run(graph, config, Command(resume="我是应届生"))
     calls_before = len(client.calls)
 
-    # 首答达标 → 深挖：题库题直接发元数据（该轮仅评分一次 LLM 调用）
+    # 首题（项目题）达标 → 深挖：from_bank=False → LLM 现场生成（评分 + 深挖文案各一次调用）
+    values = await _run(graph, config, Command(resume="我的答案是……"))
+    assert values["current_question"]["deepen_used"] == 1
+    assert values["current_question"]["follow_up_count"] == 1
+    assert len(client.calls) == calls_before + 2
+    assert any("深挖" in call["system"] for call in client.calls[-2:])
+    assert values["chat_history"][-1]["content"] == "面试官文案"  # FakeLLM 默认文案
+
+    # 深挖补充 → 换题 → 技术题（题库题带 follow_ups 元数据）→ 深挖直发元数据
+    values = await _run(graph, config, Command(resume="因为混合检索……"))
+    assert values["phase"] == "tech_base"
+    assert values["current_question"]["domain"] == "agent-architecture"
+    calls_before = len(client.calls)
     values = await _run(graph, config, Command(resume="我的答案是……"))
     assert values["current_question"]["deepen_used"] == 1
     assert values["current_question"]["follow_up_count"] == 1
@@ -359,16 +373,6 @@ async def test_深挖追问_题库元数据直接发与生成题现场生成(ins
     }
     assert len(client.calls) == calls_before + 1  # 深挖直发零新增 LLM 调用
 
-    # 深挖补充 → 换题 → 场景题 → 首答 → 深挖走 LLM 现场生成（FOLLOWUP_DEEPEN_TEMPLATE）
-    values = await _run(graph, config, Command(resume="因为混合检索……"))
-    assert values["current_question"]["domain"] == "project"  # 已换到场景题
-    calls_before = len(client.calls)
-    values = await _run(graph, config, Command(resume="我的场景题方案是……"))
-    assert values["current_question"]["deepen_used"] == 1
-    assert len(client.calls) == calls_before + 2  # 评分 + 深挖文案各一次
-    assert any("深挖" in call["system"] for call in client.calls[-2:])
-    assert values["chat_history"][-1]["content"] == "面试官文案"  # FakeLLM 默认文案
-
 
 async def test_出题接上下文_口吻层带profile且原题不漂移(install_llm, install_search, graph_env):
     """P1-M4.5-A 三条防漂移约束：口吻层带候选人背景适度改写题干，
@@ -380,7 +384,15 @@ async def test_出题接上下文_口吻层带profile且原题不漂移(install_
     await _run(graph, config, state)
     values = await _run(graph, config, Command(resume="我是应届生，做过 RAG 项目"))
 
-    # 口吻层 prompt 含候选人背景（profile 提炼自自我介绍）+ 禁改考察点约束
+    # 首题为项目深挖题：出题模板含候选人背景（profile 提炼自自我介绍）
+    scenario_call = next(c for c in client.calls if "项目题" in c["system"])
+    assert "RAG" in scenario_call["system"]
+    assert values["current_question"]["question_id"] is None
+    assert values["current_question"]["domain"] == "project"
+
+    # 项目题深挖一轮后换题 → 技术题：口吻层 prompt 含背景 + 禁改考察点约束
+    await _run(graph, config, Command(resume="我的答案是……"))
+    values = await _run(graph, config, Command(resume="深挖补充……"))
     ask_call = next(c for c in client.calls if "【题目】" in c["system"])
     assert "RAG" in ask_call["system"]
     assert "不得改变考察点" in ask_call["system"]
@@ -402,19 +414,20 @@ async def test_提前结束未达门槛被挽留后继续(install_llm, install_s
     # 1/3 < 60%（门槛 2）→ 挽留，面试继续
     values = await _run(graph, config, Command(resume="结束面试"))
     assert values["status"] == "running"
-    assert values["phase"] == "tech_base"
+    assert values["phase"] == "project"  # 项目深挖前置
     assert values["answered_count"] == 1
-    assert values["current_question"]["domain"] == "agent-architecture"  # 当前题不变
+    assert values["current_question"]["domain"] == "project"  # 当前题不变
     # 回放证据（FR-21）：挽留事件挂当前轮次，门槛口径与 rules.end_quota 同源
     refused = [e for e in values["trace_log"] if e["type"] == "end_refused"]
     assert len(refused) == 1
     assert refused[0]["round"] == 2
     assert refused[0]["detail"] == {"answered_count": 1, "threshold": 2}
 
-    # 深挖补充 → 换题 → 第 2 题
+    # 深挖补充 → 换题 → 第 2 道项目题（3 轮 = 2 项目 + 1 技术）
     values = await _run(graph, config, Command(resume="深挖补充……"))
     assert values["answered_count"] == 1
-    assert values["current_question"]["domain"] == "rag"  # 已换到第 2 题
+    assert values["phase"] == "project"
+    assert values["current_question"]["domain"] == "project"
 
     # 正常作答继续
     values = await _run(graph, config, Command(resume="第二题回答……"))
@@ -440,7 +453,7 @@ async def test_达标后结束指令直接进报告(install_llm, install_search,
 async def test_checkpoint续面_重建图后状态一致(install_llm, install_search, graph_env):
     install_llm()
     install_search(_bank("agent-architecture", "rag"))
-    graph, saver, config, state, db_path = await graph_env(question_count=3)  # 2 技术 + 1 场景
+    graph, saver, config, state, db_path = await graph_env(question_count=3)  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -461,13 +474,17 @@ async def test_checkpoint续面_重建图后状态一致(install_llm, install_se
     saver2 = AsyncSqliteSaver(conn2, serde=make_serde())
     graph2 = build_graph(checkpointer=saver2)
 
-    values = await _run(graph2, config, Command(resume="深挖补充……"))  # 重评 → 换题
+    values = await _run(graph2, config, Command(resume="深挖补充……"))  # 重评 → 换题 → 第 2 道项目题
+    assert values["answered_count"] == 1
+    assert values["phase"] == "project"  # 1/2 项目题未答满
+    assert values["current_question"]["domain"] == "project"
     values = await _run(graph2, config, Command(resume="第二题回答……"))
     assert values["answered_count"] == 2
-    values = await _run(graph2, config, Command(resume="深挖补充……"))  # 换题 → 场景题
-    assert values["phase"] == "project"  # 2/2 技术轮答满 → 场景题
+    values = await _run(graph2, config, Command(resume="深挖补充……"))  # 换题 → 技术题
+    assert values["phase"] == "tech_base"  # 2/2 项目题答满 → 技术题
+    assert values["current_question"]["domain"] == "agent-architecture"
     assert len(values["chat_history"]) > history_len  # 历史连续
-    assert values["asked_ids"] == [*asked_ids, "q_rag"]  # 场景题无 id，asked_ids 只增题库题
+    assert values["asked_ids"] == [*asked_ids, "q_agent-architecture"]  # 项目题无 id，asked_ids 只增题库题
     await conn2.close()
 
 
@@ -479,7 +496,7 @@ async def test_连差两次难度降档(install_llm, install_search, graph_env):
     }
     install_llm(score=lambda: dict(low))
     install_search(_bank("agent-architecture", "rag", difficulty="L2"))
-    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")  # 2 技术 + 1 场景
+    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))
@@ -498,14 +515,27 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     await _run(graph, config, state)
     values = await _run(graph, config, Command(resume="我是应届生"))
 
+    assert calls == []  # 首题为项目深挖题，不走题库检索
+    question = values["current_question"]
+    assert question["from_bank"] is False
+    assert question["question_id"] is None
+    assert question["domain"] == "project"
+    assert values["asked_ids"] == []  # 生成题不入 asked_ids
+    # P1-M4.5-A：项目题出题官 prompt 含候选人背景
+    scenario_call = next(c for c in client.calls if "项目题" in c["system"])
+    assert "RAG" in scenario_call["system"]
+
+    # 项目题深挖一轮换题 → 技术题：题库未命中 → 原难度 → 放宽 +1 → LLM 生成
+    await _run(graph, config, Command(resume="我的答案是……"))
+    values = await _run(graph, config, Command(resume="深挖补充……"))
     assert calls == [("agent-architecture", "L1"), ("agent-architecture", "L2")]  # 原难度 → 放宽 +1
     question = values["current_question"]
     assert question["from_bank"] is False
     assert question["question_id"] is None
     assert question["text"] == "请设计一个带工具调用的 Agent 系统"  # DEFAULT_GENERATED
-    assert values["asked_ids"] == []  # 生成题不入 asked_ids
-    # P1-M4.5-A：生成题也接候选人背景（出题官 prompt 含 profile）
-    gen_call = next(c for c in client.calls if "出题官" in c["system"])
+    assert values["asked_ids"] == []
+    # P1-M4.5-A：技术生成题也接候选人背景（出题官 prompt 含 profile）
+    gen_call = next(c for c in client.calls if "Agent 认知与架构" in c["system"])
     assert "RAG" in gen_call["system"]
     assert client.calls  # 出题官调用发生过
 
@@ -520,13 +550,13 @@ async def test_决策回放事件流_逐轮证据完整(install_llm, install_sea
     scores = iter([missed, DEFAULT_SCORE, DEFAULT_SCORE, DEFAULT_SCORE, DEFAULT_SCORE, DEFAULT_SCORE])
     client = install_llm(score=lambda: next(scores))
     install_search(_bank("agent-architecture", "rag"))
-    graph, _, config, state, _ = await graph_env(question_count=2)  # 1 技术 + 1 场景
+    graph, _, config, state, _ = await graph_env(question_count=2)  # 1 项目 + 1 技术
 
     await _run(graph, config, state)  # 开场
-    await _run(graph, config, Command(resume="我是应届生"))  # 提炼 → 出第 1 题
+    await _run(graph, config, Command(resume="我是应届生"))  # 提炼 → 出第 1 题（项目深挖）
     await _run(graph, config, Command(resume="首答……"))  # 评分 → 覆盖率低 → 遗漏追问
     await _run(graph, config, Command(resume="补充……"))  # 重评达标 → 深挖追问
-    values = await _run(graph, config, Command(resume="深挖补充……"))  # 深挖用尽 → 换题 → 第 2 题（场景）
+    values = await _run(graph, config, Command(resume="深挖补充……"))  # 深挖用尽 → 换题 → 第 2 题（技术）
 
     events = values["trace_log"]
     assert [e["type"] for e in events] == [
@@ -537,13 +567,13 @@ async def test_决策回放事件流_逐轮证据完整(install_llm, install_sea
     ask1, judge1, followup1, judge_re, followup2, judge_deepen, advance1, ask2 = (
         e["detail"] for e in events
     )
-    # 出题：目标域/难度为输入，工具输出 = 检索命中（题库题带 question_id，生成题记 0）
-    assert ask1["domain"] == "agent-architecture"
+    # 出题：首题为项目深挖（LLM 定制，无题库检索；难度随 state.difficulty，不再固定 L3）
+    assert ask1["domain"] == "project"
     assert ask1["difficulty"] == "L1"
-    assert ask1["from_bank"] is True
-    assert ask1["question_id"] == "q_agent-architecture"
-    assert ask1["question"] == "agent-architecture 方向的题目"
-    assert ask1["hits"] == 1
+    assert ask1["from_bank"] is False
+    assert ask1["question_id"] is None
+    assert ask1["question"] == "请设计一个带工具调用的 Agent 系统"
+    assert ask1["hits"] == 0
     # 评分：输入 = 本轮回答原文，输出 = 五维 + 覆盖率，状态变化 = 难度
     assert judge1["answer"] == "首答……"
     assert judge1["coverage"] == 0.5
@@ -558,23 +588,24 @@ async def test_决策回放事件流_逐轮证据完整(install_llm, install_sea
     # 追问轮重评：同一轮次的第二条评分事件（回答为追问补充原文）
     assert judge_re["answer"] == "补充……"
     assert judge_re["coverage"] == 1.0
-    # 深挖追问（P1-M4.5）：达标 → 深挖；题库题无 follow_ups 元数据 → LLM 现场生成
+    # 深挖追问（P1-M4.5）：达标 → 深挖；项目题 from_bank=False → LLM 现场生成
     assert followup2["decision"] == "deepen"
     assert followup2["reason"] == "deepen_ok"
     assert followup2["text"] == "面试官文案"
     assert judge_deepen["answer"] == "深挖补充……"
-    # 换题：原因 + 阶段推进
+    # 换题：原因 + 阶段推进（项目题答满 → 技术题）
     assert advance1["reason"] == "coverage_ok"
-    assert advance1["phase"] == "project"
-    # 场景题：LLM 生成，无检索命中
-    assert ask2["from_bank"] is False
-    assert ask2["question_id"] is None
-    assert ask2["hits"] == 0
-    assert ask2["domain"] == "project"
+    assert advance1["phase"] == "tech_base"
+    # 技术题：题库命中，带 question_id
+    assert ask2["from_bank"] is True
+    assert ask2["question_id"] == "q_agent-architecture"
+    assert ask2["hits"] == 1
+    assert ask2["domain"] == "agent-architecture"
+    assert ask2["difficulty"] == "L1"
 
-    # 走完余下流程：场景题首评 → 深挖（LLM 现场生成）→ 重评换题 → 反问 → 报告收尾
-    await _run(graph, config, Command(resume="场景题方案……"))
-    await _run(graph, config, Command(resume="场景深挖补充……"))
+    # 走完余下流程：技术题首评 → 深挖（题库无 follow_ups 元数据 → LLM 现场生成）→ 重评换题 → 反问 → 报告收尾
+    await _run(graph, config, Command(resume="技术题方案……"))
+    await _run(graph, config, Command(resume="技术深挖补充……"))
     await _run(graph, config, Command(resume="请问团队技术栈？"))
     values = await _run(graph, config, Command(resume="再问一个？"))
 
@@ -584,9 +615,9 @@ async def test_决策回放事件流_逐轮证据完整(install_llm, install_sea
     assert tail[2]["round"] is None  # 收尾事件不属任何轮次
     assert tail[2]["detail"]["answered_count"] == 2
     assert tail[2]["detail"]["weaknesses"] == ["agent-architecture"]
-    # 场景题深挖走 LLM 现场生成（FOLLOWUP_DEEPEN_TEMPLATE 调用发生过）
+    # 项目题/技术题深挖均走 LLM 现场生成（FOLLOWUP_DEEPEN_TEMPLATE 调用发生过）
     assert any("深挖" in call["system"] for call in client.calls)
-    # 全程只增不改：报告生成后事件数 = 主段事件 + 收尾 5 件（场景首评/深挖/重评/换题/报告）
+    # 全程只增不改：报告生成后事件数 = 主段事件 + 收尾 5 件（技术首评/深挖/重评/换题/报告）
     assert len(values["trace_log"]) == len(events) + 5
 
 
@@ -599,7 +630,7 @@ async def test_决策回放_难度降档留痕(install_llm, install_search, grap
     }
     install_llm(score=lambda: dict(low))
     install_search(_bank("agent-architecture", "rag", difficulty="L2"))
-    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")
+    graph, _, config, state, _ = await graph_env(question_count=3, difficulty="L2")  # 2 项目 + 1 技术
 
     await _run(graph, config, state)
     await _run(graph, config, Command(resume="我是应届生"))

@@ -16,12 +16,13 @@ from app.tools import question_search
 
 
 async def ask_node(state: InterviewState) -> dict:
-    if state.phase is Phase.PROJECT:
-        question, hits = await _generate_scenario(state), 0
-    else:
+    if state.phase is Phase.TECH_BASE:
         question, hits = await _pick_from_bank(state)
         if question is None:
             question, hits = await _generate_tech(state), 0
+    else:
+        # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
+        question, hits = await _generate_scenario(state), 0
     text = await llm.chat(
         [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
             question=question.text,
@@ -48,9 +49,9 @@ async def ask_node(state: InterviewState) -> dict:
         "chat_history": state.chat_history,
         "trace_log": state.trace_log,
     }
-    # 首次出题（WARMUP 之后）：进入技术问答阶段
+    # 首次出题（WARMUP 之后）：进入项目深挖阶段
     if state.phase not in (Phase.TECH_BASE, Phase.PROJECT):
-        updates["phase"] = Phase.TECH_BASE
+        updates["phase"] = Phase.PROJECT
     return updates
 
 
@@ -109,19 +110,25 @@ async def _generate_tech(state: InterviewState) -> QuestionRecord:
 
 
 async def _generate_scenario(state: InterviewState) -> QuestionRecord:
-    """场景题（PRD §4.1 高阶架构设计题）：结合候选人项目经历由 LLM 定制。"""
+    """项目深挖题（PRD §4.1 高阶架构设计题）：结合候选人项目经历由 LLM 定制。
+
+    P1-M4.6-C 泛化：项目深挖前置、按轮出题——轮次号供 LLM 换切入点避免重复，
+    难度随 state.difficulty（不再固定 L3）。
+    """
     generated = await llm.chat_json(
         [{"role": "system", "content": ASK_SCENARIO_TEMPLATE.format(
-            profile=state.candidate_profile or "（候选人未提供项目经历，出一道人人都能答的通用设计题）")}],
+            project_round=state.answered_count + 1,
+            difficulty=state.difficulty,
+            profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）")}],
         schema=GeneratedQuestion,
         temperature=0.7,
     )
     return QuestionRecord(
         text=generated.text,
-        domain="project",  # 场景题单列，不参与知识域统计（aggregate 口径）
+        domain="project",  # 项目深挖题单列，不参与知识域统计（aggregate 口径）
         topic=generated.topic,
-        difficulty="L3",
+        difficulty=state.difficulty,
         key_points=generated.key_points,
         from_bank=False,
-        question_type="scenario",  # 加问不计入配置题量（COUNTED_QUESTION_TYPES）
+        question_type="scenario",  # 题型标识（COUNTED_QUESTION_TYPES 计入轮次）
     )

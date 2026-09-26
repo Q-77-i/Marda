@@ -33,18 +33,36 @@ def test_五题答三题可主动结束():
     assert meets_end_quota(3, 5) is True
 
 
-def test_技术轮答满进场景题():
-    # 轮次语义：10 轮 = 9 技术 + 1 场景，答满 9 轮进场景题
-    assert phase_after_answer(Phase.TECH_BASE, 9, 10) is Phase.PROJECT
-    assert phase_after_answer(Phase.TECH_BASE, 10, 10) is Phase.PROJECT
+def test_项目题答满进技术阶段():
+    # P1-M4.6-C 顺序：项目深挖前置。10 轮 = 3 项目 + 7 技术，答满 3 道项目题进技术阶段
+    assert phase_after_answer(Phase.PROJECT, 3, 10) is Phase.TECH_BASE
+    assert phase_after_answer(Phase.PROJECT, 4, 10) is Phase.TECH_BASE
+
+
+def test_项目题未答满留在项目阶段():
+    assert phase_after_answer(Phase.PROJECT, 2, 10) is Phase.PROJECT
+
+
+def test_技术轮答满进反问():
+    assert phase_after_answer(Phase.TECH_BASE, 10, 10) is Phase.CLOSING
+    assert phase_after_answer(Phase.TECH_BASE, 11, 10) is Phase.CLOSING
 
 
 def test_技术轮未满留在技术阶段():
-    assert phase_after_answer(Phase.TECH_BASE, 8, 10) is Phase.TECH_BASE
+    assert phase_after_answer(Phase.TECH_BASE, 9, 10) is Phase.TECH_BASE
 
 
-def test_场景题完成进反问():
-    assert phase_after_answer(Phase.PROJECT, 10, 10) is Phase.CLOSING
+def test_五题场两道项目题():
+    # 5 轮 = 2 项目 + 3 技术
+    assert phase_after_answer(Phase.PROJECT, 1, 5) is Phase.PROJECT
+    assert phase_after_answer(Phase.PROJECT, 2, 5) is Phase.TECH_BASE
+    assert phase_after_answer(Phase.TECH_BASE, 5, 5) is Phase.CLOSING
+
+
+def test_两题场保底一道技术题():
+    # 2 轮 = 1 项目 + 1 技术（N−1 保底）
+    assert phase_after_answer(Phase.PROJECT, 1, 2) is Phase.TECH_BASE
+    assert phase_after_answer(Phase.TECH_BASE, 2, 2) is Phase.CLOSING
 
 
 def test_反问阶段不变():

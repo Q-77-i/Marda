@@ -15,7 +15,7 @@ export const DOMAIN_LABELS: Record<string, string> = {
   algorithms: "手撕算法",
   behavioral: "行为与项目面",
   "cs-fundamentals": "计算机基础",
-  project: "项目场景题",
+  project: "项目深挖",
 };
 
 /** 五维评分维度（与 backend aggregate.FIVE_DIMS 同序）。 */
@@ -31,7 +31,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
   intro: "开场",
   warmup: "自我介绍",
   tech_base: "技术问答",
-  project: "场景题",
+  project: "项目深挖",
   closing: "反问环节",
   finished: "已结束",
 };
@@ -41,7 +41,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
  * 未知题型显示原值不猜）。tech 走编号展示，不入此表。
  */
 export const QUESTION_TYPE_LABELS: Record<string, string> = {
-  scenario: "场景题",
+  scenario: "项目深挖",
 };
 
 export function domainLabel(domain: string): string {

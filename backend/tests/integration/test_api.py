@@ -20,10 +20,10 @@ from app.config import get_settings
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
 from fake_llm import FakeLLMClient
 
-# 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 技术 + 1 场景；
+# 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 项目深挖 + 1 技术；
 # 每题首答达标 → 深挖（P1-M4.5）→ 深挖补充换题 → 2 反问 → 报告）
 TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……", "第一题深挖补充……",
-         "场景题方案是……", "场景题深挖补充……", "请问团队技术栈？", "晋升路径？"]
+         "第二题回答……", "第二题深挖补充……", "请问团队技术栈？", "晋升路径？"]
 
 
 async def _events(response) -> list[dict]:
@@ -100,13 +100,10 @@ async def test_消息流出题事件与阶段推进(client):
     interview_id, _ = await _create(client)
     events = await _send(client, interview_id, TURNS[0])
     q = [e for e in events if e["event"] == "question"]
-    assert len(q) == 1
-    assert q[0]["data"] == {
-        "index": 1, "question_id": "q_arch", "domain": "agent-architecture", "difficulty": "L1",
-    }
+    assert q == []  # 首题为项目深挖题（生成题无 question_id → 不发 question 事件）
     assert any(e["event"] == "delta" for e in events)
     assert events[-1]["event"] == "meta"
-    assert events[-1]["data"]["phase"] == "tech_base"
+    assert events[-1]["data"]["phase"] == "project"  # P1-M4.6-C：项目深挖前置
 
 
 async def test_完整一场落库与报告(client):
@@ -115,14 +112,14 @@ async def test_完整一场落库与报告(client):
     for turn in TURNS:
         events = await _send(client, interview_id, turn)
         questions += [e for e in events if e["event"] == "question"]
-    # 每道新题只发一次 question 事件（追问/评分重传 current_question 不算新题）
+    # 每道新题只发一次 question 事件（项目深挖题无 question_id 不发；追问/评分重传不算新题）
     assert [q["data"] for q in questions] == [
-        {"index": 1, "question_id": "q_arch", "domain": "agent-architecture", "difficulty": "L1"},
+        {"index": 2, "question_id": "q_arch", "domain": "agent-architecture", "difficulty": "L1"},
     ]
     done = [e for e in events if e["event"] == "done"]
     assert len(done) == 1
     assert done[0]["data"] == {"interview_id": interview_id, "report_ready": True}
-    # answers 落库：1 技术题 + 1 场景题
+    # answers 落库：1 项目深挖题 + 1 技术题
     rows = _db_rows(f"SELECT * FROM answers WHERE interview_id='{interview_id}' ORDER BY id")
     assert len(rows) == 2
     # 报告落库（SPEC §8：结束后一次写入）
@@ -134,15 +131,15 @@ async def test_完整一场落库与报告(client):
     # FR-25 复盘字段（SPEC §4.6）：题库题附参考答案、我的回答（首答 + 深挖补充分段）、五维、关键点对比
     comments = report["payload"]["per_question_comments"]
     assert len(comments) == 2
-    assert comments[0]["question_id"] == "q_arch"
+    assert comments[0]["question_id"] is None  # 项目深挖题（前置，无权威答案）
     assert comments[0]["candidate_answer"] == f"{TURNS[1]}\n\n{FOLLOWUP_ANSWER_MARKER}{TURNS[2]}"
-    assert comments[0]["reference_answer"] == "参考答案"
+    assert comments[0]["reference_answer"] is None
     assert comments[0]["score"]["fundamentals"] == 4
     assert comments[0]["covered_key_points"] == ["k1", "k2"]
     assert comments[0]["missed_key_points"] == []
-    assert comments[1]["question_id"] is None  # 场景题
+    assert comments[1]["question_id"] == "q_arch"  # 技术题
     assert comments[1]["candidate_answer"] == f"{TURNS[3]}\n\n{FOLLOWUP_ANSWER_MARKER}{TURNS[4]}"
-    assert comments[1]["reference_answer"] is None
+    assert comments[1]["reference_answer"] == "参考答案"
     # interviews 表收尾
     row = db.get_interview(get_settings().db_path, interview_id)
     assert row["status"] == "finished"
@@ -152,8 +149,9 @@ async def test_完整一场落库与报告(client):
     assert r.status_code == 200
     payload = r.json()["report"]
     assert payload["answered_count"] == 2
-    assert payload["per_question_comments"][0]["reference_answer"] == "参考答案"
-    assert payload["per_question_comments"][0]["score"]["technical_depth"] == 4
+    assert payload["per_question_comments"][0]["reference_answer"] is None
+    assert payload["per_question_comments"][1]["reference_answer"] == "参考答案"
+    assert payload["per_question_comments"][1]["score"]["technical_depth"] == 4
 
 
 async def test_会话状态恢复(client):
@@ -163,7 +161,7 @@ async def test_会话状态恢复(client):
     assert r.status_code == 200
     data = r.json()
     assert data["interview_id"] == interview_id
-    assert data["phase"] == "tech_base"
+    assert data["phase"] == "project"  # P1-M4.6-C：项目深挖前置
     assert data["answered_count"] == 0
     assert data["question_count"] == 2
     assert data["status"] == "running"
@@ -339,7 +337,7 @@ async def test_回放_整场事件流可查(client):
     assert data["events"][-1]["round"] is None
     # 事件细节经 JSON 序列化后完整（score 为标量 dict，不是 Pydantic 对象）
     ask = data["events"][0]["detail"]
-    assert ask["question_id"] == "q_arch" and ask["from_bank"] is True
+    assert ask["question_id"] is None and ask["from_bank"] is False  # 首题为项目深挖题
     judge = next(e for e in data["events"] if e["type"] == "judge")
     assert judge["detail"]["answer"] == TURNS[1]
     assert judge["detail"]["score"]["technical_depth"] == 4

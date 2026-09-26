@@ -115,7 +115,7 @@ class InterviewState(BaseModel):
 
     interview_id: str = ""
     position: str = ""
-    question_count: int = 10  # 全场问答轮次（T7a-R1）：组成 = 技术 question_count−1 + 场景 1（domain.SCENARIO_COUNT）
+    question_count: int = 10  # 全场问答轮次（P1-M4.6-C）：项目深挖 project_count(N) + 技术 N−project_count(N)（domain.project_count）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
