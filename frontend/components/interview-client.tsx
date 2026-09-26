@@ -23,10 +23,12 @@ import {
   getSession,
   sendMessage,
   type Phase,
+  type Session,
   type SSEHandlers,
 } from "@/lib/api";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { progressLabel } from "@/lib/format";
+import { reconcile, type PendingTurn } from "@/lib/recovery";
 import { UnauthorizedError, redirectToLogin, setUnauthorizedHandler } from "@/lib/session";
 import { TypewriterQueue } from "@/lib/typewriter";
 
@@ -45,7 +47,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [readonly, setReadonly] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
-  const [failedInput, setFailedInput] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingTurn | null>(null);
   const [draft, setDraft] = useState("");
 
   const queueRef = useRef(new TypewriterQueue());
@@ -56,8 +59,34 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const nearBottomRef = useRef(true);
+  const messagesRef = useRef<ChatItem[]>([]);
+  const pendingRef = useRef<PendingTurn | null>(null);
 
-  const nextId = () => `m${idRef.current++}`;
+  const nextId = useCallback(() => `m${idRef.current++}`, []);
+
+  /* 渲染列表的镜像：submit 是稳定回调（deps 只有 interviewId），要从里面数
+     「发送前本地已有几条候选人气泡」只能读 ref */
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  /* 会话数据 → UI 状态（首次载入与失败后重同步共用，避免两处口径漂移）。 */
+  const applySession = useCallback(
+    (session: Session) => {
+      setMessages(
+        session.chat_history.map((m) => ({
+          id: nextId(),
+          role: m.role,
+          content: m.content,
+        })),
+      );
+      setPhase(session.phase);
+      setAnswered(session.answered_count);
+      setTotal(session.question_count);
+      setReadonly(session.status === "finished");
+    },
+    [nextId],
+  );
 
   /* 接管 401 处置：默认的「直接踢回登录页」在答题中途体感太差，改为弹确认后再跳 */
   useEffect(() => {
@@ -72,17 +101,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     getSession(interviewId, { reconnect: true })
       .then((session) => {
         if (!active) return;
-        setMessages(
-          session.chat_history.map((m) => ({
-            id: nextId(),
-            role: m.role,
-            content: m.content,
-          })),
-        );
-        setPhase(session.phase);
-        setAnswered(session.answered_count);
-        setTotal(session.question_count);
-        setReadonly(session.status === "finished");
+        applySession(session);
         setLoading(false);
       })
       .catch((err: unknown) => {
@@ -94,7 +113,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     return () => {
       active = false;
     };
-  }, [interviewId, router]);
+  }, [interviewId, applySession]);
 
   /* 吐字循环：busy 期间运行，队列排空且流已关闭时收尾 */
   useEffect(() => {
@@ -185,17 +204,56 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     done: () => setReportReady(true),
   };
 
+  /** pending 同时写 ref（submit 内联闭包要读）与 state（渲染要读）。 */
+  const applyPending = (next: PendingTurn | null) => {
+    pendingRef.current = next;
+    setPending(next);
+  };
+
+  /**
+   * 失败后对账（SPEC §7 `stalled`）：这条作答在服务端到底去了哪。
+   *
+   * 「服务端其实跑完了、只是回复没传回来」这一态**不能重发**——重发会被当成新一轮，
+   * 同一份回答判两次；这种就地把漏掉的回复补进列表即可。其余情况保留「重试」，
+   * 重发要么补发（从未送达）、要么把卡住的节点踢起来（失败节点已由服务端测试钉死）。
+   */
+  const reconcileFailure = useCallback(
+    async (failed: PendingTurn) => {
+      try {
+        // 不带 reconnect：重连语是给「重新进页面」的，这里只是核对状态
+        const session = await getSession(interviewId);
+        if (reconcile(failed, session) === "resend") return;
+        queueRef.current.clear(); // 列表整体换成服务端版本，未吐完的残缺文案作废
+        applySession(session);
+        applyPending(null);
+        setError(null);
+        setNotice("上一轮其实已经提交成功，只是回复没传回来——已按服务端的记录补全。");
+      } catch {
+        // 连会话都取不到（多半是网络整体不通）：保持「重试」，重发是安全的兜底
+      }
+    },
+    [interviewId, applySession],
+  );
+
   const submit = useCallback(
     async (content: string, appendUser: boolean) => {
       const text = content.trim();
       if (!text || busyRef.current) return;
+      // 发送前本地已有的候选人气泡数 = 服务端用户消息条数的下限（对账基准）
+      const baseline = messagesRef.current.filter((m) => m.role === "user").length;
       busyRef.current = true;
       setBusy(true);
       setError(null);
-      setFailedInput(null);
+      applyPending(null);
       if (appendUser) {
         setMessages((prev) => [...prev, { id: nextId(), role: "user", content: text }]);
       }
+      const failed = (message: string) => {
+        setError(message);
+        const turn = { text, baseline };
+        applyPending(turn);
+        void reconcileFailure(turn);
+      };
       streamingRef.current = true;
       try {
         await sendMessage(
@@ -206,17 +264,13 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             /* error 事件发生在流内（HTTP 仍是 200），异常不会走到下面的 catch——
                这里必须自己记下这一轮的输入，否则横幅只剩报错、没有「重试」出口。
                重发同一文本不会重复计分：图停在失败节点上，重发 = 从断点续跑该节点 */
-            error: (e) => {
-              setError(e.message);
-              setFailedInput(text);
-            },
+            error: (e) => failed(e.message),
           }),
         );
       } catch (err) {
         // 401 由全局确认框接管，不再重复提示（重试也只会再 401）
         if (!(err instanceof UnauthorizedError)) {
-          setError(err instanceof Error ? err.message : "网络异常，请重试");
-          setFailedInput(text);
+          failed(err instanceof Error ? err.message : "网络异常，请重试");
         }
         queueRef.current.clear(); // 丢弃未吐完的残缺文案，避免与错误提示混淆
       } finally {
@@ -228,19 +282,45 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [interviewId],
+    [interviewId, reconcileFailure],
   );
 
+  /**
+   * 有未落地的作答时先把它送出去（重发 = 补发从未送达的 / 踢活卡住的节点），
+   * 返回 true 表示本次操作已被接管——用户要发的新内容留在输入框里，等面试官回应再发。
+   * 不接管就会重演老问题：新文本进了卡住的图会被丢弃（气泡却照常追加，看着像答了）。
+   */
+  const flushPending = (noticeText: string): boolean => {
+    const stuck = pendingRef.current;
+    if (!stuck) return false;
+    void submit(stuck.text, false);
+    setNotice(noticeText);
+    return true;
+  };
+
   const handleSend = () => {
+    if (flushPending("上一轮的回答还没提交成功，已先为你重发；看到面试官回应后再发这条。")) {
+      return;
+    }
+    setNotice(null); // 提示语只服务它那一次动作，新一轮动作即收走
     const text = draft;
     setDraft("");
     void submit(text, true);
   };
 
-  const handleEnd = () => void submit(END_COMMAND, true);
+  const handleEnd = () => {
+    if (flushPending("上一轮的回答还没提交成功，已先为你重发；看到面试官回应后再结束面试。")) {
+      return;
+    }
+    setNotice(null);
+    void submit(END_COMMAND, true);
+  };
 
   const handleRetry = () => {
-    if (failedInput) void submit(failedInput, false);
+    const stuck = pendingRef.current;
+    if (!stuck) return;
+    setNotice(null);
+    void submit(stuck.text, false); // appendUser=false：气泡已经在列表里
   };
 
   const finished = reportReady;
@@ -324,13 +404,22 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
       <div className="border-t bg-background">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:px-6">
+          {notice && (
+            <div
+              className="rounded-lg border bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
+              role="status"
+            >
+              {notice}
+            </div>
+          )}
+
           {error && (
             <div
               className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"
               role="alert"
             >
               <span className="text-sm text-destructive">{error}</span>
-              {failedInput && (
+              {pending && (
                 <Button variant="outline" size="sm" onClick={handleRetry}>
                   重试
                 </Button>

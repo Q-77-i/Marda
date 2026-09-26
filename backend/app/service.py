@@ -52,6 +52,26 @@ def _event(name: str, data: dict) -> dict:
     return {"event": name, "data": json.dumps(data, ensure_ascii=False)}
 
 
+def engine_stalled(snapshot: Any) -> bool:
+    """引擎是否卡在失败节点上（P1-M4.7 后续，前端「重试」的判据）。
+
+    节点抛异常后 checkpoint 停在「待执行失败节点」上：`next` 指向那个节点、**没有中断载荷**；
+    正常停在 pause（唯一中断点）时 `next == ("pause",)` 且 tasks 带 interrupts。
+    实测两态（2026-09-27）：healthy `('pause',)/interrupt=True`，stalled `('ask',)/interrupt=False`。
+
+    为什么不让前端猜：前端只能从「末条消息是不是 assistant」之类的外部特征推断引擎死活，
+    而报告节点失败恰恰也表现为「末条是 assistant」——猜错就是面试永久卡死。
+    这个判据由服务端给，确定性、可单测。
+
+    已知盲区：**正在跑**的那一轮读到的形状与 stalled 相同（checkpoint 停在待执行节点上）。
+    只有客户端先断、服务端还在跑的那几秒窗口会撞上（重试是用户手动点的，窗口极小）；
+    真要根治得让服务端登记在跑的场次，单进程内可行、多 worker 就不成立，暂不设防。
+    """
+    if not snapshot.next:  # 已结束（next 为空）不是 stalled
+        return False
+    return not any(task.interrupts for task in snapshot.tasks)
+
+
 def map_updates(
     chunk: dict, snapshot: dict, *, interview_id: str | None = None
 ) -> tuple[list[dict], dict]:
@@ -139,10 +159,13 @@ class Service:
             raise RuntimeError("service 未启动（lifespan）")
         return self._graph
 
+    async def _snapshot(self, interview_id: str):
+        """checkpoint 当前 StateSnapshot（线程不存在时 next/values 皆空）。"""
+        return await self._g.aget_state({"configurable": {"thread_id": interview_id}})
+
     async def _current_values(self, interview_id: str) -> dict:
         """checkpoint 当前 state（plain dict）；无此线程时为空 dict。"""
-        snapshot = await self._g.aget_state({"configurable": {"thread_id": interview_id}})
-        return _plain(snapshot.values)
+        return _plain((await self._snapshot(interview_id)).values)
 
     async def _require_owner(self, interview_id: str, user_id: str) -> None:
         """归属校验（FR-23）：业务库 interviews.user_id 为权威。
@@ -243,9 +266,12 @@ class Service:
 
         reconnect=true（P1-M4.7-D 重连语）：答题中的场次在响应里附一句问候（重发当前题干）。
         文案只随本次响应返回、**不落 checkpoint**——连续刷新不会堆叠，回放数据不受影响。
+
+        `stalled`（P1-M4.7 后续）：引擎是否卡在失败节点上——前端「重试」的判据。见 `engine_stalled`。
         """
         await self._require_owner(interview_id, user_id)
-        values = await self._current_values(interview_id)
+        snapshot = await self._snapshot(interview_id)
+        values = _plain(snapshot.values)
         if not values:
             raise InterviewNotFoundError(interview_id)
         history = list(values.get("chat_history", []))
@@ -262,6 +288,7 @@ class Service:
             "question_count": values.get("question_count", 0),
             "chat_history": history,
             "report_ready": values.get("status") == "finished",
+            "stalled": engine_stalled(snapshot),
         }
 
     async def get_report(self, interview_id: str, user_id: str) -> dict | None:

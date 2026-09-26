@@ -43,6 +43,8 @@ export type Session = {
   question_count: number;
   chat_history: ChatMessage[];
   report_ready: boolean;
+  /** 引擎是否卡在失败节点上（重试判据，见 lib/recovery.ts；后端 service.engine_stalled）。 */
+  stalled: boolean;
 };
 
 export type InterviewRow = {

@@ -313,6 +313,79 @@ async def test_LLM失败发error事件(client, monkeypatch):
     assert errs[0]["data"]["retryable"] is False
 
 
+async def _session(client, interview_id: str) -> dict:
+    r = await client.get(f"/api/interviews/{interview_id}")
+    assert r.status_code == 200
+    return r.json()
+
+
+def _user_messages(session: dict) -> list[dict]:
+    return [m for m in session["chat_history"] if m["role"] == "user"]
+
+
+async def test_流内失败打上stalled标记_重试后清除(client, monkeypatch):
+    """P1-M4.7 后续：「重试」不能靠前端猜服务端死活（末条消息是不是 assistant 之类的
+    外部特征会把报告节点失败误判成「已跑完」→ 面试永久卡死）。会话接口直接给判据。
+
+    这里走真图：健康 → stalled=false（停在 pause 中断点）；节点抛异常 → true；
+    重试（重发同一文本）跑通 → 回到 false。
+    """
+    interview_id, _ = await _create(client)
+    assert (await _session(client, interview_id))["stalled"] is False  # 健康：停在中断点等作答
+
+    real_chat = llm.chat
+    flaky = {"fail": True}
+
+    async def _chat(messages, **kwargs):
+        if flaky["fail"] and "用面试官口吻" in messages[0]["content"]:
+            raise llm.LLMError("模拟抖动")  # 只让 ask 节点那次失败
+        return await real_chat(messages, **kwargs)
+
+    monkeypatch.setattr(llm, "chat", _chat)
+    events = await _send(client, interview_id, TURNS[0])
+    assert [e for e in events if e["event"] == "error"], "错误事件是失败路径的前提"
+    assert (await _session(client, interview_id))["stalled"] is True
+
+    flaky["fail"] = False
+    events = await _send(client, interview_id, TURNS[0])  # 重试 = 重发同一文本
+    assert [e for e in events if e["event"] == "error"] == []
+    assert (await _session(client, interview_id))["stalled"] is False
+
+
+async def test_评分节点失败后重试_以原始回答计分且不重复计分(client, monkeypatch):
+    """承重墙：答案已随 pause 落到 state.user_input，重发只是把失败的 judge「踢」起来。
+
+    前端重试的重发与「服务端是否已入账」正交（它拿不到 judge 的成败），所以这条语义
+    必须钉死：resume 值被丢弃、判的是 state 里那份原始回答、chat_history 只增一条。
+    这里故意在重试时发一段**别的话**——若哪天 langgraph 改成把 resume 值喂给待跑节点，
+    这条会立刻红：那时「重发同一文本」就不再安全，前端契约要跟着重写。
+    """
+    interview_id, _ = await _create(client)
+    await _send(client, interview_id, TURNS[0])  # 提炼 → 出第 1 道题，停在中断点等作答
+
+    real_json = llm.chat_json
+    flaky = {"fail": True}
+
+    async def _chat_json(messages, **kwargs):
+        if flaky["fail"] and "评分官" in messages[0]["content"]:
+            raise llm.LLMError("模拟评分抖动")
+        return await real_json(messages, **kwargs)
+
+    monkeypatch.setattr(llm, "chat_json", _chat_json)
+    await _send(client, interview_id, TURNS[1])
+    session = await _session(client, interview_id)
+    assert session["stalled"] is True
+    # judge 先调 LLM 再入账：它失败 = 这条回答还没进服务端的账（自我介绍那条是 profile 入的）
+    assert [m["content"] for m in _user_messages(session)] == [TURNS[0]]
+
+    flaky["fail"] = False
+    await _send(client, interview_id, "重试时随手敲的别的话")
+    session = await _session(client, interview_id)
+    assert session["stalled"] is False
+    assert [m["content"] for m in _user_messages(session)] == [TURNS[0], TURNS[1]]  # 判的是原始回答
+    assert session["answered_count"] == 1  # 重发不重复计分
+
+
 # ---- 决策回放接口（P1-M4 / FR-21）----
 
 
