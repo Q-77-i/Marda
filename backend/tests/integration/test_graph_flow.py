@@ -14,7 +14,7 @@ from app import llm
 from app.graph.graph import build_graph, run_config
 from app.graph.state import FOLLOWUP_ANSWER_MARKER, InterviewState
 from app.tools import question_search
-from fake_llm import DEFAULT_CLOSING, DEFAULT_SCORE, FakeLLMClient
+from fake_llm import DEFAULT_CLOSING, DEFAULT_GENERATED, DEFAULT_SCORE, FakeLLMClient
 
 
 @pytest.fixture(autouse=True)
@@ -565,6 +565,33 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     gen_call = next(c for c in client.calls if "Agent 认知与架构" in c["system"])
     assert "RAG" in gen_call["system"]
     assert client.calls  # 出题官调用发生过
+
+
+async def test_第二道项目题带前情_出题prompt含已问题目原文(install_llm, install_search, graph_env):
+    """项目深挖框句重复（M4.6-C 遗留）：出题官每轮都是独立调用、只拿得到轮次号，
+    于是「换个切入点」等于掷骰子——三道题套同一个开头。
+
+    这里钉死的是**接线**：第二道起必须把已问过的项目题原文喂回去（不然无从谈「换开头句式」）。
+    措辞到底有没有不再雷同是生成质量问题，靠真链路 smoke 看，单测不装作能判。
+    """
+    client = install_llm()
+    install_search(_bank("agent-architecture", "rag", "planning-reasoning"))
+    graph, _, config, state, _ = await graph_env(question_count=5)  # project_count(5)=2
+
+    await _run(graph, config, state)  # 开场
+    await _run(graph, config, Command(resume="我是应届生"))  # 提炼 → 第 1 道项目题
+    first = next(c["system"] for c in client.calls if "项目题" in c["system"])
+    assert "（这是第一道项目题）" in first  # 没前情时说清楚，别让模型自己脑补
+    assert "已问过的项目题" not in first
+
+    await _run(graph, config, Command(resume="首答……"))  # 评分 → 深挖追问
+    await _run(graph, config, Command(resume="深挖补充……"))  # 换题 → 第 2 道项目题
+    scenario_calls = [c["system"] for c in client.calls if "项目题" in c["system"]]
+    assert len(scenario_calls) == 2
+    second = scenario_calls[1]
+    assert "已问过的项目题" in second
+    assert DEFAULT_GENERATED["text"] in second  # 第 1 题的题干原文（出题官看得见措辞）
+    assert "不要复述候选人的项目背景" in second  # 禁复述背景（那是衔接语的活）
 
 
 async def test_决策回放事件流_逐轮证据完整(install_llm, install_search, graph_env):

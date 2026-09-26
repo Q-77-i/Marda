@@ -6,12 +6,18 @@
 from __future__ import annotations
 
 from app import llm
-from app.agents.prompts import ASK_BANK_TEMPLATE, ASK_GENERATE_TEMPLATE, ASK_SCENARIO_TEMPLATE
+from app.agents.prompts import (
+    ASKED_PROJECT_EMPTY,
+    ASKED_PROJECT_HEADER,
+    ASK_BANK_TEMPLATE,
+    ASK_GENERATE_TEMPLATE,
+    ASK_SCENARIO_TEMPLATE,
+)
 from app.agents.schemas import GeneratedQuestion
 from app.domain import DOMAIN_LABELS
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
-from app.graph.rules.transition import buffer_line, transition_line
+from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
 from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
 from app.tools import question_search
 
@@ -114,6 +120,15 @@ async def _generate_tech(state: InterviewState) -> QuestionRecord:
     )
 
 
+def _asked_project_block(state: InterviewState) -> str:
+    """已问过的项目题原文（P1-M4.7 后续）：出题官每轮都是新调用，不喂前情就只会
+    套同一个开头——「换一个切入点」得先让它看得见前面问过什么。"""
+    texts = [q.text for q in state.answered_questions if q.domain == PROJECT_DOMAIN]
+    if not texts:
+        return ASKED_PROJECT_EMPTY
+    return ASKED_PROJECT_HEADER + "\n".join(f"{i}. {t}" for i, t in enumerate(texts, 1))
+
+
 async def _generate_scenario(state: InterviewState) -> QuestionRecord:
     """项目深挖题（PRD §4.1 高阶架构设计题）：结合候选人项目经历由 LLM 定制。
 
@@ -124,13 +139,14 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
         [{"role": "system", "content": ASK_SCENARIO_TEMPLATE.format(
             project_round=state.answered_count + 1,
             difficulty=state.difficulty,
-            profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）")}],
+            profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）",
+            asked=_asked_project_block(state))}],
         schema=GeneratedQuestion,
         temperature=0.7,
     )
     return QuestionRecord(
         text=generated.text,
-        domain="project",  # 项目深挖题单列，不参与知识域统计（aggregate 口径）
+        domain=PROJECT_DOMAIN,  # 项目深挖题单列，不参与知识域统计（aggregate 口径）
         topic=generated.topic,
         difficulty=state.difficulty,
         key_points=generated.key_points,
