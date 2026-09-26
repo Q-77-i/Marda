@@ -193,6 +193,13 @@ def update_difficulty(state) -> None:
 
 **项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
 
+**同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮都是**独立调用**、只拿得到轮次号，不喂前情时「换个切入点」等于掷骰子——三道题套同一个开头（真链路实测：题干原文已带「你在 Marda 码达面试引擎里做了一套……」这类背景复述，口吻层再改写也抹不掉）。修法两条同时在位：
+
+1. **喂回已问题目原文**：`_asked_project_block(state)` 取 `answered_questions` 里的项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽——出题官只有看见措辞才谈得上换开头句式；一道都还没问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型自行脑补前情；
+2. **两层模板同禁复述背景**：场景题模板写死「不复述候选人的项目背景（『你提到…』『你在…里做了…』一律不写）」——题前的衔接语（§4.8 人味层）已经交代过「结合你的项目」，题目再铺一句简历复述就是模板脸；口吻层模板同步加这条，避免改写阶段又把背景捡回来。
+
+措辞是否真的不再雷同属生成质量，靠真链路 smoke 人眼验收；单测只钉**接线**（第二道起 prompt 必须带上第一道原文，见 `test_第二道项目题带前情_出题prompt含已问题目原文`）。
+
 **出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
 
 1. **question_id 不变**：口吻层只产出面试官文案（`chat_history`），`state.current_question` 恒为原题记录——题库题的 question_id/key_points 原值保留，回放/评分/参考答案对齐不受改写影响；
@@ -360,7 +367,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
 | POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
-| GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
+| GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
@@ -375,6 +382,10 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | question | `{index, question_id, domain, difficulty}` | 新题提示（只在新题时发一次：追问/评分重传同题不发；生成题无 question_id 不发） |
 | done | `{interview_id, report_ready}` | 面试结束 |
 | error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限）：**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义） |
+
+**`stalled`（P1-M4.7 后续）**：`true` = 图卡在失败节点上（`next` 指向该节点且无中断载荷），区别于正常停在 `pause` 中断点（`next == ("pause",)` 且 tasks 带 interrupts）；已结束（`next` 为空）恒为 `false`。它是**服务端给的**判据，不是让前端从「末条消息是不是 assistant」这类外部特征反推——报告节点失败恰恰也表现为「末条是 assistant」，猜错就是面试永久卡死。
+
+前端据此分两路（决策纯函数 `frontend/lib/recovery.ts`，vitest 覆盖）：卡住或回答没入账 → 重发（踢活失败节点 / 补发从未送达的回答）；**已跑完只是回复没传回来 → 只按服务端记录重建列表，绝不重发**（重发会被当成新一轮，同一份回答判两次）。
 
 工程要求：`stream_mode=["updates"]`（llm.py 走裸 openai SDK，无 LangChain messages token 流可推；打字机效果由前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
 
@@ -445,6 +456,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-27 三条小修（P1-M4.7 后续，均为真链路暴露）：① §4.4 项目深挖题措辞去重（喂回已问题目原文 + 两层模板同禁复述背景）；② §7 会话响应新增 `stalled` 与前端两路处置（重发 / 只重建列表），`error` 事件补「不能靠前端猜死活」的口径与 `engine_stalled` 的两态判据；③ 成本回读口径与 Langfuse 模型价目核对（代码无改动，见踩坑记录）
 - 2026-09-27 错误路径小修（P1-M4.7 后续）：§7 的 `error` 事件补口语义——流内错误时 HTTP 仍是 200、场次仍有效、**图停在失败节点上**，故客户端「重试」= 重发同一文本从断点续跑（已入账的回答不重复计分）；前端此前只 `setError` 不记 `failedInput` → 横幅没有重试出口、用户只能手动重打发一条重复消息。新增集成测试钉死「重发不重复计分」这一承重语义
 - 2026-09-27 P1-M4.7-D（面试官人味层 + 技术题同域成块）：新增 §4.8（六类黏合点分两路生成——高频短衔接走 `rules/transition.py` 模板零 LLM，低频长文开场白/结束陈词走 LLM 每场 2 次；衔接语与新题同条消息、**答错缓冲独立成条**（回应上一题，prepend 会时序错位）；域标签插值按中文排版补空格；结束陈词模板无输入 + 四条红线含**禁止虚构后续流程**（真链路实测踩到「后续会有同事联系你」）、陈词调用失败降级跳过**不连坐报告**；重连语走 `?reconnect=true` 只附响应不落库）；§4.3 quota 补同域成块粘性（`pick_domain` 当前域配额未尽即续问，计数取**已答题**——`remaining_quota` 为当前题 +1 会提前切域；`allocate_quota` 未动，块序与域分布对同一 N 确定 → 跨场次可比性不受影响）；§4.4 补出题顺序；§7 补 reconnect 参数；smoke 加 `SMOKE_QUESTION_COUNT`、重连核对、同域成块断言 + 块内难度曲线打印、结束陈词红线自查，并**补印此前被静默忽略的 SSE error 事件**（实测有一轮因此「答了没反应」看不出来）
 - 2026-09-26 P1-M4.6（C 阶段重排，项目深挖前置）：§4.3 advance 重写——PROJECT 答满 `project_count(question_count)`（min(3, max(2, ceil(N/3)), N−1)，保底 1 道技术题）→ TECH_BASE，答满 question_count → CLOSING；quota 技术轮数改 `question_count − project_count`；§4.1/§4.4 补项目深挖前置口径（首题与 PROJECT 阶段走 `_generate_scenario`：按轮出题、难度随 `state.difficulty`、domain="project" 不参与域统计保留）；展示标签「场景题」→「项目深挖」（question_type 值 scenario 不变，phase 枚举不变）；图边一条不动
