@@ -178,14 +178,18 @@ def update_difficulty(state) -> None:
 
 **quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − project_count），例：10 轮 → 3 项目深挖 + 7 道技术题 → Agent 认知 2 / RAG 1 / 规划推理 1 / Tool-FC 1 / Memory 1 / 工程化 1。
 
+**同域成块（P1-M4.7-D）**：`pick_domain` 改粘性——当前域配额未尽就继续同域，用尽才切「剩余配额最多」的域，于是技术段是「域连问」而非跨域交错（跨域交错时题与题之间无逻辑链，体感像随机抽题，且「我们换个方向」这类衔接语跨域才成立）。计数必须取**已答题**（`Counter(q.domain for q in answered_questions)`），不能用 `remaining_quota`——它为当前题 +1，会把「最后一题」判成「配额已尽」而提前切域。**块序与域分布对同一 N 完全确定**（N=10：Agent×2 / RAG / 规划 / Tool / Memory / 工程化 各成一块），块内题目仍随机。**跨场次可比性不受影响**：`allocate_quota` / `remaining_quota` 语义未动，单测锁死「同域成块不改变域分布（== allocate_quota(N)）」与两档块序（10 题 / 15 题）。
+
 **advance.py**：`answered_count+1`；阶段顺序（P1-M4.6-C）**项目深挖前置**——`phase=PROJECT` 答满 `project_count(question_count)` 道 → `phase=TECH_BASE`；技术轮答满（`answered_count >= question_count`）→ `phase=CLOSING`；结束指令（用户主动结束按钮/「结束面试」）需 `answered_count >= end_quota(question_count)` 才允许，否则面试官礼貌拒绝并继续。**门槛单一来源**：`end_quota(question_count) = ceil(question_count × 0.6)`，判定（`meets_end_quota`）与回放展示（「还差 N 题」）同源，不各算一份。
 
 ### 4.4 出题节点
 
-1. 纯代码算目标 domain（配额剩余最多的）+ difficulty；
+1. 纯代码算目标 domain（配额剩余最多的域，粘性同域成块见 §4.3）+ difficulty；
 2. 调 `search_questions` 工具（Qdrant：payload 过滤 domain/difficulty + 排除 asked_ids + 随机）→ 命中则用题库题（`from_bank=True`，`follow_ups` 元数据一并带出，深挖追问用）；
 3. 未命中 → 放宽难度 ±1 再检索；仍未命中 → LLM 生成（`from_bank=False`，不入正式库）；
 4. LLM 生成"面试官口吻"的提问文案（题库题：按 text 出题，禁止透露参考答案）。
+
+**出题顺序（P1-M4.7-D）**：项目深挖题全部前置（M4.6-C），技术段按 §4.3 同域成块——`domain` 选定即连续出满该域配额的题，域用尽才换下一个。块序与域分布对同一 N 完全确定（可复现、可跨场次比较），**块内题目仍随机**（Qdrant 随机 + 排除 asked_ids）。旧行为是跨域交错，题与题之间无逻辑链，体感像随机抽题，且「我们换个方向」这类跨域衔接语无从谈起。
 
 **项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
 
@@ -261,6 +265,46 @@ def update_difficulty(state) -> None:
 
 **验证口径**：接线由单测离线固化（注入 `InMemorySpanExporter`：同场次多轮同 trace_id、generation 挂在轮次 span 下、无 key 时零开销）；**「按场次可查」由 smoke 读回核对**——`scripts/smoke_api.py` 按场次派生 trace_id 把观测从云端读回来，断言 session_id/user_id 归属、generation 归父、模型名（含报告走深度档）与 token/成本汇总，不靠抄 id 到控制台肉眼比对。
 
+## 4.8 面试官人味层：衔接与收尾文案（P1-M4.7-D）
+
+六类黏合点按「出现频率 × 文案长度」分两路生成——**高频短衔接零 LLM（模板 + 插槽，可单测可回放），低频长文才花调用**（每场固定 2 次）：
+
+| 黏合点 | 落点 | 生成方式 |
+| --- | --- | --- |
+| 开场寒暄（含时长预告） | `intro` 节点 `INTRO_TEMPLATE` 插槽 | LLM（并入开场本身的调用，不额外花钱） |
+| 阶段过渡 / 题间衔接 | `ask` 节点，与新题**同一条消息** | 模板（`graph/rules/transition.py`） |
+| 答错缓冲 | `ask` 节点，**独立一条消息**先发 | 模板 |
+| 重连语 | `GET /api/interviews/{id}?reconnect=true` 响应内附加 | 模板 |
+| 结束陈词 | `report` 节点，报告生成后追加 | LLM（每场第 2 次调用） |
+
+```python
+MINUTES_PER_QUESTION = 3          # 开场时长插槽 = question_count × 3
+class TransitionKind(str, Enum):  # 按「上一题 → 新题」判定，纯代码
+    OPEN_PROJECT    # 首题（WARMUP → PROJECT）
+    PROJECT_NEXT    # 项目段续题（换切入点）
+    TO_TECH         # 项目段 → 技术段
+    SAME_DOMAIN     # 技术段同域续问（同域成块后才出现）
+    SWITCH_DOMAIN   # 技术段跨域换方向（文案含 {label} 域标签插槽）
+
+transition_kind(state, new_question) -> TransitionKind   # prev 为 None → OPEN_PROJECT；
+                                                         # prev 为 scenario → PROJECT_NEXT / TO_TECH
+transition_line(state, new_question) -> str              # 变体按 answered_count 轮换，确定性
+buffer_line(state) -> str | None                         # 仅上一题 error_flag 时非空
+reconnect_line(state) -> str | None                      # 仅进行中且处于 PROJECT/TECH_BASE 且有当前题
+domain_label(domain) -> str                              # DOMAIN_LABELS；project → 「项目深挖」
+```
+
+- **变体按 `answered_count % len(variants)` 轮换**：同类衔接语在同一场里不重样，且同 state 恒同文案（回放与单测可断言）。
+- **衔接语与新题同一条消息**（`add_history` 一次写入）：**delta 数 == assistant 消息数**这条不变式不破，长场次不漏发。
+- **答错缓冲独立成条**：缓冲回应的是上一题，prepend 到新题会读成「新题开头带着对上一题的评价」，时序错位——语义正确优先于「少发一条 delta」。缓冲文案**不含方向词**（不说「换个方向」），方向由紧随其后的衔接语表达，否则一句话说两遍。
+- **域标签插值按中文排版补空格**：只在「汉字 ↔ 拉丁字母/数字」边界补（`看看 RAG 方面`），全角标点旁不补（`聊聊 Memory。`）——标签可能是纯中文、纯拉丁或中英混排，故取决于标签边界字符而非写死模板。
+- **重连语不落 checkpoint**：`service.get_session` 仅在带 `reconnect=true` 时把问候拼进**本次响应**（附当前题干全文，断线回来不用往上滚），不写 state——连续刷新不堆叠，回放数据不受影响。上下文来源零新增 state：`phase` + `status` + `state.current_question` 就是「刚才聊到哪」；开场/反问阶段与已结束场次无「刚才那道题」→ 静默恢复。
+- **文案不得含 FakeLLM 路由标记词**（`评分官`/`报告官`/`出题官`/`提炼`/`真诚收尾`）：单测锁死，否则测试环境降级到 fake 时会串路由。
+
+**结束陈词红线（`CLOSING_REMARK_TEMPLATE`）**：模板**不接任何输入**（结构上拿不到报告文字），prompt 再写死四条禁止——① 不提分数/评级/名次；② 不点评知识域强弱、不引用总评与逐题点评；③ 不透露答案或关键点；④ 不承诺结果、不对录用表态、**不虚构后续流程**（真实链路实测出过「后续会有同事与你联系」——本产品不掌握任何真实招聘流程，说这句等于变相表态）。只讲感谢、陪伴感与「报告已生成、可在报告页查看」。真链路由 smoke 打印成品 + 红线自查（是否点短板域 / 复述总评）。**陈词失败不拖垮报告**：`llm.chat` 抛 `LLMError` 时记警告并跳过这一句，`report` / `status=finished` 照常落——陈词是装饰、报告是产物，装饰不能连坐产物（集成测试锁住）。
+
+**验证口径**：衔接分类、变体轮换、空格排版、缓冲门控、重连门控由单测离线固化（21+ 项）；连读观感只能真链路看——`scripts/smoke_api.py` 打印逐轮衔接语、逐块难度曲线与结束陈词成品。
+
 ## 5. RAG
 
 ### 5.1 向量层（M3 会话 1 落地）
@@ -316,7 +360,7 @@ def update_difficulty(state) -> None:
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
 | POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
-| GET /api/interviews/{id} | — | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI） |
+| GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
@@ -401,6 +445,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-27 P1-M4.7-D（面试官人味层 + 技术题同域成块）：新增 §4.8（六类黏合点分两路生成——高频短衔接走 `rules/transition.py` 模板零 LLM，低频长文开场白/结束陈词走 LLM 每场 2 次；衔接语与新题同条消息、**答错缓冲独立成条**（回应上一题，prepend 会时序错位）；域标签插值按中文排版补空格；结束陈词模板无输入 + 四条红线含**禁止虚构后续流程**（真链路实测踩到「后续会有同事联系你」）、陈词调用失败降级跳过**不连坐报告**；重连语走 `?reconnect=true` 只附响应不落库）；§4.3 quota 补同域成块粘性（`pick_domain` 当前域配额未尽即续问，计数取**已答题**——`remaining_quota` 为当前题 +1 会提前切域；`allocate_quota` 未动，块序与域分布对同一 N 确定 → 跨场次可比性不受影响）；§4.4 补出题顺序；§7 补 reconnect 参数；smoke 加 `SMOKE_QUESTION_COUNT`、重连核对、同域成块断言 + 块内难度曲线打印、结束陈词红线自查，并**补印此前被静默忽略的 SSE error 事件**（实测有一轮因此「答了没反应」看不出来）
 - 2026-09-26 P1-M4.6（C 阶段重排，项目深挖前置）：§4.3 advance 重写——PROJECT 答满 `project_count(question_count)`（min(3, max(2, ceil(N/3)), N−1)，保底 1 道技术题）→ TECH_BASE，答满 question_count → CLOSING；quota 技术轮数改 `question_count − project_count`；§4.1/§4.4 补项目深挖前置口径（首题与 PROJECT 阶段走 `_generate_scenario`：按轮出题、难度随 `state.difficulty`、domain="project" 不参与域统计保留）；展示标签「场景题」→「项目深挖」（question_type 值 scenario 不变，phase 枚举不变）；图边一条不动
 - 2026-09-26 P1-M4.5-R1（追问密度修复，实测 3 题 10 次追问）：§4.3 规则重写——优先级 澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题；`asked_key_points` 同一漏点只问一次（覆盖率跳变不重复追问）；全场补救池 `remedy_budget(N)=max(3, ceil(N×0.7))`（5 题 4 / 10 题 7 / 15 题 11），`remedy_used_total` 从已答题计数派生，澄清/深挖豁免、skipped 自然不计；新 reason `remedy_limit` / `missing_asked`，`TOTAL_LIMIT` 退役仅留旧事件映射；§4.4 补遗漏追问去重口径；§4.5 judge 输入改累计回答（先合并再评分，覆盖率允许下降不锁单调）
 - 2026-09-26 P1-M4.5（A 出题接上下文 + B 深挖追问）：§4.3 `follow_up` 新增 DEEPEN 分支（`Decision.DEEPEN` / `Reason.DEEPEN_OK` / `deepen_limit=1`；优先级 澄清→遗漏→深挖；深挖要求无 error_flag，达标但深挖用尽仍报 `COVERAGE_OK`——旧原因值语义不漂移）；§4.4 出题接上下文（profile 进口吻层与生成模板 + 三条防漂移约束：question_id 不变 / 评分用原 key_points / prompt 禁改考察点）与深挖文案两路来源（题库元数据直发零 LLM / LLM 现场生成）；§4.1 `QuestionRecord` 补 `follow_ups`/`deepen_used`；§4.2 图注追问节点文案来源

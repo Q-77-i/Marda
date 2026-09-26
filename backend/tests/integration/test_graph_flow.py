@@ -14,7 +14,7 @@ from app import llm
 from app.graph.graph import build_graph, run_config
 from app.graph.state import FOLLOWUP_ANSWER_MARKER, InterviewState
 from app.tools import question_search
-from fake_llm import DEFAULT_SCORE, FakeLLMClient
+from fake_llm import DEFAULT_CLOSING, DEFAULT_SCORE, FakeLLMClient
 
 
 @pytest.fixture(autouse=True)
@@ -450,6 +450,33 @@ async def test_达标后结束指令直接进报告(install_llm, install_search,
     assert values["report"]["answered_count"] == 2
 
 
+async def test_结束陈词生成失败不拖垮报告(install_llm, install_search, graph_env, monkeypatch):
+    """陈词是装饰、报告是产物：陈词那次调用炸了（真实抖动），报告仍要落、场次仍要结束。"""
+    install_llm()
+    install_search(_bank("agent-architecture", "rag", "planning-reasoning"))
+    graph, _, config, state, _ = await graph_env(question_count=3)
+
+    real_chat = llm.chat
+
+    async def _chat(messages, **kwargs):
+        if "真诚收尾" in messages[0]["content"]:
+            raise llm.LLMError("模拟真实抖动")  # 只让陈词那次失败，其余照常
+        return await real_chat(messages, **kwargs)
+
+    monkeypatch.setattr(llm, "chat", _chat)
+
+    await _run(graph, config, state)
+    await _run(graph, config, Command(resume="我是应届生"))
+    await _run(graph, config, Command(resume="第一题回答……"))
+    await _run(graph, config, Command(resume="深挖补充……"))
+    await _run(graph, config, Command(resume="第二题回答……"))
+
+    values = await _run(graph, config, Command(resume="结束面试"))
+    assert values["status"] == "finished"
+    assert values["report"]["total_comment"]  # 报告（v4-pro 那次调用）不受影响
+    assert DEFAULT_CLOSING not in [m["content"] for m in values["chat_history"]]
+
+
 async def test_checkpoint续面_重建图后状态一致(install_llm, install_search, graph_env):
     install_llm()
     install_search(_bank("agent-architecture", "rag"))
@@ -644,3 +671,73 @@ async def test_决策回放_难度降档留痕(install_llm, install_search, grap
     assert judges[-1]["detail"]["difficulty"] == "L1"  # 第 2 题首评：连差两次 → 降档
     assert judges[-1]["detail"]["difficulty_changed"] is True
 
+
+
+# ---- 面试官人味层（P1-M4.7-D）----
+
+
+async def test_技术题同域成块与衔接语(install_llm, install_search, graph_env):
+    """D2 同域成块：技术段按域连问（题与题之间有逻辑链，不再是随机抽题）；
+    D1/D4 衔接语：开场过渡语与题同一条消息、转技术与题间衔接落进 chat_history、结束陈词收尾。"""
+    client = install_llm()
+    install_search(_bank("agent-architecture", "rag"))
+    graph, _, config, state, _ = await graph_env(question_count=10)
+
+    # 开场：时长插槽按轮次算（10 轮 × 3 分钟）
+    await _run(graph, config, state)
+    assert any("30 分钟" in call["system"] for call in client.calls)
+
+    # 首题：开场过渡语 + 题目同一条消息
+    values = await _run(graph, config, Command(resume="我是应届生，做过 RAG 项目"))
+    assistant = [m["content"] for m in values["chat_history"] if m["role"] == "assistant"]
+    assert "谢谢你的自我介绍" in assistant[-1]
+
+    for turn in range(40):
+        values = await _run(graph, config, Command(resume=f"第 {turn} 轮回答……"))
+        if values["status"] == "finished":
+            break
+    else:
+        pytest.fail("40 轮内未跑完，用例前提失效")
+
+    # 技术段域序 = 配额决定的块序（10 轮 = 3 项目 + 7 技术；配额 aa:2 其余各 1）
+    tech = [e["detail"] for e in values["trace_log"]
+            if e["type"] == "ask" and e["detail"]["question_type"] == "tech"]
+    assert [t["domain"] for t in tech] == [
+        "agent-architecture", "agent-architecture", "rag",
+        "planning-reasoning", "tool-use", "memory", "engineering-observability",
+    ]
+    # 衔接语三类都出现过：项目→技术过渡、同域续问、跨域换方向
+    assistant = [m["content"] for m in values["chat_history"] if m["role"] == "assistant"]
+    assert any("技术问题" in m or "技术点" in m for m in assistant)
+    assert any("我们接着往下看" in m or "顺着这个话题再问一个" in m for m in assistant)
+    assert any("我们换个方向" in m or "换个领域" in m for m in assistant)
+    # 结束陈词收尾（模板无输入，结构上带不出分数与短板）
+    assert assistant[-1] == DEFAULT_CLOSING
+    closing_prompt = next(c["system"] for c in client.calls if "真诚收尾" in c["system"])
+    assert values["report"]["total_comment"] not in closing_prompt  # 红线 #2 由结构保证：拿不到报告文字
+    # 红线 #4 显式禁止虚构后续流程（真实链路实测出现过「后续会有同事与你联系」＝变相表态）
+    assert "虚构后续流程" in closing_prompt
+
+
+async def test_答错缓冲独立成条(install_llm, install_search, graph_env):
+    """D1：上一题答错 → 换题时缓冲单独成条（它回应的是上一题），新题开头只有过渡语 + 题目。"""
+    scored = {"n": 0}
+
+    def _score() -> dict:
+        scored["n"] += 1
+        return {**DEFAULT_SCORE, "error_flag": scored["n"] <= 2}  # 第 1 题首评与澄清重评都判错
+
+    install_llm(score=_score)
+    install_search(_bank("agent-architecture", "rag"))
+    graph, _, config, state, _ = await graph_env(question_count=2)
+
+    await _run(graph, config, state)
+    await _run(graph, config, Command(resume="我是应届生"))
+    values = await _run(graph, config, Command(resume="第一题回答（有错）……"))
+    assert values["current_question"]["clarify_used"] == 1  # 有错 → 先澄清追问
+    values = await _run(graph, config, Command(resume="澄清补充（仍错）……"))
+    assert values["phase"] == "tech_base"  # 澄清用尽仍错 → 换题
+
+    assistant = [m["content"] for m in values["chat_history"] if m["role"] == "assistant"]
+    assert assistant[-2].startswith("没关系")  # 缓冲独立成条
+    assert "没关系" not in assistant[-1] and "技术" in assistant[-1]  # 新题：过渡语 + 题目

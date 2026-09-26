@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from app import db, llm, observability
 from app.config import Settings
 from app.graph.graph import build_graph, make_serde, run_config
+from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
 
 
@@ -237,12 +238,21 @@ class Service:
         await self._g.checkpointer.adelete_thread(interview_id)
         await asyncio.to_thread(db.delete_interview, self._settings.db_path, interview_id)
 
-    async def get_session(self, interview_id: str, user_id: str) -> dict:
-        """UI 恢复数据（SPEC §7）：checkpoint 为权威，归属以业务库为准。"""
+    async def get_session(self, interview_id: str, user_id: str, *, reconnect: bool = False) -> dict:
+        """UI 恢复数据（SPEC §7）：checkpoint 为权威，归属以业务库为准。
+
+        reconnect=true（P1-M4.7-D 重连语）：答题中的场次在响应里附一句问候（重发当前题干）。
+        文案只随本次响应返回、**不落 checkpoint**——连续刷新不会堆叠，回放数据不受影响。
+        """
         await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
         if not values:
             raise InterviewNotFoundError(interview_id)
+        history = list(values.get("chat_history", []))
+        if reconnect:
+            line = reconnect_line(InterviewState.model_validate(values))
+            if line:
+                history.append({"role": "assistant", "content": line})
         return {
             "interview_id": interview_id,
             "position": values.get("position", ""),
@@ -250,7 +260,7 @@ class Service:
             "status": values.get("status", "running"),
             "answered_count": values.get("answered_count", 0),
             "question_count": values.get("question_count", 0),
-            "chat_history": values.get("chat_history", []),
+            "chat_history": history,
             "report_ready": values.get("status") == "finished",
         }
 

@@ -1,10 +1,15 @@
-"""T5 smoke：真实 DeepSeek + Qdrant，走 HTTP API（本地 uvicorn）跑一场 2 轮短面试。
+"""T5 smoke：真实 DeepSeek + Qdrant，走 HTTP API（本地 uvicorn）跑一场短面试。
 
 用法：cd backend && uv run python scripts/smoke_api.py
+      SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块与难度曲线
 
 流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → 注册账号（FR-23）→ 反向验证
 未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 决策回放
 （FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
+
+P1-M4.7-D 人味层（真实链路上才看得出效果，故放在 smoke 而非单测）：
+重连问候（?reconnect=true 重发当前题干）、六类衔接语的连读观感、结束陈词是否踩红线；
+技术题同域成块 → 打印每块的难度曲线（观测点：会不会一段卡在高难度）。
 依赖：.env（DEEPSEEK_API_KEY / JWT_SECRET）；Qdrant 容器可选——检索不可用时出题走 LLM 生成降级。
 Langfuse（P1-M4）：.env 配了 LANGFUSE_* 时把该场次的 trace 从云端读回来核对
 （session_id / 轮次 span / generation 归父），未配置则跳过——这也是 FR-21 的验收口径。
@@ -43,9 +48,14 @@ import httpx
 
 from app import db, observability
 from app.config import get_settings
+from app.domain import DOMAIN_LABELS, project_count
+from app.graph.rules.transition import domain_label
 
 PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
+
+# 题量（轮次语义）：默认 2 轮快跑；SMOKE_QUESTION_COUNT=10 可跑长场次验证同域成块与难度曲线
+QUESTION_COUNT = int(os.environ.get("SMOKE_QUESTION_COUNT", "2"))
 
 # 账号（FR-23）：临时库每次全新，用时间戳保证用户名不撞（规则 [A-Za-z0-9_]，3-32）
 SMOKE_USER = f"smoke_{int(time.time())}"
@@ -154,7 +164,7 @@ async def main() -> None:
     try:
         await wait_ready()
         print("=" * 60)
-        print(f"T5 smoke：真实 DeepSeek + Qdrant，HTTP API 跑 2 轮短面试")
+        print(f"T5 smoke：真实 DeepSeek + Qdrant，HTTP API 跑 {QUESTION_COUNT} 轮面试")
         print("=" * 60)
 
         async with httpx.AsyncClient(timeout=120) as client:
@@ -180,7 +190,7 @@ async def main() -> None:
             # 创建面试（SSE 开场）
             async with client.stream(
                 "POST", f"{BASE}/api/interviews",
-                json={"position": "Agent/AI 工程师", "question_count": 2},
+                json={"position": "Agent/AI 工程师", "question_count": QUESTION_COUNT},
             ) as r:
                 assert r.status_code == 200, f"创建失败: {r.status_code}"
                 events = await _events(r)
@@ -188,13 +198,16 @@ async def main() -> None:
             print(f"interview_id={interview_id}")
             for name, data in events:
                 if name == "delta":
-                    print(f"[面试官] {data['text']}\n")
+                    print(f"[开场] {data['text']}\n")
 
-            # 逐轮发消息直到 done
+            # 逐轮发消息直到 done（角色扮演：自我介绍 → 逐题作答 → 反问）
             turn = 0
             done = False
-            while not done and turn < 20:
+            errors: list[dict] = []
+            while not done and turn < QUESTION_COUNT * 3 + 6:
                 answer = CANDIDATE_ANSWERS[turn] if turn < len(CANDIDATE_ANSWERS) else FALLBACK_ANSWER
+                print(f"── 第 {turn + 1} 次作答 {'─' * 40}")
+                print(f"[候选人] {answer}\n")
                 async with client.stream(
                     "POST", f"{BASE}/api/interviews/{interview_id}/messages",
                     json={"content": answer},
@@ -207,11 +220,33 @@ async def main() -> None:
                     elif name == "question":
                         print(f"  >> 第 {data['index']} 题 [{data['domain']}/{data['difficulty']}]"
                               f" question_id={data['question_id']}")
+                    elif name == "error":
+                        # 静默忽略过 error 事件，结果「这一轮答了没反应」在日志里看不出来（实测踩到）
+                        errors.append(data)
+                        print(f"  ⚠ SSE error：{data['code']} · {data['message']}")
                     elif name == "done":
                         print(f"  >> 面试结束 report_ready={data['report_ready']}")
                         done = True
                 turn += 1
+
+                # 重连问候（P1-M4.7-D）：答题中刷新回来应附一句问候 + 当前题干，
+                # 且只随本次响应返回、不落库（连续刷新不堆叠）
+                if turn == 1 and not done:
+                    plain = (await client.get(f"{BASE}/api/interviews/{interview_id}")).json()
+                    back = (await client.get(
+                        f"{BASE}/api/interviews/{interview_id}?reconnect=true"
+                    )).json()
+                    assert len(back["chat_history"]) == len(plain["chat_history"]) + 1, "重连未附问候"
+                    greeting = back["chat_history"][-1]["content"]
+                    assert "欢迎回来" in greeting, f"问候文案异常：{greeting}"
+                    assert greeting.startswith("欢迎回来")
+                    again = (await client.get(f"{BASE}/api/interviews/{interview_id}")).json()
+                    assert again["chat_history"] == plain["chat_history"], "重连问候被写进了 checkpoint"
+                    print(f"重连问候 OK（不落库）：{greeting[:48]}…\n")
             assert done, f"{turn} 轮后仍未结束"
+            if errors:  # 真实 LLM 抖动（如结构化输出两次都不合法）会让某轮没有面试官回复
+                print(f"⚠ 本场出现 {len(errors)} 次 SSE error（真人用户会看到错误提示 + 重试）："
+                      + "；".join(f"第{e['code']}类 {e['message'][:40]}" for e in errors) + "\n")
 
             # 报告落库 + 接口
             r = await client.get(f"{BASE}/api/interviews/{interview_id}/report")
@@ -256,9 +291,9 @@ async def main() -> None:
             types = [e["type"] for e in events]
             asked = [e["round"] for e in events if e["type"] == "ask"]
             assert trace["status"] == "finished"
-            assert trace["answered_count"] == trace["question_count"] == 2  # 本场 1 项目深挖 + 1 技术
+            assert trace["answered_count"] == trace["question_count"] == QUESTION_COUNT
             assert types[0] == "ask" and types[-1] == "report", f"事件流首尾异常：{types}"
-            assert asked == [1, 2], f"出题轮次应为 1..question_count：{asked}"
+            assert asked == list(range(1, QUESTION_COUNT + 1)), f"出题轮次应为 1..question_count：{asked}"
             assert set(types) <= {"ask", "judge", "followup", "advance", "end_refused", "report"}
             print("=" * 60)
             print("决策回放（FR-21）：逐轮事件流")
@@ -290,6 +325,28 @@ async def main() -> None:
             assert all(e["detail"] for e in events), "事件 detail 不得为空"
             print(f"回放 OK：{len(events)} 个事件 / 轮次 1-{max(rounds)}")
 
+            # 技术题同域成块（P1-M4.7-D）：域被切碎成散点就说明粘性失效；
+            # 块内难度曲线是人工观测点——同域连问会不会一段卡在高难度
+            blocks: list[list[dict]] = []
+            for a in (e["detail"] for e in events if e["type"] == "ask"):
+                if a["question_type"] == "scenario":  # 项目深挖题不参与同域粘性
+                    continue
+                if blocks and blocks[-1][0]["domain"] == a["domain"]:
+                    blocks[-1].append(a)
+                else:
+                    blocks.append([a])
+            domains = [b[0]["domain"] for b in blocks]
+            assert len(domains) == len(set(domains)), f"同域未成块（域被切碎）：{domains}"
+            assert sum(len(b) for b in blocks) == QUESTION_COUNT - project_count(QUESTION_COUNT)
+            print("=" * 60)
+            print("出题顺序（P1-M4.7-D）：技术题同域成块 + 块内难度曲线")
+            print("=" * 60)
+            for b in blocks:
+                src = "/".join("题库" if a["from_bank"] else "生成" for a in b)
+                print(f"  {domain_label(b[0]['domain']):<20} "
+                      f"{' → '.join(a['difficulty'] for a in b):<12} {len(b)} 题（{src}）")
+            print(f"  项目深挖题 {project_count(QUESTION_COUNT)} 道（前置，不参与同域成块）")
+
             # Langfuse（P1-M4）：云端「按场次可查」——把观测读回来核对，不靠肉眼
             if observability.enabled():
                 lf = observability.get_client()
@@ -300,8 +357,9 @@ async def main() -> None:
                 turns = [o for o in obs if o.name == "interview-turn"]
                 gens = [o for o in obs if o.type == "GENERATION"]
                 shapes = [(o.name, o.type) for o in obs]
-                assert len(turns) >= 2, f"轮次 span 少于 2 个（每轮一个）：{shapes}"
-                assert len(gens) >= 4, f"generation 少于 4 个（每轮至少一次 LLM 调用）：{shapes}"
+                assert len(turns) >= QUESTION_COUNT, f"轮次 span 少于 {QUESTION_COUNT} 个（每轮一个）：{shapes}"
+                assert len(gens) >= QUESTION_COUNT * 2, \
+                    f"generation 少于 {QUESTION_COUNT * 2} 个（每轮至少两次 LLM 调用）：{shapes}"
                 assert {o.session_id for o in obs} == {interview_id}, "session_id 与场次不一致"
                 assert {o.user_id for o in obs} == {me["id"]}, "user_id 与账号不一致"
                 turn_ids = {t.id for t in turns}
@@ -330,6 +388,20 @@ async def main() -> None:
             rows = r.json()
             assert any(x["id"] == interview_id and x["status"] == "finished" for x in rows)
             print(f"会话恢复 OK（{len(session['chat_history'])} 条消息），历史列表 {len(rows)} 场")
+
+            # 结束陈词（P1-M4.7-D，D4）：LLM 生成，红线「不点分数、不评域强弱」——
+            # 结构上已保证拿不到报告文字（模板无输入），这里把成品打出来人工读一遍
+            closing = session["chat_history"][-1]
+            assert closing["role"] == "assistant" and closing["content"], "结束陈词缺失"
+            mentioned = [lab for lab in DOMAIN_LABELS.values() if lab in closing["content"]]
+            leaked = [lab for lab in map(domain_label, report["weaknesses"]) if lab in mentioned]
+            print("=" * 60)
+            print("结束陈词（D4）")
+            print("=" * 60)
+            print(f"  {closing['content']}")
+            print(f"  红线自查：{'⚠ 点了短板域 ' + '/'.join(leaked) if leaked else '未提短板域'}"
+                  f"／{'⚠ 提到了域 ' + '/'.join(mentioned) if mentioned else '未提任何域'}"
+                  f"／{'⚠ 复述了总评原句' if report['total_comment'][:12] in closing['content'] else '未复述总评'}")
 
         # 业务库落库验证（answers 行数 = 已答题数 = 全场轮次）
         with __import__("sqlite3").connect(get_settings().db_path) as conn:

@@ -2,13 +2,24 @@
 
 from __future__ import annotations
 
+import logging
+
 from app import llm
-from app.agents.prompts import REPORT_TEMPLATE
+from app.agents.prompts import CLOSING_REMARK_TEMPLATE, REPORT_TEMPLATE
 from app.agents.schemas import ReportLLM
 from app.config import get_settings
 from app.graph.rules.aggregate import aggregate_scores, build_per_question_comments
-from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_trace
+from app.graph.state import (
+    InterviewState,
+    Phase,
+    QuestionRecord,
+    TraceEvent,
+    add_history,
+    add_trace,
+)
 from app.tools import question_search
+
+logger = logging.getLogger(__name__)
 
 
 async def report_node(state: InterviewState) -> dict:
@@ -38,13 +49,27 @@ async def report_node(state: InterviewState) -> dict:
         ),
         "study_advice": [a.model_dump() for a in llm_part.study_advice],
     }
+    # 结束陈词（P1-M4.7-D）：模板不带任何输入——结构上就说不出分数与短板（红线另写死在 prompt）
+    # 陈词是装饰、报告是产物：这一句失败不能把整份报告（和整场结束）一起拖垮，降级为不追加
+    try:
+        remark = await llm.chat([{"role": "system", "content": CLOSING_REMARK_TEMPLATE}])
+    except llm.LLMError as exc:
+        logger.warning("结束陈词生成失败，跳过：%s", exc)
+    else:
+        add_history(state, "assistant", remark)
     # 回放证据（FR-21）：收尾事件（不属任何轮次）
     add_trace(state, TraceEvent.REPORT, {
         "answered_count": state.answered_count,
         "question_count": state.question_count,
         "weaknesses": report["weaknesses"],
     })
-    return {"report": report, "status": "finished", "phase": Phase.FINISHED, "trace_log": state.trace_log}
+    return {
+        "report": report,
+        "status": "finished",
+        "phase": Phase.FINISHED,
+        "trace_log": state.trace_log,
+        "chat_history": state.chat_history,
+    }
 
 
 async def _load_reference_answers(questions: list[QuestionRecord]) -> dict[str, str]:

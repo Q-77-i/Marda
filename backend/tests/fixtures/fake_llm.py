@@ -5,6 +5,7 @@
 - 「报告官」→ report JSON
 - 「出题官」→ generated JSON（题库未命中兜底 / 场景题）
 - 含「提炼」→ profile JSON（自我介绍提炼）
+- 含「真诚收尾」→ 结束陈词文案（P1-M4.7-D）
 - 其余（开场/出题文案/追问/反问/挽留）→ 固定文案
 """
 
@@ -13,6 +14,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Callable
+
+DEFAULT_CLOSING = "今天的面试就到这里，感谢你的时间，报告已经生成。"
 
 DEFAULT_SCORE = {
     "technical_depth": 4,
@@ -54,12 +57,14 @@ class FakeLLMClient:
         generated: dict | None = None,
         report: dict | None = None,
         text: str = "面试官文案",
+        closing: str = DEFAULT_CLOSING,
     ) -> None:
         self._score = score if score is not None else DEFAULT_SCORE
         self._profile = profile or DEFAULT_PROFILE
         self._generated = generated or DEFAULT_GENERATED
         self._report = report or DEFAULT_REPORT
         self._text = text
+        self._closing = closing
         self.calls: list[dict] = []
 
     @property
@@ -84,6 +89,8 @@ class FakeLLMClient:
             content = json.dumps(self._generated, ensure_ascii=False)
         elif "提炼" in system:
             content = json.dumps(self._profile, ensure_ascii=False)
+        elif "真诚收尾" in system:
+            content = self._closing
         else:
             content = self._text
         return _response(content)

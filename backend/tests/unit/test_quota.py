@@ -1,8 +1,10 @@
-"""quota 知识域配额单测：largest remainder 分配（SPEC §4.3）。"""
+"""quota 知识域配额单测：largest remainder 分配 + 同域成块选域（SPEC §4.3）。"""
 
 from __future__ import annotations
 
-from app.domain import DOMAIN_WEIGHTS
+from collections import Counter
+
+from app.domain import DOMAIN_WEIGHTS, project_count
 from app.graph.rules.quota import allocate_quota, pick_domain, remaining_quota
 from app.graph.state import InterviewState, QuestionRecord
 
@@ -74,5 +76,69 @@ def test_配额耗尽兜底取权重表首域():
     state.answered_questions = [
         _record(domain) for domain, n in allocate_quota(7, DOMAIN_WEIGHTS).items() for _ in range(n)
     ]
+
+    assert pick_domain(state) == "agent-architecture"
+
+
+# ---- 同域成块（P1-M4.7-D2）----
+
+
+def _tech_segment(question_count: int) -> list[str]:
+    """模拟技术段出题：每步按出题前的 state 形态调 pick_domain，再记为已答/当前题。"""
+    state = _state(question_count)
+    total = sum(allocate_quota(question_count - project_count(question_count), DOMAIN_WEIGHTS).values())
+    sequence = []
+    for _ in range(total):
+        domain = pick_domain(state)
+        sequence.append(domain)
+        record = _record(domain)
+        state.answered_questions = [*state.answered_questions, record]
+        state.current_question = record
+    return sequence
+
+
+def test_技术段同域成块_十题场():
+    # 轮次 10 = 3 项目 + 7 技术，配额 {aa:2, rag:1, pr:1, tu:1, mem:1, eo:1} → 块序固定
+    assert _tech_segment(10) == [
+        "agent-architecture", "agent-architecture", "rag",
+        "planning-reasoning", "tool-use", "memory", "engineering-observability",
+    ]
+
+
+def test_技术段同域成块_十五题场():
+    # 轮次 15 = 3 项目 + 12 技术（六域各 2 道）→ 六块，块内连问
+    assert _tech_segment(15) == [domain for domain in DOMAIN_WEIGHTS for _ in range(2)]
+
+
+def test_同域成块不改变域分布():
+    """跨场次可比性（P1-M4.7 拍板）：成块只改题序，每域题数与配额分配逐位一致。"""
+    for question_count in (5, 7, 10, 15, 20):
+        expected = allocate_quota(question_count - project_count(question_count), DOMAIN_WEIGHTS)
+        assert Counter(_tech_segment(question_count)) == Counter(
+            {d: n for d, n in expected.items() if n}
+        )
+
+
+def test_当前域配额未尽则继续同域():
+    state = _state()
+    record = _record("agent-architecture")
+    state.answered_questions = [record]
+    state.current_question = record
+
+    assert pick_domain(state) == "agent-architecture"  # 配额 2、已答 1 → 继续成块
+
+
+def test_当前域配额用尽则切下一域():
+    state = _state()
+    first, second = _record("agent-architecture"), _record("agent-architecture")
+    state.answered_questions = [first, second]
+    state.current_question = second
+
+    assert pick_domain(state) == "rag"  # aa 配额用尽 → 剩余最多的下一域
+
+
+def test_项目深挖题不参与同域粘性():
+    state = _state()
+    state.current_question = _record("project")  # 上一题是项目深挖题（domain 不占配额表）
 
     assert pick_domain(state) == "agent-architecture"

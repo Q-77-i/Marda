@@ -195,8 +195,13 @@ async function getJSON<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export function getSession(interviewId: string): Promise<Session> {
-  return getJSON<Session>(`/api/interviews/${interviewId}`);
+/** 会话恢复数据；reconnect=true 时后端在响应里附一句重连问候（重发当前题干，P1-M4.7-D）。 */
+export function getSession(
+  interviewId: string,
+  { reconnect = false }: { reconnect?: boolean } = {},
+): Promise<Session> {
+  const query = reconnect ? "?reconnect=true" : "";
+  return getJSON<Session>(`/api/interviews/${interviewId}${query}`);
 }
 
 export function getReport(interviewId: string): Promise<ReportResponse> {

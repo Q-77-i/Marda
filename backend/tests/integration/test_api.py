@@ -18,7 +18,7 @@ import pytest
 from app import db, llm
 from app.config import get_settings
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
-from fake_llm import FakeLLMClient
+from fake_llm import DEFAULT_CLOSING, FakeLLMClient
 
 # 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 项目深挖 + 1 技术；
 # 每题首答达标 → 深挖（P1-M4.5）→ 深挖补充换题 → 2 反问 → 报告）
@@ -152,6 +152,10 @@ async def test_完整一场落库与报告(client):
     assert payload["per_question_comments"][0]["reference_answer"] is None
     assert payload["per_question_comments"][1]["reference_answer"] == "参考答案"
     assert payload["per_question_comments"][1]["score"]["technical_depth"] == 4
+    # 结束陈词收尾（P1-M4.7-D），已结束场次不再附重连问候
+    assert (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()["chat_history"][-1][
+        "content"
+    ] == DEFAULT_CLOSING
 
 
 async def test_会话状态恢复(client):
@@ -361,3 +365,36 @@ async def test_回放_删除场次后404(client):
 
 async def test_回放_未登录401(anon_client):
     assert (await anon_client.get("/api/interviews/whatever/trace")).status_code == 401
+
+
+# ---- 重连问候（P1-M4.7-D）----
+
+
+async def test_重连问候附在响应里不落库(client):
+    """?reconnect=true：答题中的场次在响应里附一句问候（重发当前题干作锚点）。
+
+    只随本次响应返回、不落 checkpoint —— 连续刷新不堆叠，回放数据不受影响。
+    """
+    interview_id, _ = await _create(client)
+    await _send(client, interview_id, TURNS[0])  # 自我介绍 → 进入项目深挖，当前题在手
+
+    plain = (await client.get(f"/api/interviews/{interview_id}")).json()
+    greeted = (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()
+    assert len(greeted["chat_history"]) == len(plain["chat_history"]) + 1
+    last = greeted["chat_history"][-1]
+    assert last["role"] == "assistant" and "欢迎回来" in last["content"]
+    # 重发题干：问候里带当前题目全文（断线回来不用往上滚）
+    trace = (await client.get(f"/api/interviews/{interview_id}/trace")).json()
+    question = [e for e in trace["events"] if e["type"] == "ask"][-1]["detail"]["question"]
+    assert question in last["content"]
+    # 不落 checkpoint：不带参数仍是原样；连续两次带参数也不堆叠
+    assert (await client.get(f"/api/interviews/{interview_id}")).json()["chat_history"] == plain["chat_history"]
+    assert (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()["chat_history"] == greeted["chat_history"]
+
+
+async def test_重连问候_非答题阶段不加(client):
+    """开场（等自我介绍）/反问阶段没有「刚才的题」可回去 → 静默恢复。"""
+    interview_id, _ = await _create(client)
+    plain = (await client.get(f"/api/interviews/{interview_id}")).json()
+    again = (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()
+    assert again["chat_history"] == plain["chat_history"]

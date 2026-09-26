@@ -11,6 +11,7 @@ from app.agents.schemas import GeneratedQuestion
 from app.domain import DOMAIN_LABELS
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
+from app.graph.rules.transition import buffer_line, transition_line
 from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
 from app.tools import question_search
 
@@ -23,13 +24,17 @@ async def ask_node(state: InterviewState) -> dict:
     else:
         # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
         question, hits = await _generate_scenario(state), 0
+    # 人味层（P1-M4.7-D）：答错缓冲独立成条（它回应的是上一题），衔接语与题目同一条消息
+    buffer = buffer_line(state)
+    if buffer:
+        add_history(state, "assistant", buffer)
     text = await llm.chat(
         [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
             question=question.text,
             profile=state.candidate_profile or "（候选人未提供项目背景）",
         )}]
     )
-    add_history(state, "assistant", text)
+    add_history(state, "assistant", f"{transition_line(state, question)}{text}")
     state.current_question = question
     if question.question_id:
         state.asked_ids.append(question.question_id)

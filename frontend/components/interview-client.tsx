@@ -65,10 +65,11 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     return () => setUnauthorizedHandler(null);
   }, []);
 
-  /* 恢复会话（验收 4：刷新后历史不丢）；已结束场次进只读回放（FR-25） */
+  /* 恢复会话（验收 4：刷新后历史不丢）；已结束场次进只读回放（FR-25）。
+     reconnect：答题中回来时后端附一句「我们继续刚才的」+ 题干（P1-M4.7-D） */
   useEffect(() => {
     let active = true;
-    getSession(interviewId)
+    getSession(interviewId, { reconnect: true })
       .then((session) => {
         if (!active) return;
         setMessages(

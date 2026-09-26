@@ -81,10 +81,16 @@ async def send_message(
 
 
 @router.get("/{interview_id}")
-async def get_interview(interview_id: str, request: Request, user: dict = Depends(get_current_user)):
+async def get_interview(
+    interview_id: str,
+    request: Request,
+    user: dict = Depends(get_current_user),
+    reconnect: bool = False,
+):
+    """会话恢复数据（SPEC §7）。reconnect=true：答题中的场次附一句重连问候（P1-M4.7-D）。"""
     service = request.app.state.service
     try:
-        return await service.get_session(interview_id, user["id"])
+        return await service.get_session(interview_id, user["id"], reconnect=reconnect)
     except InterviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="面试不存在") from exc
 
