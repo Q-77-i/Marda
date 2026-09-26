@@ -120,9 +120,9 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一场短面试 + 落库验证
 ```
 
-## 前端（三页面 + 流式联调）
+## 前端（五页面 + 流式联调）
 
-[frontend/](frontend/) 是 Next.js 15 App Router，四个页面：登录 `/login`、仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+[frontend/](frontend/) 是 Next.js 15 App Router，五个页面：登录 `/login`、仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`、决策回放页 `/trace/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
 
 - **登录与路由守卫（FR-23）**：[lib/session.ts](frontend/lib/session.ts) 管 token（localStorage 优先，隐私模式等环境自动降级 sessionStorage，两者都禁用则明确提示而非静默失败），[lib/http.ts](frontend/lib/http.ts) 统一注入 Bearer 与 401 处置；未登录访问受保护页由 [AuthGuard](frontend/components/auth-guard.tsx) 跳登录（判断完成前先渲染载入态，不闪受保护内容）。**401 默认直跳登录页，唯独面试页弹确认再跳**——答题答到一半被直接踢走体感太差；登录接口自身的 401/409 只当表单错误展示，绝不触发全局跳转
 
@@ -131,12 +131,13 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 - **报告图表**：Recharts 雷达图（五维 1-5）+ 横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意）；配色经调色板校验器明暗双模式检查
 - **逐题复盘（FR-25）**：报告页每题一张复盘卡——我的回答（按 `【追问补充】` 标记分成「首答 / 追问补充 N」，不混成一大段）、五维得分、关键点覆盖对比（✓ 覆盖 / ✗ 遗漏）、题库题参考答案折叠展示（场景题无权威答案不渲染）；历史报告缺这些字段时退化为「题干 + 点评」
 - **只读回放（FR-25）**：已结束场次进面试页即完整回放（复用会话恢复接口，隐藏输入框、顶栏换「查看报告」），报告页与回放页互链；结束当刻仍自动跳报告。完整是有前提的——对话历史在状态里全量保留、不截断（截断会让 SSE 差分失效、面试官文案漏发，长场次尤其明显）
+- **决策回放（FR-21）**：`/trace/[id]` 把引擎当时的判断逐轮摊开——选了哪道题（域/难度/题型/题库命中几个候选还是降级生成）、评分多少（覆盖率/五维/回答原文折叠）、**为什么追问、为什么换题**（原因与决策同源，由后端记录，前端只映射文案不重算）；被挽留的结束请求、报告收尾单列。入口在报告页；更早的场次没有事件流，页面给空态而不是装作有数据
 - **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表，已结束场次进只读回放；网络失败与 HTTP 4xx 均转中文文案 + 重试按钮，重试不重复插入消息
 - **输入体验**：Enter 发送、Shift + Enter 换行，输入法"上屏回车"不误发送；输入框随内容长高，约 40% 视口高封顶后框内滚动
 - **题量与记录**：题量 = 全场问答轮次（选 N 就是 N 轮，进度与报告自然一致）；历史记录带物理删除（确认弹窗）
 
 ```bash
-cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化 + 登录态（66 个）
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化 + 登录态 + 决策回放逻辑（89 个）
 pnpm lint && pnpm build
 ```
 
@@ -157,7 +158,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 会话 1 已完成**（决策回放事件流 + `/trace` 接口 + Langfuse 接入；回放页留会话 2）。后续 M4–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）。后续 M5–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

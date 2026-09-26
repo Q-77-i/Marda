@@ -82,6 +82,12 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
         right={
           <div className="flex items-center gap-2">
             <Link
+              href={`/trace/${interviewId}`}
+              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+            >
+              决策回放
+            </Link>
+            <Link
               href={`/interview/${interviewId}`}
               className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
             >

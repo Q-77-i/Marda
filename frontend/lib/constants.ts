@@ -48,6 +48,16 @@ export function domainLabel(domain: string): string {
   return DOMAIN_LABELS[domain] ?? domain;
 }
 
+/**
+ * 阶段名；未知阶段给 null。
+ *
+ * 与 domainLabel 的差别：阶段名会被拼进「进入 X」这类文案里，未知阶段显示原值
+ * 会得到半截句子，故由调用方决定不渲染。
+ */
+export function phaseName(phase: string): string | null {
+  return (PHASE_LABELS as Record<string, string>)[phase] ?? null;
+}
+
 /** 主动结束指令（与 backend rules/advance.END_COMMANDS 一致）。 */
 export const END_COMMAND = "结束面试";
 
@@ -56,6 +66,47 @@ export const END_COMMAND = "结束面试";
  * 复盘卡按它把 candidate_answer 拆成「首答 / 追问补充 N」（FR-25）。
  */
 export const FOLLOWUP_ANSWER_MARKER = "【追问补充】";
+
+/**
+ * 决策回放文案（P1-M4 / SPEC §4.7）：事件类型、追问决策、决策原因三类
+ * 均由后端定义（backend graph/state.TraceEvent、rules/follow_up），此处仅作展示映射。
+ * 原因标签不含阈值数字（上限/覆盖率阈值只在后端 rules 里），避免两处各写一份而漂移。
+ */
+export const TRACE_EVENT_LABELS: Record<string, string> = {
+  ask: "出题",
+  judge: "评分",
+  followup: "追问",
+  advance: "换题",
+  end_refused: "结束被挽留",
+  report: "报告生成",
+};
+
+export const DECISION_LABELS: Record<string, string> = {
+  clarify: "澄清追问",
+  missing: "追问遗漏",
+  next: "换题",
+};
+
+export const REASON_LABELS: Record<string, string> = {
+  error_flag: "回答有明确错误",
+  coverage_low: "关键点覆盖不足",
+  total_limit: "单题追问已达上限",
+  clarify_limit: "澄清追问机会已用完",
+  missing_limit: "遗漏追问已达上限",
+  coverage_ok: "覆盖率达标",
+};
+
+export function traceEventLabel(type: string): string {
+  return TRACE_EVENT_LABELS[type] ?? type;
+}
+
+export function decisionLabel(decision: string): string {
+  return DECISION_LABELS[decision] ?? decision;
+}
+
+export function reasonLabel(reason: string): string {
+  return REASON_LABELS[reason] ?? reason;
+}
 
 /** 题量可选项（SPEC §9 仪表盘表单）。 */
 export const QUESTION_COUNT_OPTIONS = [5, 10, 15] as const;

@@ -78,6 +78,18 @@ describe("authorizedFetch", () => {
     expect(handled).toEqual([]);
   });
 
+  it("后端英文兜底文案不端给用户（Not Found / 500 转通用中文提示）", async () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    stubFetch(() => new Response(JSON.stringify({ detail: "Not Found" }), { status: 404 }));
+    const response = await authorizedFetch("/api/interviews/x/trace");
+    expect(await responseError(response)).toBe("请求失败（404）");
+
+    const serverError = new Response(JSON.stringify({ detail: "Internal Server Error" }), {
+      status: 500,
+    });
+    expect(await responseError(serverError)).toBe("请求失败（500）");
+  });
+
   it("网络层失败转中文提示", async () => {
     vi.stubGlobal("localStorage", memoryStorage());
     vi.stubGlobal("fetch", () => Promise.reject(new TypeError("Failed to fetch")));

@@ -113,6 +113,27 @@ export type ReportResponse = {
   created_at: string;
 };
 
+/**
+ * 决策回放事件（FR-21 / SPEC §4.7）。
+ *
+ * `detail` 的字段随 `type` 而变（见 SPEC §4.7 事件表），后端已保证是纯标量；
+ * 前端按类型取用、缺字段即跳过，未知类型原样展示不猜（同 question_type 口径）。
+ */
+export type TraceEvent = {
+  type: string;
+  round: number | null;
+  detail: Record<string, unknown>;
+};
+
+export type TraceResponse = {
+  interview_id: string;
+  position: string;
+  status: "running" | "finished";
+  answered_count: number;
+  question_count: number;
+  events: TraceEvent[];
+};
+
 export type SSEHandlers = {
   meta?: (event: MetaEvent) => void;
   delta?: (event: DeltaEvent) => void;
@@ -180,6 +201,11 @@ export function getSession(interviewId: string): Promise<Session> {
 
 export function getReport(interviewId: string): Promise<ReportResponse> {
   return getJSON<ReportResponse>(`/api/interviews/${interviewId}/report`);
+}
+
+/** 决策回放（FR-21）：未结束的场次同样可查；旧场次 events 为空表。 */
+export function getTrace(interviewId: string): Promise<TraceResponse> {
+  return getJSON<TraceResponse>(`/api/interviews/${interviewId}/trace`);
 }
 
 export function listInterviews(): Promise<InterviewRow[]> {
