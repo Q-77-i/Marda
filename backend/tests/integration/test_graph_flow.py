@@ -741,3 +741,50 @@ async def test_答错缓冲独立成条(install_llm, install_search, graph_env):
     assistant = [m["content"] for m in values["chat_history"] if m["role"] == "assistant"]
     assert assistant[-2].startswith("没关系")  # 缓冲独立成条
     assert "没关系" not in assistant[-1] and "技术" in assistant[-1]  # 新题：过渡语 + 题目
+
+
+# ---- 失败恢复（重试语义）----
+
+
+async def test_节点失败后重发同一文本_从断点续跑不重复计分(
+    install_llm, install_search, graph_env, monkeypatch
+):
+    """SSE error 后的「重试」到底做了什么（前端重试按钮的依据）。
+
+    真实故障现场（2026-09-27 smoke N=10）：judge 已评分推进、随后 ask 的口吻层两次调用都不合法
+    → LLMError → SSE error 事件。图停在失败节点上，所以重发同一文本 = 重跑 ask，
+    **不重跑 judge、不重复计分**（回答已经入账，重发的那份文本被忽略）。
+    """
+    install_llm()
+    install_search(_bank("agent-architecture", "rag", "planning-reasoning"))
+    graph, _, config, state, _ = await graph_env(question_count=5)  # 2 项目 + 3 技术
+
+    tone_calls = {"n": 0}
+    real_chat = llm.chat
+
+    async def _chat(messages, **kwargs):
+        if "用面试官口吻" in messages[0]["content"]:  # 只拦 ask 的口吻层（出题官/评分官走 chat_json）
+            tone_calls["n"] += 1
+            if tone_calls["n"] == 3:  # 第 3 次 = 首道技术题：judge 已判完、advance 已切阶段
+                raise llm.LLMError("模拟抖动")
+        return await real_chat(messages, **kwargs)
+
+    monkeypatch.setattr(llm, "chat", _chat)
+
+    await _run(graph, config, state)
+    await _run(graph, config, Command(resume="我是应届生"))
+    await _run(graph, config, Command(resume="第一题回答……"))  # → 深挖
+    await _run(graph, config, Command(resume="深挖补充……"))  # → 第 2 道项目题
+    await _run(graph, config, Command(resume="第二题回答……"))  # → 深挖
+    with pytest.raises(llm.LLMError):
+        await _run(graph, config, Command(resume="深挖补充……"))  # 换技术题时出题失败
+
+    snapshot = await graph.aget_state(config)
+    assert snapshot.next == ("ask",)  # 图停在失败节点上（业务层据此给出 error 事件）
+    assert snapshot.values["answered_count"] == 2  # 失败前那次回答已入账
+
+    values = await _run(graph, config, Command(resume="深挖补充……"))  # 重试：重发同一文本
+    assert values["answered_count"] == 2  # 不重复计分
+    assert len(values["answered_questions"]) == 2
+    assert values["current_question"]["domain"] == "agent-architecture"  # 失败的那道题补出来了
+    assert values["phase"] == "tech_base"

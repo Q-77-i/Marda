@@ -182,7 +182,6 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setAnswered(m.answered_count);
       setTotal(m.question_count);
     },
-    error: (e) => setError(e.message),
     done: () => setReportReady(true),
   };
 
@@ -199,7 +198,20 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       }
       streamingRef.current = true;
       try {
-        await sendMessage(interviewId, text, dispatcher(handlers));
+        await sendMessage(
+          interviewId,
+          text,
+          dispatcher({
+            ...handlers,
+            /* error 事件发生在流内（HTTP 仍是 200），异常不会走到下面的 catch——
+               这里必须自己记下这一轮的输入，否则横幅只剩报错、没有「重试」出口。
+               重发同一文本不会重复计分：图停在失败节点上，重发 = 从断点续跑该节点 */
+            error: (e) => {
+              setError(e.message);
+              setFailedInput(text);
+            },
+          }),
+        );
       } catch (err) {
         // 401 由全局确认框接管，不再重复提示（重试也只会再 401）
         if (!(err instanceof UnauthorizedError)) {
