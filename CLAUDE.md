@@ -58,7 +58,7 @@
 
 ## Changelog
 
-- 2026-09-27：P1-M4.7-D 面试官人味层落地——高频短衔接零 LLM（`graph/rules/transition.py` 模板 + 插槽），开场白/结束陈词走 LLM；技术题同域成块（`pick_domain` 粘性，跨场次可比性由「域分布不变」单测锁死）；重连语走 `GET /interviews/{id}?reconnect=true`（只附响应不落库）
+- 2026-09-27：P1-M4.7-D 面试官人味层落地——高频短衔接零 LLM（`graph/rules/transition.py` 模板 + 插槽），开场白/结束陈词走 LLM；技术题同域成块（`pick_domain` 粘性，跨场次可比性由「域分布不变」单测锁死）；重连语走 `GET /interviews/{id}?reconnect=true`（只附响应不落库）。**M4 收官（含后续小修）**：流内 SSE `error` 事件补重试出口——error 在流内到达（HTTP 仍 200）故 `catch` 不触发，原先横幅没有「重试」；重试语义 = 重跑失败节点（图停在失败节点上，`resume` 值被丢弃），已入账的回答不重复计分，由集成测试钉死
 - 2026-09-16：坑位 1 实测确认 `json_schema` 返回 400 → 结构化输出定型 `json_object` + schema 注入 prompt + Pydantic 校验
 - 2026-09-17：T4 实测锁定版本线 `langgraph==1.2.11` / `langchain==1.4.0` / `langgraph-checkpoint-sqlite==3.1.1`
 - 2026-09-23：文档减负——「目录结构（规划）」删除（实际结构见 README）；demo（阶段 1）标记完成
