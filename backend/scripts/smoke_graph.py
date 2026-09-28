@@ -4,16 +4,33 @@
 
 依赖：.env（DEEPSEEK_API_KEY / SILICONFLOW_API_KEY）；Qdrant 容器 marda-qdrant
 可选——检索不可用时出题走 LLM 生成降级（正好验证降级链，CLAUDE.md 降级原则）。
+隔离（T7a-R1）：业务库与 checkpointer 落 /tmp 临时文件，验证不污染正式数据
+（题库 questions 从正式库拷只读快照，Qdrant 只读）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
+import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+# 必须先于 app.config 的 get_settings 首次调用注入临时库路径（lru_cache）
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="marda-smoke-graph-"))
+os.environ["DB_PATH"] = str(_TMP_DIR / "marda.sqlite3")
+os.environ["CHECKPOINT_DB_PATH"] = str(_TMP_DIR / "checkpoints.sqlite3")
+
+# 出题检索走 SQLite join questions 表 → 从正式库拷贝只读快照到临时库
+_REAL_DB = Path(__file__).resolve().parents[2] / "data" / "marda.sqlite3"
+with sqlite3.connect(os.environ["DB_PATH"]) as _dst:
+    _dst.execute("ATTACH DATABASE ? AS real", (str(_REAL_DB),))
+    _dst.execute("CREATE TABLE questions AS SELECT * FROM real.questions")
+    _dst.execute("DETACH DATABASE real")
 
 import aiosqlite
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -45,6 +62,13 @@ async def run_to_pause(graph, config, input_value):
 
 async def main() -> None:
     settings = get_settings()
+    # 防呆：宿主机 smoke 指向正式库 = 与 api 容器同开一个库。macOS 绑定挂载下 WAL 的
+    # wal-index 跨进程不成立，写坏后容器全线 500「database disk image is malformed」，
+    # 只能重启容器恢复（P1-M5 事故）。宁可这里报错，也不要静默写正式库。
+    _LIVE_DIR = Path(__file__).resolve().parents[2] / "data"
+    for _path in (settings.db_path, settings.checkpoint_db_path):
+        assert _path.parent != _LIVE_DIR, f"smoke 拒绝使用正式库路径：{_path}"
+
     question_count = 2
     interview_id = f"smoke-t4-{int(time.time())}"  # 每次新场次，避免 resume 旧状态
 
