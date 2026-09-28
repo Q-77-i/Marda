@@ -37,7 +37,7 @@ marda/
 │   ├── components/               # chat / radar / report / …
 │   └── lib/                      # api.ts / sse.ts / typewriter.ts / format.ts / constants.ts / chart-tokens.ts
 ├── data/
-│   ├── scripts/                  # bootstrap.py / mapping.py / parse_md.py / parse_xmind.py / enrich.py / ingest.py
+│   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest
 │   ├── parsed/                   # 解析产物（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
 ├── docker/
@@ -341,7 +341,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - 层级规则：`#` = round（一面/二面/三面）；`##` = company；`###` = topic；`####` = 题目。
 - 题目文本 = 标题去除编号前缀（正则 `^\d+\.\s*`，处理 "1. 1." 双重编号）；正文 = 参考答案。
 - 输出 JSON：question / answer / topic / domain / difficulty / company / round / `source`="个人题库-牛客补充版"（**答案主源**）/ `sources=[{source, license, url, source_detail}]`（来源明细，合规四要素；license 按源记）。
-- 同题合并（题干 md5 相同 → 同 question_id）跨源生效，主源裁决 `_rank`（`min` 取优）：**主源优先级 > 能用 > 答案长 > 轮次可信**，完全同分时取先导入者（列表序稳定）；合并后 `sources` 每源留一条、按优先级排序，留的是该源里**最优**那条记录（占位存根不会把正本的 URL 挤掉）。
+- 同题合并（题干 md5 相同 → 同 question_id）跨源生效，主源裁决 `bank.rank`（`min` 取优）：**主源优先级 > 能用 > 答案长 > 轮次可信**，完全同分时取先导入者（列表序稳定）；合并后 `sources` 每源留一条、按优先级排序，留的是该源里**最优**那条记录（占位存根不会把正本的 URL 挤掉）。
 
 ### 6.2 映射表（config，随 SPEC 交付）
 
@@ -355,7 +355,31 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 ### 6.4 富化与质检（enrich.py）
 
 - LLM 批量补齐 key_points / follow_ups（deepseek-flash，批处理 + 抽样人工质检 20 条）；
-- 校验必填字段、去重（题目文本相似度 + 手动白名单）。
+- 校验必填字段、去重（题目文本相似度 + 手动白名单，见 §6.6）。
+
+### 6.5 开源语料适配（parse_open.py，四源）
+
+只采**明确 licensed 且题干与答案同在仓库内**（可溯源、非抓取）的源，清单见 [data/licenses/语料来源清单.md](../data/licenses/语料来源清单.md)。每源一个 adapter，共用 `bank` 共享层的 `new_question`/`finalize_status`/`source_record`，归一化到统一 schema（topic→域、难度→L1/L2/L3、无公司轮次概念→NULL）后与个人题库进同一套合并。
+
+| 源 | 形态 | 明细行 | 解析要点 |
+| --- | --- | --- | --- |
+| ai-agents-from-zero | `### Qn-m.` 题 + 正文 | 89 | 唯一带**真实难度标注**的源（基础/中等/较难 → L1/L2/L3）；正文止于「常见追问」 |
+| FAQ_Of_LLM_Interview | 题单+编号答案段 / 编号问题行+围栏答案 | 71 | 两种形态：题单与答案段**按编号配对**，配不上不成题；`text` 围栏剥壳、带语言围栏保留 |
+| ai-agent-interview-guide | `**Q：**` + 答案标记 | 261 | 四种标记 `**A：**` / `**A**：` / `**标准答案 A：**` / `**标准答案（A）**`；「追问应对」起截断 |
+| llm-interview-guide | `**Q：**` 内联问答（106 页） | 809 | topic 取 H1；图片链接转文本 |
+
+- **未采的逐项进报告，不静默**：无答案段的题单条目、清单外文件（面经题单/关键词解析、CV 与工具用法笔记、参数手册）、站点页、`## 追问链` 与 `## Qn：` 体、速记与真题清单——超出「题干答案成对」口径的一律不采
+- **未知章节/未知 topic 报错不静默**（同 §6.2）
+- **占位答案不算答案**：`finalize_status` 按**答案的实质字符数**判定（剥掉代码围栏行与首尾空白后 < 5 字 → draft）。源里的 `答案：xx`、空代码块这类空壳因此不会以 enabled 身份去富化、进向量库——否则它会占着配额却给不出任何参考答案
+- 四源内部同题干合并 16 组（1246 → 1229）；`company`/`round` 无此概念时为 `NULL`（**不是空串**，空串入库存的是 `''`）
+
+### 6.6 合并入库（combine.py）
+
+个人题库（`questions_enriched.json`）+ 开源语料（`questions_open.json`）→ `questions_combined.json`（`ingest.py` 的输入）：
+
+- **个人题库在前**：完全同分时先导入者优先（与入库口径一致）；个人题库 `SOURCE_PRIORITY` 恒 0，开源答案再长也不顶替主源
+- **自带零回归校验**：个人题库 12 个字段逐字比对，只允许新增 `sources` 明细行；不过则非零退出——**不允许带病入库**（开源语料解析改动后重跑，个人题库产物逐字节一致）
+- **近似重复只报不并**：相似度 ≥0.9 的候选对打印清单（含个人×开源对），人工登记白名单后才合（§8.1）
 
 ## 7. API 契约
 
@@ -421,11 +445,11 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 `source` 列语义 = **答案主源**；来源明细进 `question_sources` 关联表（PK = (question_id, source)，一题多源 = 多行）。
 
 - **license 按源记、不按题记**；业务表与向量层都不再持有来源字段
-- **主源裁决**（`parse_md._rank`，`min` 取优）：主源优先级（`SOURCE_PRIORITY` 登记表，个人题库恒 0——人工整理，开源源答案再长也不顶替）> 能用（enabled）> 答案长 > 轮次可信；完全同分取先导入者（列表序稳定，不另记时间戳）
-- **同题合并**：题干 md5 相同 → 同 question_id → 跨源合并成一条；`sources` 每源留**最优**那条（按 `_rank` 排序后取首个）——留"最优"而非"先出现"，出处才指向答案真正来自的那一篇
+- **主源裁决**（`bank.rank`，`min` 取优）：主源优先级（`SOURCE_PRIORITY` 登记表，个人题库恒 0——人工整理，开源源答案再长也不顶替）> 能用（enabled）> 答案长 > 轮次可信；完全同分取先导入者（列表序稳定，不另记时间戳）
+- **同题合并**：题干 md5 相同 → 同 question_id → 跨源合并成一条；`sources` 每源留**最优**那条（按 `bank.rank` 排序后取首个）——留"最优"而非"先出现"，出处才指向答案真正来自的那一篇
 - **迁移**：`ingest.ensure_schema` 探测老库（questions 有 license/url 列）→ 建来源表并回填 → `DROP COLUMN` 两列；幂等可重跑（`source_detail` 老库从未落库，回填 NULL，重跑管道由 JSON 补上）
 - **同步语义**：questions 按 id upsert + `DELETE NOT IN`；question_sources 整表重建——它的同步规则比 questions 多一维（题还在、某来源没了也要删），逐行 diff 徒增复杂度，千行量级毫秒级
-- 每个新源一个 adapter（复用 `_make_question`/`_finalize`/`source_record`），把该源的分类体系归一化到统一 schema（topic→域、easy/medium/hard→L1/L2/L3、无轮次概念→NULL）；未知 topic 沿用"报错、人工补映射"
+- 每个新源一个 adapter（复用 `bank.new_question`/`finalize_status`/`source_record`），把该源的分类体系归一化到统一 schema（topic→域、easy/medium/hard→L1/L2/L3、无轮次概念→NULL）；未知 topic 沿用"报错、人工补映射"（四源 adapter 见 §6.5）
 - **对上层透明**：app 侧零改动（`fetch_by_ids` 只 select 固定列），Qdrant payload 不含 source 字段，检索命中后 join SQLite
 
 ## 9. 前端设计
@@ -463,6 +487,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-29 P1-M5 会话 2（开源语料扩充，四源接入）：新增 §6.5（`parse_open.py` 四源 adapter——形态/题量/解析要点、未采项逐项进报告、占位答案判据）与 §6.6（`combine.py` 合并 + 个人题库零回归校验 + 近似重复只报不并）；§1 目录树补 `bank`/`parse_open`/`combine`。四源 license 逐仓核对（均仓库自带 MIT）：ai-agents-from-zero 89 / FAQ_Of_LLM_Interview 71 / ai-agent-interview-guide 261 / llm-interview-guide 809 = 1230 条来源明细；题库 342 → 1571 题（enabled 1095），`question_sources` 1572 行，Qdrant 重建 1095 点（dense+sparse）。新增 `test_parse_open.py` 与 `bank` 共享层用例（实质答案判据、聚合缺省不为空串、括号答案标记），302 → 322 passed；smoke_graph + smoke_api 零回归
 - 2026-09-28 P1-M5 会话 1（`question_sources` 拆表）：§8 的 questions 表去掉 license/url、新增 `question_sources`（PK `(question_id, source)`）；§8.1 由「接入新源时怎么扩」改写为已落地口径（`source_rank`/`_rank` 主源裁决、`merge_sources` 每源留最优、列探测迁移、来源表整表重建、对上层透明）；§6.1 解析产物补 `sources` 明细与主源字段语义。新增 `backend/tests/unit/test_ingest_sqlite.py`（老库迁移与幂等、多源明细、全量同步删除），`test_parse_md.py` 补主源裁决与同源多记录用例（302 passed）。老库迁移在副本上逐字段对账后落真库：342 题零回归，`source_detail`（261 条）为老 schema 从未落库、本次顺带补回
 - 2026-09-27 三条小修（P1-M4.7 后续，均为真链路暴露）：① §4.4 项目深挖题措辞去重（喂回已问题目原文 + 两层模板同禁复述背景）；② §7 会话响应新增 `stalled` 与前端两路处置（重发 / 只重建列表），`error` 事件补「不能靠前端猜死活」的口径与 `engine_stalled` 的两态判据；③ 成本回读口径与 Langfuse 模型价目核对（代码无改动，见踩坑记录）
 - 2026-09-27 错误路径小修（P1-M4.7 后续）：§7 的 `error` 事件补口语义——流内错误时 HTTP 仍是 200、场次仍有效、**图停在失败节点上**，故客户端「重试」= 重发同一文本从断点续跑（已入账的回答不重复计分）；前端此前只 `setError` 不记 `failedInput` → 横幅没有重试出口、用户只能手动重打发一条重复消息。新增集成测试钉死「重发不重复计分」这一承重语义

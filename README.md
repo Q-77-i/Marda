@@ -39,7 +39,7 @@ backend/            FastAPI + LangGraph
   embedding_service/  本地 BGE-M3 嵌入服务（独立镜像，torch 不进 api）
   tests/
 data/
-  scripts/          语料管道：parse_md / parse_xmind / enrich / ingest
+  scripts/          语料管道：bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest
   parsed/           解析产物（gitignore）
   licenses/         语料来源清单与许可
 frontend/           Next.js 15（app 路由 / lib 纯逻辑 / components）
@@ -85,9 +85,18 @@ JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 �
 ```bash
 backend/.venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON
 backend/.venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账
+backend/.venv/bin/python data/scripts/parse_open.py     # 四源开源语料 → JSON（未采项逐项进报告）
+backend/.venv/bin/python data/scripts/combine.py        # 个人题库 + 开源语料合并（自带零回归校验）
 backend/.venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
 backend/.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（重嵌 dense+sparse，需 embedding 在跑）
 ```
+
+`bank.py` 是三个解析脚本的共享层（`question_id` 生成、主源裁决、同题合并、来源四要素、状态判定），单测直接打在它上面。
+解析口径与四源形态见 [docs/SPEC.md](docs/SPEC.md) §6.5/§6.6。
+
+**语料规模**：个人题库 342 题 + 四源开源语料 1229 题 = 1571 题（enabled 1095）。
+开源语料以 **Agent 岗方向**为主（agent-architecture / engineering-observability / rag），
+LLM 模型层理论的页落在未启用的 `cs-fundamentals` 域、以 draft 只进 SQLite（域启用时零重采成本）。
 
 **语料合规**：入库语料必须有明确 license；无 license、非商用（NC）、来源不明的一律不入库。
 一题可有多源，来源明细进 `question_sources` 表（`source`/`license`/`url`/`source_detail` 四要素，**license 按源记**），
@@ -108,7 +117,7 @@ backend/.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant �
 - **决策回放（FR-21）**：每个节点把「输入 / 决策 / 原因 / 状态变化」追加进 state 的 `trace_log`，`GET /interviews/{id}/trace` 一次取回整场事件流——为什么追问（答错澄清 / 覆盖率低补遗漏 / 达标深挖）、为什么换题（全场补救额度用尽 / 漏点均已追问 / 单题上限）、难度何时变档，逐轮可查。决策与原因**同源**（`explain_decision` 是唯一实现），回放里的原因不是旁白，是当时真正生效的那一条
 
 ```bash
-uv run pytest -q                                    # 后端 291 个测试
+uv run pytest -q                                    # 后端 322 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
@@ -165,7 +174,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）。后续 M5 会话 2（开源自语料扩充）与 M6–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）；**P1-M5 会话 2 已完成**（开源语料扩充：WenQu 登记表定位的四源 MIT 语料接入，342 → 1571 题 / enabled 1095，Qdrant 重建 1095 点，smoke_graph + smoke_api 零回归）。后续 M6–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

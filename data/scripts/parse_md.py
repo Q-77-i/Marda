@@ -4,7 +4,7 @@
 H4 下紧邻的 blockquote 是元信息（轮次可信度 / 来源 / 原帖 URL）。
 
 来源口径（SPEC §8.1 拆表）：每题 `sources` 列表带合规四要素（source/license/url/source_detail），
-顶层 `source` = **答案主源**；一题多源时的主源裁决见 `_rank`。
+顶层 `source` = **答案主源**；一题多源时的主源裁决见 bank.rank（本模块 `_rank` 保留为别名）。
 
 两个坑：
 1. 答案里的 fenced code block 含 `# 注释`，缩进后可能是 `####` —— 必须跟踪围栏状态；
@@ -16,29 +16,34 @@ H4 下紧邻的 blockquote 是元信息（轮次可信度 / 来源 / 原帖 URL�
 from __future__ import annotations
 
 import argparse
-import difflib
-import hashlib
 import json
 import re
-from collections import Counter
 from pathlib import Path
 from typing import Final
 
 import bootstrap  # noqa: F401  # 把 backend/ 加进 sys.path
-from app.domain import DOMAIN_LABELS, ENABLED_DOMAINS
+from bank import (
+    SOURCE_PERSONAL,
+    describe,
+    finalize_status,
+    find_duplicates,
+    make_id,
+    merge_exact_duplicates,
+    merge_group as _merge_group,
+    new_question,
+    print_stats,
+    rank as _rank,
+    source_rank,
+)
+from app.domain import ENABLED_DOMAINS
 from mapping import DOMAIN_DIFFICULTY_OVERRIDE, ROUND_TO_DIFFICULTY, TOPIC_TO_DOMAIN
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MD = REPO_ROOT / "docs" / "题库" / "md" / "Agent面试-牛客补充版.md"
 DEFAULT_OUT = REPO_ROOT / "data" / "parsed" / "questions.json"
 
-SOURCE_NAME = "个人题库-牛客补充版"
+SOURCE_NAME = SOURCE_PERSONAL
 LICENSE = "personal"
-
-# 主源优先级（SPEC §8.1）：数值越小越优先。个人题库恒为 0——它人工整理、逐题校对过，
-# 开源源答案再长也不顶替；新增源在此登记，未登记的排在其后，同档按质量裁决
-SOURCE_PRIORITY: Final[dict[str, int]] = {SOURCE_NAME: 0}
-UNRANKED_PRIORITY: Final = 100
 
 ROUND_RE = re.compile(r"^#\s+(一面|二面|三面)\s*$")
 H2_RE = re.compile(r"^##\s+(.+?)\s*$")
@@ -57,24 +62,6 @@ TAIL_RULE_RE = re.compile(r"\n+-{3,}\s*$")
 SKIP_H2 = {"目录", "题量总览"}
 
 
-def make_id(question: str) -> str:
-    """question_id = q_ + md5(题目文本)[:12]，确定性、幂等 upsert 用。
-
-    题干相同即同 id——跨源合并（同一道题出现在两个语料里）由此天然成立。
-    """
-    digest = hashlib.md5(question.encode("utf-8")).hexdigest()[:12]
-    return f"q_{digest}"
-
-
-def source_rank(source: str) -> int:
-    return SOURCE_PRIORITY.get(source, UNRANKED_PRIORITY)
-
-
-def source_record(source: str, *, license: str, url: str = "", source_detail: str = "") -> dict:
-    """来源明细记录（question_sources 一行）：license 按源记、不按题记（SPEC §8.1）。"""
-    return {"source": source, "license": license, "url": url, "source_detail": source_detail}
-
-
 def split_source(meta_tail: str) -> tuple[str, str]:
     """从元信息尾部提取（来源文本, 原帖 URL）。推断类只有依据，无来源。"""
     text = meta_tail.strip()
@@ -91,27 +78,23 @@ def split_source(meta_tail: str) -> tuple[str, str]:
 
 
 def _make_question(raw_title: str, round_: str, company: str, topic: str, origin: str) -> dict:
-    question = LEADING_NUMBER_RE.sub("", raw_title).strip()
-    if not topic:
-        raise ValueError(f"题目缺少所属 topic（H3）：{question}（{origin}）")
+    question_text = LEADING_NUMBER_RE.sub("", raw_title).strip()
     domain = TOPIC_TO_DOMAIN.get(topic)
     if domain is None:
-        raise ValueError(f"未知 topic「{topic}」，请补进 mapping.TOPIC_TO_DOMAIN：{question}（{origin}）")
+        raise ValueError(
+            f"未知 topic「{topic}」，请补进 mapping.TOPIC_TO_DOMAIN：{question_text}（{origin}）"
+        )
     difficulty = DOMAIN_DIFFICULTY_OVERRIDE.get(domain) or ROUND_TO_DIFFICULTY.get(round_, "L2")
-    return {
-        "question_id": make_id(question),
-        "question": question,
-        "answer": "",
-        "topic": topic,
-        "domain": domain,
-        "difficulty": difficulty,
-        "company": company,
-        "round": round_,
-        "round_confidence": None,
-        "source": SOURCE_NAME,  # 主源 = 答案主源，明细见 sources
-        "sources": [source_record(SOURCE_NAME, license=LICENSE)],
-        "status": "enabled",
-    }
+    return new_question(
+        question_text,
+        topic=topic,
+        domain=domain,
+        difficulty=difficulty,
+        source=SOURCE_NAME,
+        license=LICENSE,
+        company=company,
+        round_=round_,
+    )
 
 
 def _finalize(question: dict, body: list[str]) -> None:
@@ -131,11 +114,12 @@ def _finalize(question: dict, body: list[str]) -> None:
             continue
         kept.append(line)
 
-    answer = TAIL_RULE_RE.sub("", "\n".join(kept)).strip()
-    question["answer"] = answer
+    question["answer"] = TAIL_RULE_RE.sub("", "\n".join(kept)).strip()
 
-    if no_answer or not answer or question["domain"] not in ENABLED_DOMAINS:
+    if no_answer:
         question["status"] = "draft"
+    else:
+        finalize_status(question)
 
 
 def parse_text(text: str, *, origin: str = "<memory>") -> list[dict]:
@@ -202,80 +186,6 @@ def parse_file(path: Path) -> list[dict]:
     return parse_text(path.read_text(encoding="utf-8"), origin=str(path))
 
 
-def _rank(question: dict) -> tuple:
-    """同题择优依据（`min` 取优）：主源优先级 > 能用 > 答案长 > 轮次可信（SPEC §8.1）。
-
-    完全同分时 min() 取首个 = 先导入者优先——「导入时间」这一层靠列表序稳定实现，
-    不额外记时间戳（谁先被解析进列表，谁就是先导入的）。
-    """
-    return (
-        source_rank(question["source"]),
-        0 if question["status"] == "enabled" else 1,
-        -len(question["answer"]),
-        0 if question["round_confidence"] == "明确" else 1,
-    )
-
-
-def merge_sources(group: list[dict]) -> list[dict]:
-    """合并同题多源明细：每源留一条，按主源优先级排序（SPEC §8.1）。
-
-    同一源在同一题上有多条记录（同一题出现在该源的多篇面经里）时只留**最优**那条——
-    question_sources 主键是 (question_id, source)，本就不允许多条；按 _rank 排后再取首个，
-    是为了让出处指向「答案真正来自的那一篇」：占位存根（无答案、无出处）排名靠后，
-    不会把有答案正本的 URL 挤掉。被合并掉的明细在合并报告里可见，人工可回溯。
-    """
-    seen: dict[str, dict] = {}
-    for question in sorted(group, key=_rank):  # 稳定排序：同分仍是先导入者在前
-        for record in question["sources"]:
-            seen.setdefault(record["source"], dict(record))
-    return sorted(seen.values(), key=lambda r: (source_rank(r["source"]), r["source"]))
-
-
-def _merge_group(group: list[dict]) -> dict:
-    """同组（同题）择优保留一份（`source` 即主源），company/round 聚合去重、来源明细合并。"""
-    best = min(group, key=_rank)
-    record = dict(best)
-    record["company"] = "、".join(dict.fromkeys(q["company"] for q in group if q["company"]))
-    record["round"] = "、".join(dict.fromkeys(q["round"] for q in group if q["round"]))
-    record["sources"] = merge_sources(group)
-    return record
-
-
-def merge_exact_duplicates(questions: list[dict]) -> tuple[list[dict], list[dict]]:
-    """同一题干（question_id 相同）合并成一条。
-
-    md 里存在"原题保留，未收录答案"存根与有答案正本并列的情况，题干完全相同 →
-    md5 相同 → SQLite 主键冲突。这里按 _rank 择优保留一份，company/round 聚合去重。
-    返回（合并后列表, 合并明细）供人工复核。
-    """
-    grouped: dict[str, list[dict]] = {}
-    for question in questions:
-        grouped.setdefault(question["question_id"], []).append(question)
-
-    merged: list[dict] = []
-    report: list[dict] = []
-    for group in grouped.values():
-        best = min(group, key=_rank)
-        if len(group) == 1:
-            merged.append(best)
-            continue
-
-        report.append(
-            {
-                "question_id": best["question_id"],
-                "question": best["question"],
-                "kept": f"{best['company']}/{best['round']} {best['domain']} 答案 {len(best['answer'])} 字",
-                "dropped": [
-                    f"{q['company']}/{q['round']} {q['domain']} 答案 {len(q['answer'])} 字"
-                    for q in group
-                    if q is not best
-                ],
-            }
-        )
-        merged.append(_merge_group(group))
-    return merged, report
-
-
 # 人工确认的近似重复对（find_duplicates ≥0.9 的同题异写，题干不同 → 不同 question_id）。
 # 每对是两个题干的前缀；匹配不到或多于一条时报错，防止题库改动后白名单静默失效。
 APPROVED_MERGE_PAIRS: Final[list[tuple[str, str]]] = [
@@ -321,60 +231,14 @@ def merge_approved_pairs(questions: list[dict]) -> tuple[list[dict], list[dict]]
             {
                 "question_id": best["question_id"],
                 "question": best["question"],
-                "kept": f"{best['company']}/{best['round']} {best['domain']} 答案 {len(best['answer'])} 字",
-                "dropped": [
-                    f"{q['company']}/{q['round']} {q['domain']} 答案 {len(q['answer'])} 字" for q in dropped
-                ],
+                "kept": describe(best),
+                "dropped": [describe(q) for q in dropped],
             }
         )
 
     merged = [replaced.get(q["question_id"], q) for q in questions if q["question_id"] not in drop_ids]
     return merged, report
 
-
-
-def normalize(text: str) -> str:
-    """去空白与标点，用于相似度比对。"""
-    return re.sub(r"[\s，。？！、；：（）()【】\[\]「」“”\"'`~·—\-/|]+", "", text).lower()
-
-
-def find_duplicates(questions: list[dict], threshold: float = 0.9) -> list[tuple[str, str, float]]:
-    """题目文本相似度 ≥ threshold 的候选对，供人工确认（不自动删）。"""
-    pairs: list[tuple[str, str, float]] = []
-    normalized = [(q["question_id"], normalize(q["question"])) for q in questions]
-    for i, (id_a, text_a) in enumerate(normalized):
-        for id_b, text_b in normalized[i + 1:]:
-            if abs(len(text_a) - len(text_b)) > max(len(text_a), len(text_b)) * 0.3:
-                continue
-            ratio = difflib.SequenceMatcher(None, text_a, text_b).ratio()
-            if ratio >= threshold:
-                pairs.append((id_a, id_b, round(ratio, 3)))
-    return sorted(pairs, key=lambda p: -p[2])
-
-
-def print_stats(questions: list[dict]) -> None:
-    total = len(questions)
-    print(f"题目总数：{total}")
-    print(f"状态：{dict(Counter(q['status'] for q in questions))}")
-    print("\n轮次 × 题量：", dict(Counter(q["round"] for q in questions)))
-    print("公司 × 题量：", dict(Counter(q["company"] for q in questions)))
-    print("\n知识域 × 题量：")
-    for domain, count in Counter(q["domain"] for q in questions).most_common():
-        print(f"  {domain:<26} {count:>3}  ({DOMAIN_LABELS.get(domain, '?')})")
-    print("\n难度 × 题量：", dict(Counter(q["difficulty"] for q in questions)))
-    print("轮次可信度：", dict(Counter(q["round_confidence"] for q in questions)))
-    print(f"带原帖 URL：{sum(1 for q in questions for s in q['sources'] if s['url'])}")
-    print("主源分布：", dict(Counter(q["source"] for q in questions)))
-
-    enabled = [q for q in questions if q["status"] == "enabled"]
-    required = ["question", "answer", "topic", "domain", "difficulty", "source"]
-    complete = sum(
-        1
-        for q in enabled
-        if all(q[f] for f in required) and all(s["source"] and s["license"] for s in q["sources"])
-    )
-    rate = complete / len(enabled) * 100 if enabled else 0.0
-    print(f"\nenabled {len(enabled)} 题，必填字段完整率：{rate:.1f}%")
 
 
 def main() -> None:

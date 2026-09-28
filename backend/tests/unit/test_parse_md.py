@@ -4,6 +4,7 @@ import pytest
 
 from parse_md import (
     SOURCE_NAME,
+    finalize_status,
     make_id,
     merge_approved_pairs,
     merge_exact_duplicates,
@@ -79,6 +80,24 @@ def test_行为面域阶段一置_draft(questions):
     assert q["domain"] == "behavioral"
     assert q["status"] == "draft"
     assert q["answer"] == "先做三年技术，再考虑带团队。"
+
+
+def test_占位答案与空代码块不当作可用答案():
+    """源里「答案：xx」是没填的占位、空代码块是没写的代码——都按没有答案处理（draft）。
+
+    判据是答案的实质字符数（去掉代码围栏行与空白），阈值 5：实测占位/空壳在 0～2 字，
+    而题库里最短的真答案 8 字、真实语料 15 字，中间空档很宽。
+    """
+    stub = make_record(source=SOURCE_NAME, answer="xx")
+    hollow_fence = make_record(source=SOURCE_NAME, answer="```python\n\n```")
+    real_short = make_record(source=SOURCE_NAME, answer="验证集网格搜索；或 RRF 避免调权。")
+
+    for record in (stub, hollow_fence, real_short):
+        finalize_status(record)
+
+    assert stub["status"] == "draft"
+    assert hollow_fence["status"] == "draft"
+    assert real_short["status"] == "enabled"  # 短但言之有物（19 字）
 
 
 def test_字段完整(questions):
@@ -161,6 +180,20 @@ def test_主源裁决_完全同分先导入者优先():
     second = make_record(source="源乙", answer="同样长")
     merged, _ = merge_exact_duplicates([first, second])
     assert merged[0]["source"] == "源甲"
+
+
+def test_合并后_company_round_缺失仍为_None():
+    """没有公司/轮次的语料（开源题库）合并后不能变成空串——空串入库存的是 '' 不是 NULL。"""
+    a = make_record(source="源甲", answer="答案")
+    b = make_record(source="源乙", answer="答案")
+    for record in (a, b):
+        record["company"] = None
+        record["round"] = None
+
+    merged, _ = merge_exact_duplicates([a, b])
+
+    assert merged[0]["company"] is None
+    assert merged[0]["round"] is None
 
 
 def test_同一源多篇面经只留一条明细():
@@ -250,7 +283,7 @@ Continuous Batching：请求级动态组批，不等整个 batch 跑完就插入
     assert prompt["status"] == "enabled"
     # company/round 聚合去重（两对同公司同轮次，聚合结果不变）
     assert llm["company"] == prompt["company"] == "字节跳动"
-    assert report[0]["dropped"][0].startswith("字节跳动/")
+    assert "字节跳动/" in report[0]["dropped"][0]  # 报告行含来源前缀，见 bank.describe
 
 
 def test_白名单题干不存在则报错():
