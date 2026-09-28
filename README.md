@@ -83,14 +83,16 @@ JWT_SECRET=        # 账号体系签名密钥，随机生成；长度不足 32 �
 ## 语料管道
 
 ```bash
-.venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON
-.venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账
-.venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
-.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（重嵌 dense+sparse，需 embedding 在跑）
+backend/.venv/bin/python data/scripts/parse_md.py       # 题库 md → 结构化 JSON
+backend/.venv/bin/python data/scripts/parse_xmind.py    # xmind 解析 + 与 md 交叉对账
+backend/.venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
+backend/.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（重嵌 dense+sparse，需 embedding 在跑）
 ```
 
-**语料合规**：入库语料必须有明确 license，每条带 `source`/`license`/`url` 三要素；
-无 license、非商用（NC）、来源不明的语料一律不入库。详见 [data/licenses/语料来源清单.md](data/licenses/语料来源清单.md)。
+**语料合规**：入库语料必须有明确 license；无 license、非商用（NC）、来源不明的一律不入库。
+一题可有多源，来源明细进 `question_sources` 表（`source`/`license`/`url`/`source_detail` 四要素，**license 按源记**），
+`questions.source` 只存**答案主源**（主源裁决规则见 [docs/SPEC.md](docs/SPEC.md) §8.1）。
+清单见 [data/licenses/语料来源清单.md](data/licenses/语料来源清单.md)。
 
 ## 面试状态机（LangGraph）
 
@@ -163,7 +165,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）。后续 M5–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）。后续 M5 会话 2（开源自语料扩充）与 M6–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

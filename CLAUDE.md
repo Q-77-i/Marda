@@ -58,6 +58,7 @@
 
 ## Changelog
 
+- 2026-09-28：P1-M5 会话 1 `question_sources` 拆表（多源 provenance 落地）——`questions` 只留 `source`（**答案主源**），合规四要素明细进新表 `question_sources`（PK `(question_id, source)`，**license 按源记、不按题记**）；主源裁决 `_rank`（`min` 取优）：主源优先级 > 能用 > 答案长 > 轮次可信，完全同分取先导入者（新增源在 `SOURCE_PRIORITY` 登记，个人题库恒 0）。同题合并时**每源留最优那条**——留"最优"而非"先出现"，出处才指向答案真正来自的那一篇。老库迁移靠列探测 + `DROP COLUMN`，幂等可重跑；`question_sources` 走整表重建（同步规则比 questions 多一维：题还在、某来源没了也要删）。真库迁移前先在副本上逐字段 diff 对账：342 题零回归、app 侧零改动（`fetch_by_ids` 只 select 固定列），并顺带补回了老 schema 从未落库的 `source_detail`（261 条）
 - 2026-09-27：P1-M4.7 后续三条小修（均为真链路暴露，M4 节末待办清空）——① 项目深挖题措辞去重：出题官每轮独立调用、只拿到轮次号，不喂前情「换个切入点」等于掷骰子（三道题套同一个开头）→ `_asked_project_block` 把已问题目**原文**喂回 `{asked}` 插槽，场景题与口吻层两层模板同时禁「复述候选人项目背景」（题前衔接语已交代过背景）；② 前端「重试」判据改由服务端给：会话接口新增 `stalled`（`service.engine_stalled`，两态实测`pause/中断载荷` vs `失败节点/无载荷`），前端 `lib/recovery.ts` 据此两路处置——卡住或没入账→重发（重跑失败节点，resume 值被丢弃、不重复计分），**已跑完只是回复没传回来→只按服务端记录重建列表、绝不重发**（否则同一份回答判两次）；有未落地作答时新消息先补发旧的、新文本留在输入框；③ 成本回读：Langfuse 价格表 2026-09-25 配好后回读 `¥0.1428`（46 generation/35354 token），此前为 0 的是价格表生效前的旧场次（摄入时算价、不追溯）
 - 2026-09-27：P1-M4.7-D 面试官人味层落地——高频短衔接零 LLM（`graph/rules/transition.py` 模板 + 插槽），开场白/结束陈词走 LLM；技术题同域成块（`pick_domain` 粘性，跨场次可比性由「域分布不变」单测锁死）；重连语走 `GET /interviews/{id}?reconnect=true`（只附响应不落库）。**M4 收官（含后续小修）**：流内 SSE `error` 事件补重试出口——error 在流内到达（HTTP 仍 200）故 `catch` 不触发，原先横幅没有「重试」；重试语义 = 重跑失败节点（图停在失败节点上，`resume` 值被丢弃），已入账的回答不重复计分，由集成测试钉死
 - 2026-09-16：坑位 1 实测确认 `json_schema` 返回 400 → 结构化输出定型 `json_object` + schema 注入 prompt + Pydantic 校验

@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
-from parse_md import merge_approved_pairs, parse_file, parse_text
+from parse_md import (
+    SOURCE_NAME,
+    make_id,
+    merge_approved_pairs,
+    merge_exact_duplicates,
+    parse_file,
+    parse_text,
+    source_rank,
+)
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "sample_bank.md"
 
@@ -39,8 +47,14 @@ def test_代码块内标题不切题且答案完整(questions):
     assert q["answer"].endswith("代码块之后的答案正文。")
     # 合规三要素固定为题库名；面经出处与原帖 URL 单列，便于溯源
     assert q["source"] == "个人题库-牛客补充版"
-    assert q["source_detail"] == "字节跳动一面面经｜27届秋招"
-    assert q["url"] == "https://www.nowcoder.com/discuss/123456"
+    assert q["sources"] == [
+        {
+            "source": "个人题库-牛客补充版",
+            "license": "personal",
+            "url": "https://www.nowcoder.com/discuss/123456",
+            "source_detail": "字节跳动一面面经｜27届秋招",
+        }
+    ]
 
 
 def test_手撕算法域默认难度_L2(questions):
@@ -68,12 +82,113 @@ def test_行为面域阶段一置_draft(questions):
 
 
 def test_字段完整(questions):
+    """来源四要素进 sources 明细（SPEC §8.1 拆表）；顶层只留主源 source。"""
     required = {
         "question_id", "question", "answer", "topic", "domain", "difficulty",
-        "company", "round", "source", "source_detail", "license", "url", "status",
+        "company", "round", "source", "sources", "status",
     }
     for q in questions:
         assert required <= set(q), q["question"]
+        assert not ({"source_detail", "license", "url"} & set(q)), "来源字段不应留在题目顶层"
+        assert q["sources"], q["question"]
+        for record in q["sources"]:
+            assert {"source", "license", "url", "source_detail"} <= set(record)
+
+
+def make_record(
+    *,
+    source: str,
+    answer: str,
+    source_detail: str = "",
+    status: str = "enabled",
+    round_confidence: str = "明确",
+    question: str = "什么是 Agent 的记忆分层？",
+) -> dict:
+    """构造一条「某来源提供的题目记录」——题干相同 → question_id 相同（跨源同题）。"""
+    return {
+        "question_id": make_id(question),
+        "question": question,
+        "answer": answer,
+        "topic": "Memory",
+        "domain": "memory",
+        "difficulty": "L2",
+        "company": "字节跳动",
+        "round": "一面",
+        "round_confidence": round_confidence,
+        "source": source,
+        "sources": [
+            {
+                "source": source,
+                "license": "personal" if source == SOURCE_NAME else "MIT",
+                "url": "",
+                "source_detail": source_detail,
+            }
+        ],
+        "status": status,
+    }
+
+
+def test_主源裁决_个人题库优先():
+    """SPEC §8.1：主源优先级 > 答案质量——开源源答案再长也不能顶替个人题库。"""
+    wenqu = make_record(source="ai-agent-interview-guide", answer="开源答案，更长更啰嗦" * 5)
+    personal = make_record(source=SOURCE_NAME, answer="个人题库答案")
+
+    merged, _ = merge_exact_duplicates([wenqu, personal])  # 输入序故意把开源源放前面
+
+    assert len(merged) == 1
+    assert merged[0]["source"] == SOURCE_NAME
+    assert merged[0]["answer"] == "个人题库答案"
+    assert [s["source"] for s in merged[0]["sources"]] == [SOURCE_NAME, "ai-agent-interview-guide"]
+    assert source_rank(SOURCE_NAME) < source_rank("ai-agent-interview-guide")
+
+
+def test_主源裁决_同优先级按可用与答案长度():
+    """未登记源同档：能用 > 答案长（沿用同题择优的既有哲学）。"""
+    draft = make_record(source="源甲", answer="很长的答案" * 20, status="draft")
+    enabled = make_record(source="源乙", answer="短答案")
+    merged, _ = merge_exact_duplicates([draft, enabled])
+    assert merged[0]["source"] == "源乙"
+
+    short = make_record(source="源甲", answer="短")
+    long_ = make_record(source="源乙", answer="长" * 50)
+    merged, _ = merge_exact_duplicates([short, long_])
+    assert merged[0]["source"] == "源乙"
+
+
+def test_主源裁决_完全同分先导入者优先():
+    """导入时间这一层靠列表序稳定实现：完全同分时 min() 取首个。"""
+    first = make_record(source="源甲", answer="同样长")
+    second = make_record(source="源乙", answer="同样长")
+    merged, _ = merge_exact_duplicates([first, second])
+    assert merged[0]["source"] == "源甲"
+
+
+def test_同一源多篇面经只留一条明细():
+    """question_sources 主键是 (question_id, source)，同源多条只留一条（同分时先导入者）。"""
+    a = make_record(source=SOURCE_NAME, answer="答案", source_detail="字节一面")
+    b = make_record(source=SOURCE_NAME, answer="答案", source_detail="腾讯二面")
+
+    merged, _ = merge_exact_duplicates([a, b])
+
+    assert [s["source_detail"] for s in merged[0]["sources"]] == ["字节一面"]
+
+
+def test_同源多记录留最优_存根不挤掉正本出处():
+    """占位存根（原题保留）与有答案正本同题同源时，出处要指向正本那一篇。
+
+    否则会出现「答案是 A 篇的、出处记成 B 篇」——溯源对不上，复盘时点进去找不到这段答案。
+    """
+    stub = make_record(
+        source=SOURCE_NAME, answer="", status="draft", source_detail="", round_confidence=None
+    )
+    real = make_record(source=SOURCE_NAME, answer="答案", source_detail="字节二面")
+    real["sources"][0]["url"] = "https://www.nowcoder.com/feed/main/detail/abc"
+
+    merged, _ = merge_exact_duplicates([stub, real])  # 存根故意排前面
+
+    assert merged[0]["status"] == "enabled"
+    assert [s["source_detail"] for s in merged[0]["sources"]] == ["字节二面"]
+    assert [s["url"] for s in merged[0]["sources"]] == ["https://www.nowcoder.com/feed/main/detail/abc"]
 
 
 def test_question_id_确定性(questions):

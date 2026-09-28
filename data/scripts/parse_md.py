@@ -3,6 +3,9 @@
 层级：H1=轮次（一面/二面/三面）、H2=公司、H3=主题、H4=题目；
 H4 下紧邻的 blockquote 是元信息（轮次可信度 / 来源 / 原帖 URL）。
 
+来源口径（SPEC §8.1 拆表）：每题 `sources` 列表带合规四要素（source/license/url/source_detail），
+顶层 `source` = **答案主源**；一题多源时的主源裁决见 `_rank`。
+
 两个坑：
 1. 答案里的 fenced code block 含 `# 注释`，缩进后可能是 `####` —— 必须跟踪围栏状态；
 2. 题目标题有双重编号（`#### 1. 1. xxx`）—— 循环剥离前导编号。
@@ -32,6 +35,11 @@ DEFAULT_OUT = REPO_ROOT / "data" / "parsed" / "questions.json"
 SOURCE_NAME = "个人题库-牛客补充版"
 LICENSE = "personal"
 
+# 主源优先级（SPEC §8.1）：数值越小越优先。个人题库恒为 0——它人工整理、逐题校对过，
+# 开源源答案再长也不顶替；新增源在此登记，未登记的排在其后，同档按质量裁决
+SOURCE_PRIORITY: Final[dict[str, int]] = {SOURCE_NAME: 0}
+UNRANKED_PRIORITY: Final = 100
+
 ROUND_RE = re.compile(r"^#\s+(一面|二面|三面)\s*$")
 H2_RE = re.compile(r"^##\s+(.+?)\s*$")
 H3_RE = re.compile(r"^###\s+(.+?)\s*$")
@@ -50,9 +58,21 @@ SKIP_H2 = {"目录", "题量总览"}
 
 
 def make_id(question: str) -> str:
-    """question_id = q_ + md5(题目文本)[:12]，确定性、幂等 upsert 用。"""
+    """question_id = q_ + md5(题目文本)[:12]，确定性、幂等 upsert 用。
+
+    题干相同即同 id——跨源合并（同一道题出现在两个语料里）由此天然成立。
+    """
     digest = hashlib.md5(question.encode("utf-8")).hexdigest()[:12]
     return f"q_{digest}"
+
+
+def source_rank(source: str) -> int:
+    return SOURCE_PRIORITY.get(source, UNRANKED_PRIORITY)
+
+
+def source_record(source: str, *, license: str, url: str = "", source_detail: str = "") -> dict:
+    """来源明细记录（question_sources 一行）：license 按源记、不按题记（SPEC §8.1）。"""
+    return {"source": source, "license": license, "url": url, "source_detail": source_detail}
 
 
 def split_source(meta_tail: str) -> tuple[str, str]:
@@ -88,10 +108,8 @@ def _make_question(raw_title: str, round_: str, company: str, topic: str, origin
         "company": company,
         "round": round_,
         "round_confidence": None,
-        "source": SOURCE_NAME,
-        "source_detail": "",
-        "license": LICENSE,
-        "url": "",
+        "source": SOURCE_NAME,  # 主源 = 答案主源，明细见 sources
+        "sources": [source_record(SOURCE_NAME, license=LICENSE)],
         "status": "enabled",
     }
 
@@ -104,7 +122,9 @@ def _finalize(question: dict, body: list[str]) -> None:
         meta = ROUND_META_RE.match(line)
         if meta:
             question["round_confidence"] = meta.group(1)
-            question["source_detail"], question["url"] = split_source(meta.group(2))
+            detail, url = split_source(meta.group(2))
+            record = question["sources"][0]
+            record["source_detail"], record["url"] = detail, url
             continue
         if NO_ANSWER_MARK in line:
             no_answer = True
@@ -183,20 +203,41 @@ def parse_file(path: Path) -> list[dict]:
 
 
 def _rank(question: dict) -> tuple:
-    """同题择优依据：能用 > 答案长 > 轮次可信。"""
+    """同题择优依据（`min` 取优）：主源优先级 > 能用 > 答案长 > 轮次可信（SPEC §8.1）。
+
+    完全同分时 min() 取首个 = 先导入者优先——「导入时间」这一层靠列表序稳定实现，
+    不额外记时间戳（谁先被解析进列表，谁就是先导入的）。
+    """
     return (
-        question["status"] == "enabled",
-        len(question["answer"]),
-        question["round_confidence"] == "明确",
+        source_rank(question["source"]),
+        0 if question["status"] == "enabled" else 1,
+        -len(question["answer"]),
+        0 if question["round_confidence"] == "明确" else 1,
     )
 
 
+def merge_sources(group: list[dict]) -> list[dict]:
+    """合并同题多源明细：每源留一条，按主源优先级排序（SPEC §8.1）。
+
+    同一源在同一题上有多条记录（同一题出现在该源的多篇面经里）时只留**最优**那条——
+    question_sources 主键是 (question_id, source)，本就不允许多条；按 _rank 排后再取首个，
+    是为了让出处指向「答案真正来自的那一篇」：占位存根（无答案、无出处）排名靠后，
+    不会把有答案正本的 URL 挤掉。被合并掉的明细在合并报告里可见，人工可回溯。
+    """
+    seen: dict[str, dict] = {}
+    for question in sorted(group, key=_rank):  # 稳定排序：同分仍是先导入者在前
+        for record in question["sources"]:
+            seen.setdefault(record["source"], dict(record))
+    return sorted(seen.values(), key=lambda r: (source_rank(r["source"]), r["source"]))
+
+
 def _merge_group(group: list[dict]) -> dict:
-    """同组（同题）择优保留一份，company/round 聚合去重。"""
-    best = max(group, key=_rank)
+    """同组（同题）择优保留一份（`source` 即主源），company/round 聚合去重、来源明细合并。"""
+    best = min(group, key=_rank)
     record = dict(best)
     record["company"] = "、".join(dict.fromkeys(q["company"] for q in group if q["company"]))
     record["round"] = "、".join(dict.fromkeys(q["round"] for q in group if q["round"]))
+    record["sources"] = merge_sources(group)
     return record
 
 
@@ -214,7 +255,7 @@ def merge_exact_duplicates(questions: list[dict]) -> tuple[list[dict], list[dict
     merged: list[dict] = []
     report: list[dict] = []
     for group in grouped.values():
-        best = max(group, key=_rank)
+        best = min(group, key=_rank)
         if len(group) == 1:
             merged.append(best)
             continue
@@ -272,7 +313,7 @@ def merge_approved_pairs(questions: list[dict]) -> tuple[list[dict], list[dict]]
     report: list[dict] = []
     for prefix_a, prefix_b in APPROVED_MERGE_PAIRS:
         group = [by_prefix[prefix_a], by_prefix[prefix_b]]
-        best = max(group, key=_rank)
+        best = min(group, key=_rank)
         dropped = [q for q in group if q is not best]
         drop_ids.update(q["question_id"] for q in dropped)
         replaced[best["question_id"]] = _merge_group(group)
@@ -322,11 +363,16 @@ def print_stats(questions: list[dict]) -> None:
         print(f"  {domain:<26} {count:>3}  ({DOMAIN_LABELS.get(domain, '?')})")
     print("\n难度 × 题量：", dict(Counter(q["difficulty"] for q in questions)))
     print("轮次可信度：", dict(Counter(q["round_confidence"] for q in questions)))
-    print(f"带原帖 URL：{sum(1 for q in questions if q['url'])}")
+    print(f"带原帖 URL：{sum(1 for q in questions for s in q['sources'] if s['url'])}")
+    print("主源分布：", dict(Counter(q["source"] for q in questions)))
 
     enabled = [q for q in questions if q["status"] == "enabled"]
-    required = ["question", "answer", "topic", "domain", "difficulty", "source", "license"]
-    complete = sum(1 for q in enabled if all(q[f] for f in required))
+    required = ["question", "answer", "topic", "domain", "difficulty", "source"]
+    complete = sum(
+        1
+        for q in enabled
+        if all(q[f] for f in required) and all(s["source"] and s["license"] for s in q["sources"])
+    )
     rate = complete / len(enabled) * 100 if enabled else 0.0
     print(f"\nenabled {len(enabled)} 题，必填字段完整率：{rate:.1f}%")
 

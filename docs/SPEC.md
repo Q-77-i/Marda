@@ -340,7 +340,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 - 层级规则：`#` = round（一面/二面/三面）；`##` = company；`###` = topic；`####` = 题目。
 - 题目文本 = 标题去除编号前缀（正则 `^\d+\.\s*`，处理 "1. 1." 双重编号）；正文 = 参考答案。
-- 输出 JSON：question / answer / topic / domain / difficulty / company / round / source="个人题库-牛客补充版" / license="personal" / url=本地路径。
+- 输出 JSON：question / answer / topic / domain / difficulty / company / round / `source`="个人题库-牛客补充版"（**答案主源**）/ `sources=[{source, license, url, source_detail}]`（来源明细，合规四要素；license 按源记）。
+- 同题合并（题干 md5 相同 → 同 question_id）跨源生效，主源裁决 `_rank`（`min` 取优）：**主源优先级 > 能用 > 答案长 > 轮次可信**，完全同分时取先导入者（列表序稳定）；合并后 `sources` 每源留一条、按优先级排序，留的是该源里**最优**那条记录（占位存根不会把正本的 URL 挤掉）。
 
 ### 6.2 映射表（config，随 SPEC 交付）
 
@@ -395,7 +396,10 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 questions(id TEXT PK, question TEXT NOT NULL, answer TEXT NOT NULL,
   key_points JSON, follow_ups JSON, domain TEXT NOT NULL, topic TEXT NOT NULL,
   difficulty TEXT NOT NULL, company TEXT, round TEXT,
-  source TEXT, license TEXT, url TEXT, status TEXT DEFAULT 'enabled')
+  source TEXT, status TEXT DEFAULT 'enabled')          -- source = 答案主源（明细见 question_sources）
+question_sources(question_id TEXT, source TEXT, license TEXT, url TEXT,
+  source_detail TEXT, imported_at TEXT, status TEXT DEFAULT 'enabled',
+  PRIMARY KEY (question_id, source))                   -- 一题多源 = 多行（SPEC §8.1）
 users(id TEXT PK, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, created_at TEXT)
 interviews(id TEXT PK, thread_id TEXT UNIQUE, user_id TEXT, position TEXT, question_count INT,
@@ -412,14 +416,17 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 **删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（逻辑删除的 `deleted_at` 过滤会污染所有查询）。
 
-### 8.1 多源扩充口径
+### 8.1 多源扩充口径（M5 会话 1 已落地拆表）
 
-阶段 1 单一数据源（个人题库），`source`/`license`/`url` 为单值。阶段 2 接入开源白名单语料（WenQu MIT 等）前，按以下路径扩展，不临时拍脑袋：
+`source` 列语义 = **答案主源**；来源明细进 `question_sources` 关联表（PK = (question_id, source)，一题多源 = 多行）。
 
-- `source` 列语义 = **答案主源**（provenance 的精简版）；接入第二个数据源时拆 `question_sources` 关联表（`question_id, source, license, url, source_detail, imported_at, status`），四个来源字段一并迁入，questions 表只保留主源外键
-- **license 按源记、不按题记**；一题多源时主答案裁决：主源优先级 > 答案质量 > 导入时间，其余源记录保留；license 展示为集合
-- 每个新源一个 adapter（复用 `_make_question`/`_finalize`），负责把该源的分类体系归一化到统一 schema（topic→域、easy/medium/hard→L1/L2/L3、无轮次概念→NULL）；未知 topic 沿用"报错、人工补映射"
-- Qdrant payload 不含 source 字段，provenance 拆表对向量层透明（检索命中后 join SQLite）
+- **license 按源记、不按题记**；业务表与向量层都不再持有来源字段
+- **主源裁决**（`parse_md._rank`，`min` 取优）：主源优先级（`SOURCE_PRIORITY` 登记表，个人题库恒 0——人工整理，开源源答案再长也不顶替）> 能用（enabled）> 答案长 > 轮次可信；完全同分取先导入者（列表序稳定，不另记时间戳）
+- **同题合并**：题干 md5 相同 → 同 question_id → 跨源合并成一条；`sources` 每源留**最优**那条（按 `_rank` 排序后取首个）——留"最优"而非"先出现"，出处才指向答案真正来自的那一篇
+- **迁移**：`ingest.ensure_schema` 探测老库（questions 有 license/url 列）→ 建来源表并回填 → `DROP COLUMN` 两列；幂等可重跑（`source_detail` 老库从未落库，回填 NULL，重跑管道由 JSON 补上）
+- **同步语义**：questions 按 id upsert + `DELETE NOT IN`；question_sources 整表重建——它的同步规则比 questions 多一维（题还在、某来源没了也要删），逐行 diff 徒增复杂度，千行量级毫秒级
+- 每个新源一个 adapter（复用 `_make_question`/`_finalize`/`source_record`），把该源的分类体系归一化到统一 schema（topic→域、easy/medium/hard→L1/L2/L3、无轮次概念→NULL）；未知 topic 沿用"报错、人工补映射"
+- **对上层透明**：app 侧零改动（`fetch_by_ids` 只 select 固定列），Qdrant payload 不含 source 字段，检索命中后 join SQLite
 
 ## 9. 前端设计
 
@@ -456,6 +463,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-28 P1-M5 会话 1（`question_sources` 拆表）：§8 的 questions 表去掉 license/url、新增 `question_sources`（PK `(question_id, source)`）；§8.1 由「接入新源时怎么扩」改写为已落地口径（`source_rank`/`_rank` 主源裁决、`merge_sources` 每源留最优、列探测迁移、来源表整表重建、对上层透明）；§6.1 解析产物补 `sources` 明细与主源字段语义。新增 `backend/tests/unit/test_ingest_sqlite.py`（老库迁移与幂等、多源明细、全量同步删除），`test_parse_md.py` 补主源裁决与同源多记录用例（302 passed）。老库迁移在副本上逐字段对账后落真库：342 题零回归，`source_detail`（261 条）为老 schema 从未落库、本次顺带补回
 - 2026-09-27 三条小修（P1-M4.7 后续，均为真链路暴露）：① §4.4 项目深挖题措辞去重（喂回已问题目原文 + 两层模板同禁复述背景）；② §7 会话响应新增 `stalled` 与前端两路处置（重发 / 只重建列表），`error` 事件补「不能靠前端猜死活」的口径与 `engine_stalled` 的两态判据；③ 成本回读口径与 Langfuse 模型价目核对（代码无改动，见踩坑记录）
 - 2026-09-27 错误路径小修（P1-M4.7 后续）：§7 的 `error` 事件补口语义——流内错误时 HTTP 仍是 200、场次仍有效、**图停在失败节点上**，故客户端「重试」= 重发同一文本从断点续跑（已入账的回答不重复计分）；前端此前只 `setError` 不记 `failedInput` → 横幅没有重试出口、用户只能手动重打发一条重复消息。新增集成测试钉死「重发不重复计分」这一承重语义
 - 2026-09-27 P1-M4.7-D（面试官人味层 + 技术题同域成块）：新增 §4.8（六类黏合点分两路生成——高频短衔接走 `rules/transition.py` 模板零 LLM，低频长文开场白/结束陈词走 LLM 每场 2 次；衔接语与新题同条消息、**答错缓冲独立成条**（回应上一题，prepend 会时序错位）；域标签插值按中文排版补空格；结束陈词模板无输入 + 四条红线含**禁止虚构后续流程**（真链路实测踩到「后续会有同事联系你」）、陈词调用失败降级跳过**不连坐报告**；重连语走 `?reconnect=true` 只附响应不落库）；§4.3 quota 补同域成块粘性（`pick_domain` 当前域配额未尽即续问，计数取**已答题**——`remaining_quota` 为当前题 +1 会提前切域；`allocate_quota` 未动，块序与域分布对同一 N 确定 → 跨场次可比性不受影响）；§4.4 补出题顺序；§7 补 reconnect 参数；smoke 加 `SMOKE_QUESTION_COUNT`、重连核对、同域成块断言 + 块内难度曲线打印、结束陈词红线自查，并**补印此前被静默忽略的 SSE error 事件**（实测有一轮因此「答了没反应」看不出来）

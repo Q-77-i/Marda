@@ -76,7 +76,7 @@ def test_层级与字段(xmind_file):
 
     assert second["domain"] == "algorithms"
     assert second["difficulty"] == "L2"  # 手撕覆盖 一面→L1
-    assert second["url"] == "https://www.nowcoder.com/discuss/1"
+    assert second["sources"][0]["url"] == "https://www.nowcoder.com/discuss/1"
     assert "三指针" in second["answer"]
 
 
