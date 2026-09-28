@@ -24,7 +24,9 @@ import { formatDuration, formatTime } from "@/lib/format";
 /** 历史面试列表：进行中 → 续面，已完成 → 报告；每条可物理删除（T7a-R1）。 */
 export function InterviewList() {
   const [rows, setRows] = useState<InterviewRow[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // 加载失败（列表没内容可显示）与删除失败（列表还在）分开：后者不该吃掉整块面板
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -34,7 +36,7 @@ export function InterviewList() {
         if (active) setRows(data);
       })
       .catch((err: unknown) => {
-        if (active) setError(err instanceof Error ? err.message : "加载失败");
+        if (active) setLoadError(err instanceof Error ? err.message : "加载失败");
       });
     return () => {
       active = false;
@@ -43,12 +45,12 @@ export function InterviewList() {
 
   async function handleDelete(id: string) {
     setDeletingId(id);
-    setError(null);
+    setDeleteError(null);
     try {
       await deleteInterview(id);
       setRows((prev) => (prev ? prev.filter((row) => row.id !== id) : prev));
     } catch (err) {
-      setError(err instanceof Error ? err.message : "删除失败，请重试");
+      setDeleteError(err instanceof Error ? err.message : "删除失败，请重试");
     } finally {
       setDeletingId(null);
     }
@@ -60,9 +62,14 @@ export function InterviewList() {
         <CardTitle>面试记录</CardTitle>
       </CardHeader>
       <CardContent>
-        {error ? (
+        {deleteError ? (
+          <p className="pb-3 text-sm text-destructive" role="alert">
+            {deleteError}
+          </p>
+        ) : null}
+        {loadError ? (
           <p className="py-6 text-sm text-destructive" role="alert">
-            {error}
+            {loadError}
           </p>
         ) : rows === null ? (
           <div className="flex flex-col gap-3">
