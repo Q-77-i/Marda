@@ -4,8 +4,11 @@ demo 阶段出题检索 = payload 过滤 + 随机：出题没有查询文本，d
 dense top-k 留给阶段 2 追问/学习推送（接口不变）。
 
 两层数据源分工（T2 口径）：Qdrant payload 只存过滤字段
-（question_id/domain/topic/difficulty/company/round，且只含 enabled 题），
+（question_id/domain/topic/difficulty/company/round，且只含 enabled 公共题），
 题目全文与 key_points 检索命中后 join SQLite（SPEC §8.1）。
+
+**私有题旁路**（P1-M7）：私有题不进 Qdrant，由 bank_private.search_candidates 直查 SQL，
+在本模块与公共候选合成同一候选池（见 search_questions 的 user_id 参数）。
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from typing import Any
 from qdrant_client import AsyncQdrantClient, models as qm
 
 from app.config import get_settings
+from app.tools import bank_private
 
 COLLECTION = "questions"
 SCROLL_LIMIT = 100  # 单域×难度组合远小于此数，一次 scroll 足够
@@ -61,8 +65,15 @@ async def search_questions(
     difficulty: str,
     exclude_ids: list[str] | None = None,
     k: int = 3,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """按 domain/difficulty 过滤题库，排除已问，随机取至多 k 条完整题目。"""
+    """按 domain/difficulty 过滤题库，排除已问，随机取至多 k 条完整题目。
+
+    user_id（P1-M7 FR-13）非空时**并入该用户的私有题**：公共候选走 Qdrant payload 过滤、
+    私有候选走 SQL（私有题不进 Qdrant），两者合成一个候选池再随机——这样私有题是按
+    「池中占比」自然混入的，不设额外权重或开关。user_id 为空（阶段 1 的历史场次除外，
+    阶段 2 起每场都有归属）时行为与接入前完全一致。
+    """
     points, _ = await get_qdrant_client().scroll(
         collection_name=COLLECTION,
         scroll_filter=qm.Filter(
@@ -81,9 +92,19 @@ async def search_questions(
         for p in points
         if p.payload and (qid := p.payload.get("question_id")) and qid not in exclude
     ]
-    if not ids:
+    db_path = get_settings().db_path
+    rows = await asyncio.to_thread(fetch_by_ids, db_path, ids) if ids else []
+    if user_id:
+        rows += await asyncio.to_thread(
+            bank_private.search_candidates,
+            db_path,
+            user_id=user_id,
+            domain=domain,
+            difficulty=difficulty,
+            exclude_ids=list(exclude),
+        )
+    if not rows:
         return []
-    rows = await asyncio.to_thread(fetch_by_ids, get_settings().db_path, ids)
     return random.sample(rows, min(k, len(rows)))
 
 

@@ -52,7 +52,7 @@ def install_search(monkeypatch):
     def _install(bank: dict | None = None):
         items = [i for group in (bank or {}).values() for i in group]
 
-        async def _search(*, domain, difficulty, exclude_ids=None, k=3):
+        async def _search(*, domain, difficulty, exclude_ids=None, k=3, user_id=None):
             return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
                     and i["question_id"] not in (exclude_ids or [])][:k]
 

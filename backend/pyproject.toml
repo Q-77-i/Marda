@@ -19,6 +19,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite==3.1.1",
     "pyjwt>=2.8",
     "langfuse==4.9.1",
+    "python-multipart>=0.0.9",
 ]
 
 [dependency-groups]

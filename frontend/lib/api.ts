@@ -291,3 +291,79 @@ export function getBankFacets(): Promise<BankFacets> {
 export function getBankCapacity(counts: number[]): Promise<{ options: CapacityOption[] }> {
   return getJSON(`/api/bank/capacity?counts=${counts.join(",")}`);
 }
+
+// ---- 私有题库（FR-13，P1-M7）----
+
+export type PrivateQuestion = {
+  question_id: string;
+  question: string;
+  answer: string;
+  key_points: string[];
+  follow_ups: string[];
+  domain: string;
+  topic: string;
+  difficulty: string;
+  /** 后端复用公共题状态枚举：enabled = 使用中、draft = 已归档（文案见 private-bank.ts） */
+  status: string;
+  sources: BankSource[];
+};
+
+export type PrivateListResponse = {
+  total: number;
+  page: number;
+  page_size: number;
+  items: PrivateQuestion[];
+};
+
+/** 上传报告：部分成功语义（好题照常入库，坏题逐条给原因）。 */
+export type UploadReport = {
+  /** 解析出的题目总数（= 成功数 + 失败数）；0 = 文件里没有【题目】标记 */
+  parsed: number;
+  imported: number;
+  /** 已存在（同用户 + 同题干）而跳过的题干，绝不覆盖已有编辑 */
+  duplicated: string[];
+  errors: { question: string; reason: string }[];
+};
+
+/** 可编辑字段（PATCH 只发改动项，未发的字段保持原值）。 */
+export type PrivateQuestionPatch = Partial<
+  Pick<PrivateQuestion, "question" | "answer" | "key_points" | "follow_ups" | "topic" | "domain" | "difficulty" | "status">
+>;
+
+export function getPrivateQuestions(params: URLSearchParams): Promise<PrivateListResponse> {
+  return getJSON<PrivateListResponse>(`/api/bank/private/questions?${params.toString()}`);
+}
+
+/**
+ * 上传 md/txt/pdf（multipart）。
+ *
+ * 不设 Content-Type：浏览器要自己补 multipart 的 boundary，手写反而会丢。
+ * authorizedFetch 只在调用方给的 headers 上叠加 Authorization，故这里不传即可。
+ */
+export async function uploadPrivateFile(
+  file: File,
+  domain: string,
+  difficulty: string,
+): Promise<UploadReport> {
+  const body = new FormData();
+  body.append("file", file);
+  body.append("domain", domain);
+  body.append("difficulty", difficulty);
+  const response = await authorizedFetch("/api/bank/private/upload", { method: "POST", body });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<UploadReport>;
+}
+
+/** 编辑或归档/恢复；返回更新后的完整题目（含来源明细）。 */
+export async function patchPrivateQuestion(
+  questionId: string,
+  patch: PrivateQuestionPatch,
+): Promise<PrivateQuestion> {
+  const response = await authorizedFetch(`/api/bank/private/questions/${questionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<PrivateQuestion>;
+}

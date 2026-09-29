@@ -1,72 +1,35 @@
 """题库浏览查询单测（FR-12）：筛选/分页/分面/供给统计/来源主源排序。
 
-自建最小 SQLite（表结构同 data/scripts/ingest 的 DDL，列契约与生产一致），不碰真库。
+表结构与造数走 bank_fixture（列契约的单一来源——本文件曾自带一份 DDL 副本，
+M7 加 user_id 时它立刻过期，故收回共享夹具）。
 """
 
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
 
 from app.tools import bank_query
-
-DDL = """
-CREATE TABLE questions (
-  id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
-  key_points JSON, follow_ups JSON, domain TEXT NOT NULL, topic TEXT NOT NULL,
-  difficulty TEXT NOT NULL, company TEXT, round TEXT, source TEXT,
-  status TEXT DEFAULT 'enabled'
-);
-CREATE TABLE question_sources (
-  question_id TEXT NOT NULL, source TEXT NOT NULL, license TEXT, url TEXT,
-  source_detail TEXT, imported_at TEXT, status TEXT DEFAULT 'enabled',
-  PRIMARY KEY (question_id, source)
-);
-"""
-
-
-def _row(
-    qid: str, *, domain: str = "rag", difficulty: str = "L1", company: str | None = "腾讯",
-    round_: str | None = "一面", status: str = "enabled", source: str = "个人题库",
-) -> dict:
-    return {
-        "id": qid, "question": f"{qid} 题干", "answer": f"{qid} 答案",
-        "key_points": json.dumps(["k1", "k2"], ensure_ascii=False),
-        "follow_ups": json.dumps(["追问"], ensure_ascii=False),
-        "domain": domain, "topic": "测试主题", "difficulty": difficulty,
-        "company": company, "round": round_, "source": source, "status": status,
-    }
+from bank_fixture import create_tables, insert_questions, insert_sources, question_row
 
 
 @pytest.fixture
 def db_path(tmp_path):
     path = tmp_path / "bank.sqlite3"
-    with sqlite3.connect(path) as conn:
-        conn.executescript(DDL)
-        conn.executemany(
-            "INSERT INTO questions (id, question, answer, key_points, follow_ups, domain,"
-            " topic, difficulty, company, round, source, status)"
-            " VALUES (:id, :question, :answer, :key_points, :follow_ups, :domain, :topic,"
-            " :difficulty, :company, :round, :source, :status)",
-            [
-                _row("q1"),
-                _row("q2", domain="rag", difficulty="L2"),
-                _row("q3", domain="memory", difficulty="L3", company=None, round_=None),
-                _row("q4", domain="rag", difficulty="L1", status="draft"),
-            ],
-        )
-        conn.executemany(
-            "INSERT INTO question_sources (question_id, source, license, url, source_detail,"
-            " status) VALUES (?, ?, ?, ?, ?, ?)",
-            [
-                ("q1", "个人题库", "PRIVATE", "https://x/1", "牛客补充版", "enabled"),
-                ("q1", "FAQ_Of_LLM_Interview", "MIT", "https://x/2", "faq.md", "enabled"),
-                ("q1", "归档源", "MIT", "https://x/3", "old.md", "archived"),
-                ("q3", "llm-interview-guide", "MIT", "https://x/4", None, "enabled"),
-            ],
-        )
+    create_tables(path)
+    insert_questions(path, [
+        question_row("q1"),
+        question_row("q2", domain="rag", difficulty="L2"),
+        question_row("q3", domain="memory", difficulty="L3", company=None, round_=None),
+        question_row("q4", domain="rag", difficulty="L1", status="draft"),
+    ])
+    insert_sources(path, [
+        ("q1", "个人题库", "PRIVATE", "https://x/1", "牛客补充版", "enabled"),
+        ("q1", "FAQ_Of_LLM_Interview", "MIT", "https://x/2", "faq.md", "enabled"),
+        ("q1", "归档源", "MIT", "https://x/3", "old.md", "archived"),
+        ("q3", "llm-interview-guide", "MIT", "https://x/4", None, "enabled"),
+    ])
     return path
 
 

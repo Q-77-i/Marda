@@ -5,7 +5,8 @@
 
 流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → 注册账号（FR-23）→ 反向验证
 未登录 401 → 题库（P1-M6 FR-12/FR-14：分面 / 浏览分页 / 关键词检索 / 容量校验，
-与直查 SQL 对账）+ 难度锁定场次 → POST 创建（SSE 开场）→ 循环 POST 消息到 done →
+与直查 SQL 对账）+ 私有题库（P1-M7 FR-13：上传判重 / 隔离 / 混入出题 / 管理闭环 /
+计入容量）+ 难度锁定场次 → POST 创建（SSE 开场）→ 循环 POST 消息到 done →
 GET 报告 + 决策回放（FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
 
 P1-M4.7-D 人味层（真实链路上才看得出效果，故放在 smoke 而非单测）：
@@ -53,6 +54,7 @@ from app import db, observability
 from app.config import get_settings
 from app.domain import DOMAIN_LABELS, project_count
 from app.graph.rules.transition import domain_label
+from app.tools import question_search
 
 PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
@@ -183,13 +185,14 @@ async def main() -> None:
             print(f"账号 OK：{SMOKE_USER}（id={me['id'][:8]}…）")
             # 反向验证：未登录必须被拦
             async with httpx.AsyncClient(timeout=30) as anon:
-                for path in ("/api/interviews", "/api/auth/me",
-                             "/api/bank/questions", "/api/bank/facets", "/api/bank/capacity"):
+                for path in ("/api/interviews", "/api/auth/me", "/api/bank/questions",
+                             "/api/bank/facets", "/api/bank/capacity",
+                             "/api/bank/private/questions"):
                     assert (await anon.get(f"{BASE}{path}")).status_code == 401, f"{path} 未拦截"
                 assert (await anon.post(
                     f"{BASE}/api/interviews", json={"position": "x", "question_count": 2}
                 )).status_code == 401
-            print("未登录 401 OK（面试列表 / me / 创建 / 题库三端点）")
+            print("未登录 401 OK（面试列表 / me / 创建 / 题库三端点 / 私有题库）")
 
             # ── 题库（P1-M6 FR-12）：分面 / 浏览分页 / 关键词检索 ──────────────
             # 与直查 SQL 对账：接口写错了这里立刻暴露（题库只读，对账无副作用）
@@ -280,6 +283,97 @@ async def main() -> None:
                 ) if blocked else "真实题库每档都能直供"))
             if not blocked:  # 数据变化不该让 smoke 变红，但要知道禁用态在真库上没被验到
                 print("  ⚠ 真库当前无直供不足组合——禁用态（FR-14 前端）的真数据验收要靠 M9 难度补样")
+
+            # ── 私有题库（P1-M7 FR-13）：上传 → 管理 → 隔离 → 混入出题 ──────
+            # 全程只写临时库副本（questions 表启动时已拷快照），正式库零写入
+            private_doc = (
+                "【题目】SMOKE 私有题一：为什么哈希表查找是 O(1)？\n"
+                "【答案】按 key 直接算出桶位置，代价是空间与冲突处理。\n"
+                "【关键点】散列定位；冲突处理\n"
+                "【追问】开放寻址与链地址怎么选？\n\n"
+                "【题目】SMOKE 私有题二：什么场景该避免哈希表？\n"
+                "【答案】需要有序遍历或范围查询时，哈希给不出顺序。\n"
+            )
+            private_file = {"file": ("我的笔记.md", private_doc.encode(), "text/markdown")}
+            up = await client.post(f"{BASE}/api/bank/private/upload", files=private_file,
+                                   data={"domain": "algorithms", "difficulty": "L1"})
+            assert up.status_code == 200, f"私有题上传失败：{up.status_code} {up.text}"
+            upload = up.json()
+            assert (upload["imported"], upload["errors"]) == (2, []), upload
+            # 重传同一份：按「同用户 + 同题干」判重，跳过且不覆盖（用户可能已改过答案）
+            again = (await client.post(f"{BASE}/api/bank/private/upload", files=private_file,
+                                       data={"domain": "algorithms", "difficulty": "L1"})).json()
+            assert again["imported"] == 0 and len(again["duplicated"]) == 2, f"重复题未跳过：{again}"
+
+            listed = (await client.get(f"{BASE}/api/bank/private/questions")).json()
+            assert listed["total"] == 2, listed
+            private_ids = {i["question_id"] for i in listed["items"]}
+            assert all(qid.startswith("p_") for qid in private_ids), private_ids
+            assert all(i["domain"] == "algorithms" and i["difficulty"] == "L1"
+                       for i in listed["items"]), "表单默认值未落到私有题上"
+            assert listed["items"][0]["sources"][0]["source_detail"] == "我的笔记.md", "来源没记文件名"
+            print(f"私有题上传 OK：导入 2 / 重传判重 2，id 前缀 p_，来源记文件名"
+                  f"（{sorted(private_ids)[0]}…）")
+
+            # 隔离：另一个账号四处不可见（列表 / 按 id 直取 / 公共浏览 / 公共检索）
+            bob = httpx.AsyncClient(timeout=30)
+            rb = await bob.post(f"{BASE}/api/auth/register",
+                                json={"username": f"{SMOKE_USER}b", "password": SMOKE_PASSWORD})
+            assert rb.status_code == 201, f"第二个账号注册失败：{rb.status_code} {rb.text}"
+            bob.headers["Authorization"] = f"Bearer {rb.json()['token']}"
+            assert (await bob.get(f"{BASE}/api/bank/private/questions")).json()["total"] == 0
+            assert (await bob.patch(
+                f"{BASE}/api/bank/private/questions/{sorted(private_ids)[0]}", json={"status": "draft"}
+            )).status_code == 404, "跨用户改到了别人的题"
+            # 公共检索走真 Qdrant：私有题不进向量库，故关键词命中也拿不到 p_ 开头的题
+            hits = (await bob.get(f"{BASE}/api/bank/questions",
+                                  params={"q": "哈希表查找"})).json()["items"]
+            assert not any(i["question_id"].startswith("p_") for i in hits), "私有题泄漏进公共检索"
+            await bob.aclose()
+            print("私有题隔离 OK：B 账号列表空 / 按 id 改 404 / 公共检索无 p_ 题")
+
+            # 混入出题（真库 algorithms 只有 L2，L1 公共供给为 0）→ 候选池只可能是私有题，
+            # 于是「私有题被检索到」这件事在真实 Qdrant + 真实 SQL 上是确定性的
+            merged = await question_search.search_questions(
+                domain="algorithms", difficulty="L1", k=10, user_id=me["id"]
+            )
+            assert {i["question_id"] for i in merged} == private_ids, \
+                f"私有题未进候选池：{[i['question_id'] for i in merged]}"
+            print(f"私有题混入出题 OK：algorithms/L1 无公共题，候选池 {len(merged)} 条全是私有题")
+
+            # 编辑 → 归档 → 恢复（归档后不出现在「使用中」里，但仍在列表中可找回）
+            one = sorted(private_ids)[0]
+            edited = await client.patch(f"{BASE}/api/bank/private/questions/{one}",
+                                        json={"answer": "改过的答案内容（smoke）。", "difficulty": "L2"})
+            assert edited.status_code == 200, edited.text
+            assert edited.json()["difficulty"] == "L2", "编辑未生效"
+            assert (await client.patch(f"{BASE}/api/bank/private/questions/{one}",
+                                       json={"status": "draft"})).json()["status"] == "draft"
+            assert (await client.get(f"{BASE}/api/bank/private/questions",
+                                     params={"status": "draft"})).json()["total"] == 1
+            restored = (await client.patch(f"{BASE}/api/bank/private/questions/{one}",
+                                           json={"status": "enabled"})).json()
+            assert restored["status"] == "enabled" and restored["answer"] == "改过的答案内容（smoke）。"
+            print("私有题管理 OK：编辑题干/答案/难度生效，归档 → 状态筛选 → 恢复，改动不丢")
+
+            # 私有题计入容量（FR-14 × FR-13）：往有缺口的域补题，缺口应当被填上
+            short_before = {(o["difficulty"], s["domain"]) for o in capacity for s in o["shortfalls"]}
+            fill_doc = "\n\n".join(
+                f"【题目】SMOKE 补位题 {n}：这道题用来验证私有题计入容量。\n"
+                f"【答案】私有题的参考答案正文，第 {n} 条。" for n in (1, 2)
+            )
+            await client.post(f"{BASE}/api/bank/private/upload",
+                              files={"file": ("补位.md", fill_doc.encode(), "text/markdown")},
+                              data={"domain": "planning-reasoning", "difficulty": "L3"})
+            cap_after = (await client.get(f"{BASE}/api/bank/capacity",
+                                          params={"counts": "5,10,15"})).json()["options"]
+            short_after = {(o["difficulty"], s["domain"]) for o in cap_after for s in o["shortfalls"]}
+            assert short_after <= short_before, f"私有题只增不减，不足项反而变多：{short_after - short_before}"
+            filled = short_before - short_after
+            if ("L3", "planning-reasoning") in short_before:  # 真库当前唯一的缺口
+                assert ("L3", "planning-reasoning") in filled, "L3 的缺口没被私有题填上"
+            print(f"私有题计入容量 OK：不足项 {len(short_before)} → {len(short_after)}"
+                  + (f"，补上 {filled}" if filled else "（真库当前无缺口，仅验证不倒退）"))
 
             # ── 难度锁定（P1-M6 FR-14）：固定 L3 的场次首题必须是 L3 ────────
             async with client.stream(

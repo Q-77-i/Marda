@@ -85,8 +85,12 @@ async def get_facets():
 
 
 @router.get("/capacity")
-async def get_capacity(counts: str = DEFAULT_COUNTS):
-    """FR-14：难度 × 题数的题库直供能力（含不足明细，供表单禁用与提示）。"""
+async def get_capacity(counts: str = DEFAULT_COUNTS, user: dict = Depends(get_current_user)):
+    """FR-14：难度 × 题数的题库直供能力（含不足明细，供表单禁用与提示）。
+
+    供给 = 公共题 + **该用户本人的私有题**（P1-M7：私有题会参与他的出题，
+    不合并会让表单在他题目充足时误报不足）。他人的私有题不计入。
+    """
     db_path = get_settings().db_path
-    supply = await asyncio.to_thread(bank_query.difficulty_supply, db_path)
+    supply = await asyncio.to_thread(bank_query.difficulty_supply, db_path, user_id=user["id"])
     return {"options": capacity_grid(_parse_counts(counts), supply)}

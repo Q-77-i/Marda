@@ -55,7 +55,8 @@ CREATE TABLE IF NOT EXISTS questions (
   company TEXT,
   round TEXT,
   source TEXT,
-  status TEXT DEFAULT 'enabled'
+  status TEXT DEFAULT 'enabled',
+  user_id TEXT
 )
 """
 
@@ -108,12 +109,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """阶段 1 单源 schema → 拆表（SPEC §8.1）：来源四要素迁入 question_sources 后删列。
+    """轻量迁移（幂等），两步各自独立判断：
 
-    只做一次，靠列探测判断（拆完后 license/url 不存在，再调用即返回）。
-    source_detail 老库从未落库，回填 NULL——重跑管道时由 JSON 补上。
+    1. 拆表（SPEC §8.1）：来源四要素迁入 question_sources 后删列。source_detail 老库从未落库，
+       回填 NULL——重跑管道时由 JSON 补上。
+    2. user_id（P1-M7）：私有题归属列，NULL = 公共题。老库（管道建的）补列，
+       app 侧 db._migrate 对同一列有同样的列探测补齐（两边谁先跑都成立）。
     """
     columns = {row[1] for row in conn.execute("PRAGMA table_info(questions)")}
+    if "user_id" not in columns:
+        conn.execute("ALTER TABLE questions ADD COLUMN user_id TEXT")
     if not ({"license", "url"} & columns):
         return
     conn.execute(
@@ -161,13 +166,23 @@ def write_sqlite(questions: list[dict], db_path: Path) -> None:
                 for q in questions
             ],
         )
-        # 全量同步语义：管道是 questions 表的单一来源，题目被合并/删除后
-        # upsert-only 会残留旧行（Qdrant 侧靠删 collection 重建，这里靠显式删除）
+        # 全量同步语义：管道是**公共题**（user_id IS NULL）的单一来源，题目被合并/删除后
+        # upsert-only 会残留旧行（Qdrant 侧靠删 collection 重建，这里靠显式删除）。
+        # ⚠️ 必须限定 user_id IS NULL：私有题由 app 层（FR-13 上传）写入、不在管道 JSON 里，
+        # 不限定就会在管道重跑时被整批静默删除。
         ids = {q["question_id"] for q in questions}
-        conn.execute(f"DELETE FROM questions WHERE id NOT IN ({','.join('?' for _ in ids)})", tuple(ids))
+        conn.execute(
+            f"DELETE FROM questions WHERE user_id IS NULL"
+            f" AND id NOT IN ({','.join('?' for _ in ids)})",
+            tuple(ids),
+        )
         # 来源明细整表重建：同步规则比 questions 多一维（题目还在、某来源没了也要删），
-        # 逐行 diff 徒增复杂度；表只有千行量级，重建是毫秒级且绝无残留
-        conn.execute("DELETE FROM question_sources")
+        # 逐行 diff 徒增复杂度；表只有千行量级，重建是毫秒级且绝无残留。
+        # 只重建公共题的来源（私有题的来源行原样保留，同样不能被管道抹掉）。
+        conn.execute(
+            "DELETE FROM question_sources WHERE question_id NOT IN"
+            " (SELECT id FROM questions WHERE user_id IS NOT NULL)"
+        )
         imported_at = _now()
         conn.executemany(
             "INSERT INTO question_sources"

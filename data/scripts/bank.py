@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Final
 
 from app.domain import DOMAIN_LABELS, ENABLED_DOMAINS
+from app.tools.question_text import MIN_ANSWER_CHARS, answer_substance  # noqa: F401  # 管道与私有上传承共用
 
 SOURCE_PERSONAL: Final = "个人题库-牛客补充版"
 # 开源语料（WenQu 登记表的 MIT/Apache ANSWERS 档，SPEC §8.1）
@@ -89,19 +90,6 @@ def new_question(
         "sources": [source_record(source, license=license, url=url, source_detail=source_detail)],
         "status": "enabled",
     }
-
-
-FENCE_LINE_RE = re.compile(r"^\s*```.*$", re.M)
-# 占位与空壳实测在 0～2 字（`xx`、空代码块），题库里最短的真答案 8 字、真实语料 15 字
-MIN_ANSWER_CHARS: Final = 5
-
-
-def answer_substance(answer: str) -> int:
-    """答案的实质字符数：去掉代码围栏行（```lang / ```）与首尾空白后还剩多少。
-
-    围栏只剥「行」不剥内容——` ```python\\n\\n``` ` 这种空壳剥完就是 0；正文里的代码块照算。
-    """
-    return len(FENCE_LINE_RE.sub("", answer).strip())
 
 
 def finalize_status(question: dict) -> None:

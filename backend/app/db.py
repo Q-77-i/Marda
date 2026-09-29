@@ -76,10 +76,29 @@ def ensure_schema(db_path: Path) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """轻量迁移（阶段 2 仍 SQLite，PG 迁移推阶段 3）：阶段 1 老库补 interviews.user_id。"""
+    """轻量迁移（阶段 2 仍 SQLite，PG 迁移推阶段 3）。
+
+    - interviews.user_id：阶段 1 老库补归属列（FR-23）
+    - questions.user_id：私有题库归属列（P1-M7 FR-13），NULL = 公共题。
+
+    questions 表由语料管道建（不是本模块的 DDL），故先探测表是否存在——
+    老库/未跑管道的库不该因为这个迁移而报错。管道侧 ingest._migrate 对同一列
+    有同样的列探测补齐，两边谁先跑都成立。
+    """
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(interviews)")}
     if "user_id" not in columns:
         conn.execute("ALTER TABLE interviews ADD COLUMN user_id TEXT")
+    if _table_exists(conn, "questions"):
+        question_columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
+        if "user_id" not in question_columns:
+            conn.execute("ALTER TABLE questions ADD COLUMN user_id TEXT")
+
+
+def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+    ).fetchone()
+    return row is not None
 
 
 def create_user(db_path: Path, *, user_id: str, username: str, password_hash: str) -> bool:

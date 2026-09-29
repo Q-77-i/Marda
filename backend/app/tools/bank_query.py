@@ -4,8 +4,9 @@
 总条数（分页）、来源合规四要素（M5 拆表后的 question_sources）与各维取值计数，
 故走独立 SQL，不复用 fetch_by_ids（后者只 select 固定列、无计数）。
 
-全部同步函数，异步调用方经 asyncio.to_thread 包裹（同 db / question_search 模式）；
-只读查询，只取 status='enabled'。
+**只覆盖公共题库**（P1-M7）：本模块每个查询都带 `user_id IS NULL`——私有题是别人的
+上传内容，绝不能漏进公共浏览/搜索/分面/容量。私有题自己的浏览走 bank_private
+（那里 user_id 必传）。两个模块的分工就是「公共」与「某人的」，不重叠。
 """
 
 from __future__ import annotations
@@ -19,6 +20,9 @@ from app.graph.rules.difficulty import DIFFICULTY_ORDER  # 难度档位顺序（
 
 BROWSE_PAGE_SIZE = 10
 BROWSE_MAX_PAGE_SIZE = 50
+
+# 公共题判定（唯一写法，供本模块所有查询复用）
+PUBLIC = "user_id IS NULL"
 
 # 浏览项字段（= PRD §4.6 数据模型；answer/key_points/follow_ups 齐出，前端折叠展示）
 _FIELDS = (
@@ -36,7 +40,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 
 def _where(filters: dict[str, str | None]) -> tuple[str, list[str]]:
-    clauses, params = ["status='enabled'"], []
+    clauses, params = ["status='enabled'", PUBLIC], []
     for column in _FILTER_COLUMNS:
         value = filters.get(column)
         if value:
@@ -103,7 +107,7 @@ def attach_sources(db_path: Path, items: list[dict[str, Any]]) -> list[dict[str,
 
 
 def bank_facets(db_path: Path) -> dict[str, list[dict[str, Any]]]:
-    """四维分面取值与计数（仅 enabled；计数降序、同数按值升序）。
+    """四维分面取值与计数（仅公共 + enabled；计数降序、同数按值升序）。
 
     例外：**难度按档位排**（L1→L3）——它是有序维度，按计数排会把 L2 顶到 L1 前面，
     而下游（筛选下拉）要的是档位顺序；厂商/面次没有天然顺序，计数序才有意义。
@@ -113,7 +117,7 @@ def bank_facets(db_path: Path) -> dict[str, list[dict[str, Any]]]:
         for column in _FILTER_COLUMNS:
             rows = conn.execute(
                 f"SELECT {column} AS value, COUNT(*) AS count FROM questions"
-                f" WHERE status='enabled' AND {column} IS NOT NULL AND {column} != ''"
+                f" WHERE status='enabled' AND {PUBLIC} AND {column} IS NOT NULL AND {column} != ''"
                 f" GROUP BY {column} ORDER BY count DESC, value"
             ).fetchall()
             values = [{"value": r["value"], "count": r["count"]} for r in rows]
@@ -124,12 +128,18 @@ def bank_facets(db_path: Path) -> dict[str, list[dict[str, Any]]]:
     return facets
 
 
-def difficulty_supply(db_path: Path) -> dict[str, dict[str, int]]:
-    """{难度: {域: enabled 题数}}——容量校验（rules/capacity）的供给输入。"""
+def difficulty_supply(db_path: Path, *, user_id: str | None = None) -> dict[str, dict[str, int]]:
+    """{难度: {域: enabled 题数}}——容量校验（rules/capacity）的供给输入。
+
+    公共题恒计入；给了 user_id 再叠加**该用户自己的私有题**（FR-14 与 M7 合流：
+    私有题参与出题，容量就该算上它们，否则表单会在他题目充足时误报不足）。
+    他人的私有题不计入——容量是「这个用户能问到多少题」。
+    """
     with _connect(db_path) as conn:
         rows = conn.execute(
             "SELECT difficulty, domain, COUNT(*) AS n FROM questions"
-            " WHERE status='enabled' GROUP BY difficulty, domain"
+            f" WHERE status='enabled' AND ({PUBLIC} OR user_id=?) GROUP BY difficulty, domain",
+            (user_id,),
         ).fetchall()
     supply: dict[str, dict[str, int]] = {}
     for row in rows:

@@ -115,6 +115,9 @@ class InterviewState(BaseModel):
 
     interview_id: str = ""
     position: str = ""
+    # 场次归属（P1-M7 FR-13）：出题时用它并入该用户的私有题。空串 = 无归属（阶段 1 的历史场次，
+    # 那些库里的 checkpoint 没有这个字段，默认值保证它们仍能 resume）——空值即只用公共题库。
+    user_id: str = ""
     question_count: int = 10  # 全场问答轮次（P1-M4.6-C）：项目深挖 project_count(N) + 技术 N−project_count(N)（domain.project_count）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None

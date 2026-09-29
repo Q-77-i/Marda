@@ -2,6 +2,9 @@
 
 questions / question_sources 由语料管道建表，不在 app.db.ensure_schema 里，
 故测试自建；列名与生产一致是**契约**，改 DDL 时这里要同步。
+
+`user_id`（P1-M7）：NULL = 公共题，非空 = 该用户的私有题（FR-13 上传）。
+夹具默认造公共题——**绝大多数既有用例关心的是公共题库**，私有题显式传 user_id。
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ CREATE TABLE questions (
   id TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL,
   key_points JSON, follow_ups JSON, domain TEXT NOT NULL, topic TEXT NOT NULL,
   difficulty TEXT NOT NULL, company TEXT, round TEXT, source TEXT,
-  status TEXT DEFAULT 'enabled'
+  status TEXT DEFAULT 'enabled', user_id TEXT
 );
 CREATE TABLE question_sources (
   question_id TEXT NOT NULL, source TEXT NOT NULL, license TEXT, url TEXT,
@@ -34,6 +37,7 @@ def question_row(
     round_: str | None = "一面",
     status: str = "enabled",
     source: str = "个人题库",
+    user_id: str | None = None,
 ) -> dict:
     return {
         "id": qid, "question": f"{qid} 题干", "answer": f"{qid} 答案",
@@ -41,6 +45,7 @@ def question_row(
         "follow_ups": json.dumps(["追问"], ensure_ascii=False),
         "domain": domain, "topic": "测试主题", "difficulty": difficulty,
         "company": company, "round": round_, "source": source, "status": status,
+        "user_id": user_id,
     }
 
 
@@ -53,9 +58,9 @@ def insert_questions(path: Path, rows: list[dict]) -> None:
     with sqlite3.connect(path) as conn:
         conn.executemany(
             "INSERT INTO questions (id, question, answer, key_points, follow_ups, domain,"
-            " topic, difficulty, company, round, source, status)"
+            " topic, difficulty, company, round, source, status, user_id)"
             " VALUES (:id, :question, :answer, :key_points, :follow_ups, :domain, :topic,"
-            " :difficulty, :company, :round, :source, :status)",
+            " :difficulty, :company, :round, :source, :status, :user_id)",
             rows,
         )
 

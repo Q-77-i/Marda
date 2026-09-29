@@ -18,6 +18,23 @@ export const DOMAIN_LABELS: Record<string, string> = {
   project: "项目深挖",
 };
 
+/**
+ * 可选知识域（上传/编辑私有题的候选值，顺序同 DOMAIN_LABELS）。
+ *
+ * 与 backend/app/domain.py `ENABLED_DOMAINS` 一致（= DOMAIN_WEIGHTS ∪ {algorithms}）：
+ * DOMAIN_LABELS 里多出的行为面/计算机基础/项目深挖**不在**题库可选范围内，
+ * 故不能直接拿它的 key 当选项（后端会按「未知知识域」400）。
+ */
+export const ENABLED_DOMAINS = [
+  "agent-architecture",
+  "planning-reasoning",
+  "tool-use",
+  "memory",
+  "rag",
+  "engineering-observability",
+  "algorithms",
+] as const;
+
 /** 五维评分维度（与 backend aggregate.FIVE_DIMS 同序）。 */
 export const DIMENSIONS: { key: string; label: string }[] = [
   { key: "technical_depth", label: "技术深度" },
@@ -144,6 +161,7 @@ export function difficultyLabel(value: string): string {
 export const NAV_ITEMS = [
   { href: "/", label: "仪表盘", ready: true },
   { href: "/bank", label: "题库", ready: true },
+  { href: "/bank/private", label: "我的题库", ready: true },
   { href: "/profile", label: "能力档案", ready: false },
   { href: "/learn", label: "学习推荐", ready: false },
 ] as const;

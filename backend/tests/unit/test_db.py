@@ -8,6 +8,8 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import bank_fixture
+
 from app import db
 
 
@@ -151,3 +153,17 @@ def test_旧库自动补user_id列(tmp_path):
     row = db.get_interview(path, "old-1")
     assert row["id"] == "old-1" and row["user_id"] is None
     assert db.list_interviews(path, user_id="u1") == []
+
+
+def test_迁移补questions_user_id列(tmp_path):
+    """私有题归属列（P1-M7）：有 questions 表则补列，没有则跳过（questions 由管道建表）。"""
+    path = tmp_path / "marda.sqlite3"
+    db.ensure_schema(path)  # 无 questions 表：不该报错
+    with sqlite3.connect(path) as conn:
+        assert {r[1] for r in conn.execute("PRAGMA table_info(questions)")} == set()
+
+    bank_fixture.create_tables(path)
+    db.ensure_schema(path)
+    with sqlite3.connect(path) as conn:
+        assert "user_id" in {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
+    db.ensure_schema(path)  # 幂等

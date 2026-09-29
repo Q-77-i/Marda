@@ -201,6 +201,7 @@ class Service:
         state = InterviewState(
             interview_id=interview_id,
             position=position,
+            user_id=user_id,  # 出题时并入本人私有题（P1-M7 FR-13）
             question_count=question_count,
             difficulty=base_difficulty(difficulty),
             difficulty_locked=difficulty != ADAPTIVE,

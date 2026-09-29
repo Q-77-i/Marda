@@ -149,3 +149,108 @@ def test_fetch_draft不入结果(db):
 
 def test_fetch_不存在id返回空(db):
     assert question_search.fetch_by_ids(db, ["nope"]) == []
+
+
+# ---- 私有题混入（P1-M7 FR-13）----
+
+
+@pytest.fixture
+def private_env(monkeypatch, tmp_path):
+    """指向 tmp 库（私有候选走真 SQL），并注入 fake qdrant。
+
+    search_questions 用 get_settings().db_path 查私有题，故这里把 DB_PATH 指到 tmp 库。
+    """
+    import bank_fixture
+
+    from app.config import get_settings
+
+    path = tmp_path / "marda.sqlite3"
+    bank_fixture.create_tables(path)
+    monkeypatch.setenv("DB_PATH", str(path))
+    get_settings.cache_clear()
+    yield path
+    get_settings.cache_clear()
+
+
+def _public(qid: str) -> dict:
+    return {"question_id": qid, "question": f"{qid} 题干", "domain": "rag", "difficulty": "L1"}
+
+
+def _insert_private(path, user_id: str, text: str, *, difficulty: str = "L1") -> str:
+    from app.tools import bank_private
+
+    bank_private.insert_questions(
+        path, user_id=user_id,
+        records=[{"text": text, "answer": "参考答案内容。", "key_points": [], "follow_ups": [],
+                  "topic": "个人上传", "domain": "rag", "difficulty": difficulty}],
+        source_detail="t.md",
+    )
+    return bank_private.private_id(user_id, text)
+
+
+async def test_私有题混入候选池(private_env, install):
+    install([_payload("q1")], [_public("q1")])
+    pid = _insert_private(private_env, "u1", "我的私有题？")
+
+    result = await question_search.search_questions(
+        domain="rag", difficulty="L1", k=10, user_id="u1"
+    )
+
+    assert {r["question_id"] for r in result} == {"q1", pid}
+    assert next(r for r in result if r["question_id"] == pid)["question"] == "我的私有题？"
+
+
+async def test_只并入本人的私有题(private_env, install):
+    install([_payload("q1")], [_public("q1")])
+    _insert_private(private_env, "u2", "别人的私有题？")
+
+    result = await question_search.search_questions(
+        domain="rag", difficulty="L1", k=10, user_id="u1"
+    )
+
+    assert {r["question_id"] for r in result} == {"q1"}
+
+
+async def test_私有题同样排除已问(private_env, install):
+    install([], [])
+    pid = _insert_private(private_env, "u1", "已问过的私有题？")
+
+    result = await question_search.search_questions(
+        domain="rag", difficulty="L1", k=10, user_id="u1", exclude_ids=[pid]
+    )
+
+    assert result == []
+
+
+async def test_私有题按域与难度过滤(private_env, install):
+    install([], [])
+    _insert_private(private_env, "u1", "L2 的私有题？", difficulty="L2")
+
+    assert await question_search.search_questions(
+        domain="rag", difficulty="L1", k=10, user_id="u1"
+    ) == []
+    assert len(await question_search.search_questions(
+        domain="rag", difficulty="L2", k=10, user_id="u1"
+    )) == 1
+
+
+async def test_公共题全无命中时私有题仍可出(private_env, install):
+    """私有题是独立的候选来源：Qdrant 空命中不该连坐（M7 之前这里返回 []）。"""
+    install([], [])
+    pid = _insert_private(private_env, "u1", "题库没有时的私有题？")
+
+    result = await question_search.search_questions(
+        domain="rag", difficulty="L1", k=10, user_id="u1"
+    )
+
+    assert [r["question_id"] for r in result] == [pid]
+
+
+async def test_不传user_id时行为与接入前一致(private_env, install):
+    _, calls = install([_payload("q1")], [_public("q1")])
+    _insert_private(private_env, "u1", "不该被看到的私有题？")
+
+    result = await question_search.search_questions(domain="rag", difficulty="L1", k=10)
+
+    assert [r["question_id"] for r in result] == ["q1"]
+    assert calls["ids"] == ["q1"]

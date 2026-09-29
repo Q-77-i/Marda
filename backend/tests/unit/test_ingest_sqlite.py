@@ -175,3 +175,52 @@ def test_迁移幂等_重跑不重复(tmp_path):
         ingest.ensure_schema(conn)
 
     assert rows(db, "SELECT COUNT(*) FROM question_sources") == [(1,)]
+
+
+def test_私有题不被管道重跑删除(tmp_path):
+    """P1-M7 红线：管道是全量同步语义，private 题不在管道 JSON 里。
+
+    不限定 user_id IS NULL 的话，`DELETE FROM questions WHERE id NOT IN (管道集合)`
+    会在每次重跑时把用户上传的私有题整批静默删除（连带来源明细）。
+    """
+    db = tmp_path / "marda.sqlite3"
+    ingest.write_sqlite([question(question_id="q_pub")], db)
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO questions (id, question, answer, domain, topic, difficulty,"
+            " source, status, user_id) VALUES ('p_mine', '我的题？', '我的答案。',"
+            " 'rag', '个人上传', 'L1', '个人上传', 'enabled', 'u1')"
+        )
+        conn.execute(
+            "INSERT INTO question_sources (question_id, source, license, status)"
+            " VALUES ('p_mine', '个人上传', 'personal', 'enabled')"
+        )
+
+    # 重跑管道，且管道这次少了 q_pub（模拟题目被合并/删除）
+    ingest.write_sqlite([question(question_id="q_new")], db)
+
+    assert rows(db, "SELECT id FROM questions WHERE user_id IS NOT NULL") == [("p_mine",)]
+    assert rows(db, "SELECT question_id, source FROM question_sources") == [
+        ("p_mine", "个人上传"),
+        ("q_new", "个人题库-牛客补充版"),
+    ]
+    # 公共题仍按全量同步语义清理（本次 JSON 里没有 q_pub）
+    assert rows(db, "SELECT id FROM questions WHERE user_id IS NULL") == [("q_new",)]
+
+
+def test_迁移补user_id列(tmp_path):
+    """老库（DDL 里没有 user_id）经 ensure_schema 补列后可写私有题。"""
+    db = tmp_path / "marda.sqlite3"
+    with sqlite3.connect(db) as conn:
+        conn.executescript(OLD_DDL)
+
+    with sqlite3.connect(db) as conn:
+        ingest.ensure_schema(conn)
+
+    assert "user_id" in columns(db, "questions")
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "INSERT INTO questions (id, question, answer, domain, topic, difficulty,"
+            " user_id) VALUES ('p_x', '题？', '答案。', 'rag', '主题', 'L1', 'u1')"
+        )
+    assert rows(db, "SELECT user_id FROM questions") == [("u1",)]

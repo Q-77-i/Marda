@@ -74,7 +74,9 @@ async def _pick_from_bank(state: InterviewState) -> tuple[QuestionRecord | None,
     domain = pick_domain(state)
     for difficulty in _relax(state.difficulty):
         candidates = await question_search.search_questions(
-            domain=domain, difficulty=difficulty, exclude_ids=state.asked_ids, k=3
+            domain=domain, difficulty=difficulty, exclude_ids=state.asked_ids, k=3,
+            # 私有题混入（P1-M7）：state.user_id 为空 = 只用公共题库
+            user_id=state.user_id or None,
         )
         if candidates:
             item = candidates[0]
