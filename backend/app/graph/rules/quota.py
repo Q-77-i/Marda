@@ -26,14 +26,17 @@ def allocate_quota(total: int, weights: dict[str, float]) -> dict[str, int]:
     return base
 
 
-def _tech_quota(state: InterviewState) -> dict[str, int]:
+def tech_quota(question_count: int) -> dict[str, int]:
     """技术题总配额（单一来源）：轮次 − 项目深挖题数（question_count 是全场轮次语义）。
 
     max(…, 0) 兜底存量 checkpoint（旧数据可能 question_count=1）。
+    消费方：出题选域（本模块）与容量校验（rules/capacity，FR-14）。
     """
-    return allocate_quota(
-        max(state.question_count - project_count(state.question_count), 0), DOMAIN_WEIGHTS
-    )
+    return allocate_quota(max(question_count - project_count(question_count), 0), DOMAIN_WEIGHTS)
+
+
+def _tech_quota(state: InterviewState) -> dict[str, int]:
+    return tech_quota(state.question_count)
 
 
 def remaining_quota(state: InterviewState) -> dict[str, int]:

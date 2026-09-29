@@ -31,7 +31,7 @@ backend/            FastAPI + LangGraph
     domain.py       知识域定义（单一来源：配额 / 映射 / 报告共用）
     graph/          状态机（state / graph / nodes / rules）
     agents/         角色节点与结构化输出 schema
-    tools/          RAG 检索工具（出题检索 / 混合检索 / 嵌入 / rerank 客户端）
+    tools/          RAG 检索工具（出题检索 / 混合检索 / 嵌入 / rerank 客户端）+ 题库浏览查询
     api/            路由（SSE 流）
     service.py      服务层（图单例 / 事件翻译 / 落库编排）
     observability.py Langfuse 接入（一次面试一个 trace / 无 key 降级零开销）
@@ -43,8 +43,8 @@ data/
   parsed/           解析产物（gitignore）
   licenses/         语料来源清单与许可
 frontend/           Next.js 15（app 路由 / lib 纯逻辑 / components）
-  lib/              sse 流解析 / typewriter 队列 / api 封装 / 展示格式化
-  components/       面试页客户端 / 报告页客户端 / 图表 / UI 基础件
+  lib/              sse 流解析 / typewriter 队列 / api 封装 / 展示格式化 / 题库筛选与容量判据
+  components/       顶栏导航 / 面试页客户端 / 报告页客户端 / 题库客户端 / 图表 / UI 基础件
 docs/               PRD / SPEC（个人规划文档不进仓库）
 ```
 
@@ -117,7 +117,7 @@ LLM 模型层理论的页落在未启用的 `cs-fundamentals` 域、以 draft �
 - **决策回放（FR-21）**：每个节点把「输入 / 决策 / 原因 / 状态变化」追加进 state 的 `trace_log`，`GET /interviews/{id}/trace` 一次取回整场事件流——为什么追问（答错澄清 / 覆盖率低补遗漏 / 达标深挖）、为什么换题（全场补救额度用尽 / 漏点均已追问 / 单题上限）、难度何时变档，逐轮可查。决策与原因**同源**（`explain_decision` 是唯一实现），回放里的原因不是旁白，是当时真正生效的那一条
 
 ```bash
-uv run pytest -q                                    # 后端 322 个测试
+uv run pytest -q                                    # 后端 350 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
@@ -128,6 +128,8 @@ uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant �
 - **账号（FR-23）**：[app/api/auth.py](backend/app/api/auth.py) 提供注册 / 登录 / 当前用户，JWT 全端点鉴权（Bearer）。密码 scrypt 加盐哈希、用户名字母大小写不敏感；场次按 `user_id` 隔离，跨用户访问按「不存在」404（不泄露存在性），阶段 1 的历史场次由首个注册账号认领
 - **鉴权细节**：401 与 404 的分工——未登录/失效 token 401；他人场次 404（与「场次不存在」不可区分）
 - **`GET /interviews/{id}/trace`**：决策回放事件流（未结束的场次同样可查，做实时决策视图）
+- **题库（P1-M6 FR-12/FR-14）**：[app/api/bank.py](backend/app/api/bank.py) 三端点——`/api/bank/questions`（关键词走混合检索、否则 SQL 浏览分页，每项带来源明细，主源排首位）、`/api/bank/facets`（四维取值 + 计数，前端的筛选项由它生成、不硬编）、`/api/bank/capacity`（难度 × 题量的题库直供能力 + 不足明细）。查询层在 [app/tools/bank_query.py](backend/app/tools/bank_query.py)，与出题检索分工：出题只要「过滤 + 随机 k 条」，浏览要总数、来源合规四要素与分面计数
+- **创建时选难度（FR-14）**：`difficulty ∈ adaptive / L1 / L2 / L3`（默认 adaptive）——固定档位场次全程不升降（`state.difficulty_locked`），落库存的是**用户的选择**（列表页回显），`state.difficulty` 才是当前档位。容量校验只做前端展示判据、**不拦创建**：直供不足 ≠ 出不了题（引擎有难度放宽 + LLM 生成兜底）
 
 **可观测（P1-M4）**：[app/observability.py](backend/app/observability.py) 把 Langfuse 接在轮次这一层——trace_id 由场次 id 派生，所以一场面试的多次 resume 落进同一个 trace（不是散成 N 个），`session_id` = 场次、`user_id` = 账号；LLM 调用经 `langfuse.openai` drop-in 自动成为带 usage 的 generation，token 成本按场次/按人可聚合。**没配 key 就整体降级为零开销**：不 import、不构造客户端、不联网，本地与 CI 无需账号。接线由单测离线钉死（注入内存导出器），「云端按场次可查」由 smoke 读回核对——按场次派生 trace_id 把观测拉回来，断言 session_id/user_id 归属、generation 归父、模型名（含报告走深度档）与 token/成本汇总，不靠抄 id 到控制台肉眼比对。**成本金额的单位是人民币**（Langfuse 的 `$` 是它硬编码的符号），前端显示一律 `¥` + 数值原样，不按汇率换算。
 
@@ -136,9 +138,13 @@ uv run python scripts/smoke_api.py                # 真实链路走 HTTP 跑一�
 SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块、块内难度曲线与结束陈词
 ```
 
-## 前端（五页面 + 流式联调）
+## 前端（六页面 + 流式联调）
 
-[frontend/](frontend/) 是 Next.js 15 App Router，五个页面：登录 `/login`、仪表盘 `/`（新建 + 历史）、面试页 `/interview/[id]`、报告页 `/report/[id]`、决策回放页 `/trace/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+[frontend/](frontend/) 是 Next.js 15 App Router，六个页面：登录 `/login`、仪表盘 `/`（新建 + 历史）、题库 `/bank`、面试页 `/interview/[id]`、报告页 `/report/[id]`、决策回放页 `/trace/[id]`。请求走同源 `/api/*`（[next.config.ts](frontend/next.config.ts) rewrites → 后端），免 CORS 配置。
+
+- **导航（P1-M6 定调）**：顶栏 tab（[components/main-nav.tsx](frontend/components/main-nav.tsx)），不用侧边栏——顶层是 3–4 个平级工具页、没有层级，侧边栏只是白占一条纵深；面试页/报告页是沉浸式，顶栏不渲染 `MainNav` 就干净了。「能力档案」「学习推荐」现在就占位：**`ready: false` 的项渲染成不可点的灰字（`aria-disabled` + 「即将上线」），不发出会 404 的链接**——占位是让 M9/M10 塞进来时不用重排导航
+- **题库页（P1-M6 FR-12）**：关键词搜索（混合检索，与筛选叠加）+ 域 chips + 难度/厂商/面次三下拉（候选值都来自 `facets`，不硬编，扩语料后新厂商自动出现；**选项里不带计数**——数字塞进下拉和 chips 显得脏，条数只在结果区给总数）+ 结果卡可展开看参考答案/关键点/**来源合规四要素**（主源标注、`原文` 外链 `rel=noreferrer`）+ 分页；结果卡头按模式切换「按相关性排序 · 最多 20 条」/「共 N 题 · 第 x/y 页」。筛选或搜索一变就回第一页（否则在第 5 页改筛选会落到空页）
+- **容量校验（FR-14）**：创建表单挂载时一次拿全「题量 × 难度」的直供结论，**不足的题量禁用并写明缺在哪**（「15 题不可选 —— 题库直供不足：规划与推理范式（需 2 题，题库 1 题）」）；不做静默禁用（禁了不说原因，用户只会以为页面坏了），**拉取失败一律不禁用**（服务端本就不拦，网络抖动不能让表单把自己锁死）
 
 - **登录与路由守卫（FR-23）**：[lib/session.ts](frontend/lib/session.ts) 管 token（localStorage 优先，隐私模式等环境自动降级 sessionStorage，两者都禁用则明确提示而非静默失败），[lib/http.ts](frontend/lib/http.ts) 统一注入 Bearer 与 401 处置；未登录访问受保护页由 [AuthGuard](frontend/components/auth-guard.tsx) 跳登录（判断完成前先渲染载入态，不闪受保护内容）。**401 默认直跳登录页，唯独面试页弹确认再跳**——答题答到一半被直接踢走体感太差；登录接口自身的 401/409 只当表单错误展示，绝不触发全局跳转
 
@@ -153,7 +159,7 @@ SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看�
 - **题量与记录**：题量 = 全场问答轮次（选 N 就是 N 轮，进度与报告自然一致）；历史记录带物理删除（确认弹窗）
 
 ```bash
-cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化 + 登录态 + 决策回放/失败重发逻辑（94 个）
+cd frontend && pnpm test          # vitest：SSE 解析 + 打字机队列 + 展示格式化 + 登录态 + 决策回放/失败重发 + 题库筛选分页与容量判据（104 个）
 pnpm lint && pnpm build
 ```
 
@@ -174,7 +180,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）；**P1-M5 会话 2 已完成**（开源语料扩充：WenQu 登记表定位的四源 MIT 语料接入，342 → 1571 题 / enabled 1095，Qdrant 重建 1095 点，smoke_graph + smoke_api 零回归）。后续 M6–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）；**P1-M5 会话 2 已完成**（开源语料扩充：WenQu 登记表定位的四源 MIT 语料接入，342 → 1571 题 / enabled 1095，Qdrant 重建 1095 点，smoke_graph + smoke_api 零回归）；**P1-M6 已完成**（题库页 + 容量校验：`/api/bank/*` 三端点与 `/bank` 页、创建时可选难度（固定档位全程不升降）、题量按题库直供能力禁用并写明缺在哪；真库上唯一不可选的组合是 L3 × 15 题）。后续 M7–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

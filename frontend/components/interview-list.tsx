@@ -19,6 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { deleteInterview, listInterviews, type InterviewRow } from "@/lib/api";
+import { difficultyLabel } from "@/lib/constants";
 import { formatDuration, formatTime } from "@/lib/format";
 
 /** 历史面试列表：进行中 → 续面，已完成 → 报告；每条可物理删除（T7a-R1）。 */
@@ -98,7 +99,7 @@ export function InterviewList() {
                     <div className="flex min-w-0 flex-col gap-1">
                       <span className="truncate text-sm font-medium">{row.position}</span>
                       <span className="tabular text-xs text-muted-foreground">
-                        {row.question_count} 题
+                        {row.question_count} 题 · {difficultyLabel(row.difficulty)}
                         {duration ? ` · ${duration}` : ""}
                       </span>
                     </div>

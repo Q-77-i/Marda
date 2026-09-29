@@ -120,6 +120,8 @@ class InterviewState(BaseModel):
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
     difficulty: str = "L1"
+    # 固定难度场次（P1-M6 FR-14）：创建时选定 L1/L2/L3 → 全场锁定该难度、不自适应升降
+    difficulty_locked: bool = False
     consecutive_good: int = 0
     consecutive_bad: int = 0
     candidate_profile: str = ""

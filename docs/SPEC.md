@@ -93,6 +93,7 @@ class InterviewState(BaseModel):
     current_question: QuestionRecord | None = None
     asked_ids: list[str] = []
     difficulty: str = "L1"
+    difficulty_locked: bool = False      # 固定难度场次（P1-M6 FR-14）：用户选了 L1/L2/L3 则全程不升降
     consecutive_good: int = 0; consecutive_bad: int = 0
     candidate_profile: str = ""          # 自我介绍提炼
     answered_count: int = 0
@@ -169,12 +170,17 @@ def decide_follow_up(...) -> Decision:   # 薄封装：decision, _ = explain_dec
 
 ```python
 def update_difficulty(state) -> None:
+    if state.difficulty_locked: return    # 固定难度场次不升降（P1-M6 FR-14）
     mean = score 五维均值
     if mean >= 4: good+1, bad=0
     elif mean <= 2: bad+1, good=0
     else: reset both
     good>=2 → difficulty 升一档（封顶 L3）并清零；bad>=2 → 降一档（保底 L1）并清零
 ```
+
+**difficulty_locked 的分工**：落库列 `interviews.difficulty` 存的是**用户的选择**（`adaptive`/`L1`/`L2`/`L3`，列表页据此回显），`state.difficulty` 存**当前档位**（自适应场次会升降）。`adaptive` 起步档 = `base_difficulty()` = L1——它同时是「自适应」的起点与 L1 固定场次的档位，所以容量校验里 adaptive 与 L1 的结论必须一致（smoke 用真实题库断言这一点）。
+
+**capacity.py**（P1-M6 FR-14）：`check_capacity(question_count, difficulty, supply)` 比「配额 vs 直供」——`tech_quota(N)` 算出每域需要几题（与出题同一份实现，不另算一份），`supply` 是 `{难度: {域: enabled 题数}}`（`bank_query.difficulty_supply`），差集即不足明细 `{domain, required, available}`；`capacity_grid(counts, supply)` 把 4 难度 × N 题数摊平成前端要的网格。**只做展示判据、不拦创建**：直供不足 ≠ 出不了题——引擎有难度放宽（±1 档再检索）与 LLM 生成兜底，把它做成硬拦截会让用户在一个本可进行的场次前吃闭门羹。基准档取 `base_difficulty(difficulty)`：固定场次查该档，自适应查 L1（起步档）。
 
 **quota.py**：知识域配额（largest remainder 按权重 × 技术轮数 = 轮次 − project_count），例：10 轮 → 3 项目深挖 + 7 道技术题 → Agent 认知 2 / RAG 1 / 规划推理 1 / Tool-FC 1 / Memory 1 / 工程化 1。
 
@@ -330,6 +336,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 ### 5.2 混合检索（M3 会话 2 落地）
 
 - `hybrid_search(query, *, k=5)`（`app/tools/hybrid_search.py`）：query 本地 embed → Qdrant Query API `prefetch`（dense + sparse 各 limit 30）→ `FusionQuery(Fusion.RRF)` 融合候选 30 → SQLite join（payload 只存过滤字段，题干与关键点在 SQLite，且 rerank 需要文档文本）→ rerank → top k。输出键同 search_questions（question_id/question/answer/key_points/follow_ups/domain/topic/difficulty/company/round），仅 enabled 题；join 后按候选序重排（SQLite IN 查询不保序）；空 query 报 ValueError。
+- **筛选下推到两路 prefetch（P1-M6）**：`filters` 接受 `domain/difficulty/company/round`，构造 `Filter` 后**每一路 prefetch 都要挂**。参数名是 `query_filter`（q/client 里写 `filter` 直接抛 `Unknown arguments: ['filter']`，探测时踩到过）；挂在顶层 `query_points` 是错的——`limit` 是 prefetch 级的，两路会先各取满 30 条全集候选再融合，顶层的过滤只能筛掉融合结果，无关域的候选把名额吃光，命中数少得莫名其妙。无筛选时不构造空 `Filter`（空 Filter 与 None 在 Qdrant 里语义不同，别赌等价）。单测钉死三条：两路都挂、空值维度不生成条件、无筛选时 `prefetch[i].filter is None`。
 - 候选 ≤1 时跳过 rerank；**rerank 失败直接抛**（降级/熔断阶段 3）。Rerank 文档 = 题干 + 关键点（与嵌入文本同一函数）。
 - rerank 客户端（`app/tools/rerank.py`）：httpx 直调 `POST {siliconflow_base_url}/rerank`（Bearer 鉴权，超时 30s），请求 `{model: "BAAI/bge-reranker-v2-m3", query, documents, top_n, return_documents: false}`（top_n 为 None 时不传该字段）；响应 `results: [{index, relevance_score}]`（已按分降序）——客户端校验 index 在范围内且唯一、score 为有限数，否则 RuntimeError；空 documents 不发请求。
 - 消费方：M6 题库搜索（FR-12 关键词搜索）/ M9 学习推荐（按短板域召回）；本会话无 API 暴露，**用户可见零变化**。
@@ -383,20 +390,23 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 ## 7. API 契约
 
-**鉴权（FR-23）**：`/api/interviews/*` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）。
+**鉴权（FR-23）**：`/api/interviews/*` 与 `/api/bank/*` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）；题库是公共资产、无归属隔离（私有题库留待 M7 另立维度），故题库端点只有 401 没有 404。
 
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
 | POST /api/auth/register | `{username, password}`（username 3–32 位 `[A-Za-z0-9_]`，**统一小写存储**；password 6–72） | **201** `{token, username}`；重名（含大小写变体）409 |
 | POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（不泄露账号是否注册，文案一致） |
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
-| POST /api/interviews | `{position, question_count}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
+| POST /api/interviews | `{position, question_count, difficulty}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
+| GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty`（`L1`\|`L2`\|`L3`）/ `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含 `question_id`/题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（来源明细，**主源排首位**） |
+| GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值——扩语料后新厂商/面次自动出现 |
+| GET /api/bank/capacity | `counts`（逗号分隔，默认 `5,10,15`；越界夹紧 2–20、去重升序） | `{options: [{difficulty, base, question_count, ok, shortfalls}]}`（FR-14；`shortfalls = [{domain, required, available}]`，基准档见 §4.3 capacity.py） |
 
 **SSE 事件**（`sse-starlette` EventSourceResponse；POST 由前端 fetch 流解析）：
 
@@ -454,7 +464,10 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 9. 前端设计
 
-- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口））。
+- **导航（P1-M6 定调）**：**顶栏 tab**（`components/main-nav.tsx`），不用侧边栏。理由是这一层的页面性质：顶层页面是 3–4 个**平级工具页**（仪表盘 / 题库 / 能力档案 / 学习推荐），没有层级也没有分区，侧边栏是为「多层级 + 常驻切换」设计的，在这个规模上只是白占一条纵深；而面试页与报告页是**沉浸式**（导航必须隐藏），顶栏只要不渲染 `MainNav` 就干净了，侧边栏还得额外处理布局位移。**没做的页面现在就占位**：`NAV_ITEMS` 里 `ready: false` 的项渲染成不可点的灰字（`aria-disabled` + 「即将上线」），**绝不发出会 404 的 `<a href>`**——占位是让 M7/M9/M10 往里塞时不必重排导航，不是提前给用户一个坏链接。
+- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮 + **难度选择**（P1-M6 FR-14：自适应 / L1 / L2 / L3，四选二行网格 + 一行说明）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口），meta 行显示题量与难度）。
+- **题库页**（`/bank`，P1-M6 FR-12）：顶部搜索框（关键词走混合检索，提交后与筛选叠加）+ 域 chips（值来自 `facets`，`aria-pressed` 表选中）+ 三个下拉（难度/厂商/面次，首项「全部」）+ 结果卡片（可展开：参考答案 / 关键点 / **来源合规四要素**，主源标注「答案主源」、`原文` 外链 `rel=noreferrer`）+ 分页。结果卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选/搜索任一项变更即回第一页**（否则在第 5 页改筛选会落到空页）——这条在 `lib/bank.ts` 的 `withFilter` 里，vitest 钉死。
+- **容量校验的前端口径（FR-14）**：创建表单挂载时拉一次 `/api/bank/capacity`（题量选项 × 4 难度一次拿全，切换难度零网络）；**直供不足的题量禁用 + 明写缺在哪**（「15 题不可选 —— 题库直供不足：规划与推理范式（需 2 题，题库 1 题）」），不做静默禁用（禁了不说原因，用户只会以为页面坏了）。**拉取失败一律不禁用**（`.catch` → `capacity = null`）：服务端本就不拦创建，网络抖动绝不能让表单自己把用户锁死。
 - **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏标「已结束」，复用同一恢复接口）。
 - **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评；逐题复盘卡（阶段 2 FR-25：我的回答 / 五维得分 / 关键点对比 / 题库题参考答案折叠展示，项目深挖题仅关键点对比）。页头「决策回放」入口（P1-M4）。
 - **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：只读时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
@@ -471,7 +484,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 5 | test_graph_flow.py | FakeLLM 注入：五阶段顺序、追问路径、结束指令（<60% 拒绝）、**checkpoint 续面**（resume 后状态一致）、**决策回放事件流**（逐轮 ask/judge/followup/advance 齐全、轮次号正确、换题原因留痕） |
 | 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史/**回放接口**（未结束可查、他人场次 404、未登录 401） |
 | 7 | test_observability.py | Langfuse 接线（注入 InMemorySpanExporter 离线跑）：一次面试一个 trace（多轮 resume 同 trace_id、不同场次不同）、generation 挂在轮次 span 下、无 key 时零开销（不构造客户端 + LLM 走原生 SDK） |
-| 8 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
+| 8 | test_capacity / test_bank_query / test_bank_api（P1-M6） | 容量：配额 vs 直供的差集、自适应基准 = L1、`ok` 与不足明细互斥；浏览：分页稳定（同序不重不漏）、分面只计 enabled、来源按主源排序；接口：四筛选 + 关键词双模式（browse 有 total / search 无）、页码越界、`counts` 解析（夹紧去重升序）、未登录 401 |
+| 9 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
 
 ## 11. 风险注意点（实现时强制）
 
@@ -487,6 +501,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-29 P1-M6（题库页 FR-12 + 容量校验 FR-14）：新增 `tools/bank_query.py`（浏览查询层：SQL 分页 + 四维分面计数 + 来源明细挂载 + 供给统计）与 `api/bank.py`（三端点：`/questions` 双模式、`/facets`、`/capacity`）；§4.3 新增 capacity.py 口径 + `difficulty_locked` 分工（**落库 `interviews.difficulty` 存用户的选择、`state.difficulty` 存当前档位**）；§5.2 补筛选下推两路 prefetch 与 `query_filter` 参数名；§7 补三端点契约 + 创建接口的 `difficulty` 入参 + 题库端点的 401/404 分工；§9 补导航 IA（**顶栏 tab 定调**、未做页面占位不发出 404 链接）、题库页与容量禁用口径（不足要写明缺在哪、拉取失败一律不禁用）；§10 补 M6 测试行。前端 `lib/bank.ts`（筛选/分页/容量纯逻辑 15 例）+ `/bank` 页 + `MainNav`。**验收反馈两处**（2026-09-29 用户）：① 下拉与 chips **不带计数**（数字塞进选项显脏，条数只在结果区给总数）；② 难度分面**按档位 L1→L3 排**而非计数序（有序维度，L2 计数最多也不该顶到 L1 前）。**真库事实**（只读核对）：enabled 1095 题（L1 154 / L2 873 / L3 68），12 个「难度 × 题量」组合里**只有 L3 × 15 直供不足**（规划与推理范式 需 2 有 1，L3 × 10 需 1 有 1 恰好通过）——禁用态在真库上真实可见，smoke 用真实题库断言这一点并逐条复核不足明细。322 → 350 passed；前端 vitest 89 → 104；smoke_api 补题库三端点与 L3 锁定场次（对账直查 SQL：分面计数、浏览总数、分页不重不漏、主源排首位、license 齐、不足明细）
 - 2026-09-29 P1-M5 会话 2（开源语料扩充，四源接入）：新增 §6.5（`parse_open.py` 四源 adapter——形态/题量/解析要点、未采项逐项进报告、占位答案判据）与 §6.6（`combine.py` 合并 + 个人题库零回归校验 + 近似重复只报不并）；§1 目录树补 `bank`/`parse_open`/`combine`。四源 license 逐仓核对（均仓库自带 MIT）：ai-agents-from-zero 89 / FAQ_Of_LLM_Interview 71 / ai-agent-interview-guide 261 / llm-interview-guide 809 = 1230 条来源明细；题库 342 → 1571 题（enabled 1095），`question_sources` 1572 行，Qdrant 重建 1095 点（dense+sparse）。新增 `test_parse_open.py` 与 `bank` 共享层用例（实质答案判据、聚合缺省不为空串、括号答案标记），302 → 322 passed；smoke_graph + smoke_api 零回归
 - 2026-09-28 P1-M5 会话 1（`question_sources` 拆表）：§8 的 questions 表去掉 license/url、新增 `question_sources`（PK `(question_id, source)`）；§8.1 由「接入新源时怎么扩」改写为已落地口径（`source_rank`/`_rank` 主源裁决、`merge_sources` 每源留最优、列探测迁移、来源表整表重建、对上层透明）；§6.1 解析产物补 `sources` 明细与主源字段语义。新增 `backend/tests/unit/test_ingest_sqlite.py`（老库迁移与幂等、多源明细、全量同步删除），`test_parse_md.py` 补主源裁决与同源多记录用例（302 passed）。老库迁移在副本上逐字段对账后落真库：342 题零回归，`source_detail`（261 条）为老 schema 从未落库、本次顺带补回
 - 2026-09-27 三条小修（P1-M4.7 后续，均为真链路暴露）：① §4.4 项目深挖题措辞去重（喂回已问题目原文 + 两层模板同禁复述背景）；② §7 会话响应新增 `stalled` 与前端两路处置（重发 / 只重建列表），`error` 事件补「不能靠前端猜死活」的口径与 `engine_stalled` 的两态判据；③ 成本回读口径与 Langfuse 模型价目核对（代码无改动，见踩坑记录）

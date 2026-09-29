@@ -187,3 +187,29 @@ async def test_空query报错(install):
     f = install([])
     with pytest.raises(ValueError, match="查询文本"):
         await hybrid_search.hybrid_search("   ", embedder=f["embedder"], qclient=f["qdrant"], ranker=f["ranker"], db_path=Path("x"))
+
+
+async def test_筛选条件下推到两路prefetch(install):
+    """M6 FR-12：过滤必须挂在每路 prefetch 上（顶层过滤会让候选先在全集里取、召回不全）。"""
+    f = install(["q1"])
+
+    await hybrid_search.hybrid_search(
+        "q", filters={"domain": "rag", "difficulty": "L3", "company": None, "round": None},
+        embedder=f["embedder"], qclient=f["qdrant"], ranker=f["ranker"], db_path=Path("x"),
+    )
+
+    conditions = [p.filter.must for p in f["qdrant"].kwargs["prefetch"]]
+    assert len(conditions) == 2  # 两路都挂
+    assert all(len(c) == 2 for c in conditions)  # 空值维度不生成条件
+    assert all({cond.key for cond in c} == {"domain", "difficulty"} for c in conditions)
+    assert all(cond.match.value == "rag" for c in conditions for cond in c if cond.key == "domain")
+
+
+async def test_无筛选不构造空Filter(install):
+    f = install(["q1"])
+
+    await hybrid_search.hybrid_search(
+        "q", embedder=f["embedder"], qclient=f["qdrant"], ranker=f["ranker"], db_path=Path("x"),
+    )
+
+    assert all(p.filter is None for p in f["qdrant"].kwargs["prefetch"])

@@ -117,3 +117,34 @@ export const QUESTION_COUNT_OPTIONS = [5, 10, 15] as const;
 
 /** 岗位方向（阶段 1 固定）。 */
 export const POSITION = "Agent/AI 工程师";
+
+/**
+ * 难度选项（P1-M6 FR-14）：adaptive = 自适应（引擎从 L1 起按连击升降）；
+ * L1/L2/L3 = 全场锁定该档（后端 state.difficulty_locked）。
+ */
+export const DIFFICULTY_OPTIONS = [
+  { value: "adaptive", label: "自适应", hint: "从 L1 起，按表现升降" },
+  { value: "L1", label: "L1 基础", hint: "概念与名词解释" },
+  { value: "L2", label: "L2 进阶", hint: "原理、对比与选型" },
+  { value: "L3", label: "L3 深入", hint: "底层实现与设计权衡" },
+] as const;
+
+/** 难度标签（面试列表/报告用）；未知值原样显示（不猜）。 */
+export function difficultyLabel(value: string): string {
+  return DIFFICULTY_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
+
+/**
+ * 顶层导航（P1-M6 拍板：顶栏 tab 而非侧边栏）。
+ *
+ * `ready: false` 的项**渲染成不可点的灰文本**（不是 `<a>`，也没有 href）——
+ * 能力档案/学习推荐分别在 P1-M10 / P1-M9 落地，先把信息架构占住；
+ * 灰度即路线图，但绝不给出会 404 的链接。
+ */
+export const NAV_ITEMS = [
+  { href: "/", label: "仪表盘", ready: true },
+  { href: "/bank", label: "题库", ready: true },
+  { href: "/profile", label: "能力档案", ready: false },
+  { href: "/learn", label: "学习推荐", ready: false },
+] as const;
+

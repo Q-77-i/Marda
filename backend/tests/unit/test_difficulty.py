@@ -97,3 +97,19 @@ def test_均分恰为2按差计():
     state = _answered(_state(), 2, 2, 2, 2, 2)
     update_difficulty(state)
     assert state.consecutive_bad == 1
+
+
+def test_固定难度场次不升降():
+    """P1-M6 FR-14：创建时选定难度 → 全场锁定，连好两次也不升档。"""
+    state = _answered(_state(difficulty="L2", good=1))
+    state.difficulty_locked = True
+    update_difficulty(state)
+    assert state.difficulty == "L2"
+    assert state.consecutive_good == 1  # 连击未动（早退，不累计也不清零）
+
+
+def test_固定难度场次不降档():
+    state = _answered(_state(difficulty="L3", bad=1), 1, 1, 1, 1, 1)
+    state.difficulty_locked = True
+    update_difficulty(state)
+    assert state.difficulty == "L3"

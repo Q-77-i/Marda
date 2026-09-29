@@ -471,3 +471,33 @@ async def test_重连问候_非答题阶段不加(client):
     plain = (await client.get(f"/api/interviews/{interview_id}")).json()
     again = (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()
     assert again["chat_history"] == plain["chat_history"]
+
+
+async def test_创建时选定难度_出题与落库一致(client):
+    """P1-M6 FR-14：难度可固定——固定场次按该档出题，自适应场次仍从 L1 起。
+
+    观察点用「项目深挖题」：它直接取 state.difficulty（题库题会走难度放宽，
+    看不出锁定与否）。落库列存的是**用户的选择**（adaptive/L1/L2/L3）。
+    """
+    async def _ask_difficulty(difficulty: str) -> tuple[str, str]:
+        async with client.stream("POST", "/api/interviews", json={
+            "position": "Agent/AI 工程师", "question_count": 5, "difficulty": difficulty,
+        }) as r:
+            events = await _events(r)
+        interview_id = events[0]["data"]["interview_id"]
+        await _send(client, interview_id, TURNS[0])  # 自我介绍 → 出首题
+        trace = (await client.get(f"/api/interviews/{interview_id}/trace")).json()
+        first_ask = [e for e in trace["events"] if e["type"] == "ask"][0]
+        stored = _db_rows(f"SELECT difficulty FROM interviews WHERE id='{interview_id}'")
+        return first_ask["detail"]["difficulty"], stored[0][0]
+
+    assert await _ask_difficulty("L3") == ("L3", "L3")
+    assert await _ask_difficulty("L2") == ("L2", "L2")
+    assert await _ask_difficulty("adaptive") == ("L1", "adaptive")  # 默认值同款
+
+
+async def test_创建难度非法值422(client):
+    r = await client.post("/api/interviews", json={
+        "position": "Agent/AI 工程师", "question_count": 5, "difficulty": "L9",
+    })
+    assert r.status_code == 422

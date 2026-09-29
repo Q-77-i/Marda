@@ -128,6 +128,11 @@ def create_interview(
     difficulty: str = "L1",
     user_id: str | None = None,
 ) -> None:
+    """`difficulty` 存**创建时选定的难度**（P1-M6 FR-14）："adaptive" 或 L1/L2/L3。
+
+    注意与 state.difficulty 的区别：state 里存的是实际选题难度（自适应会随连击升降），
+    本列是用户的选择、供列表展示；列表页不展示自适应过程中的中间难度。
+    """
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO interviews (id, thread_id, user_id, position, question_count, phase,"

@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from app import db, llm, observability
 from app.config import Settings
 from app.graph.graph import build_graph, make_serde, run_config
+from app.graph.rules.capacity import ADAPTIVE, base_difficulty
 from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
 
@@ -186,11 +187,23 @@ class Service:
             raise InterviewFinishedError(interview_id)
 
     async def start_interview(
-        self, interview_id: str, position: str, question_count: int, user_id: str = ""
+        self,
+        interview_id: str,
+        position: str,
+        question_count: int,
+        user_id: str = "",
+        difficulty: str = ADAPTIVE,
     ) -> AsyncIterator[dict]:
-        """创建场次后立即执行开场（SPEC §7）：首事件 meta 携带 interview_id。"""
+        """创建场次后立即执行开场（SPEC §7）：首事件 meta 携带 interview_id。
+
+        difficulty（P1-M6 FR-14）：adaptive = 从 L1 起自适应升降；L1/L2/L3 = 全场锁定该档。
+        """
         state = InterviewState(
-            interview_id=interview_id, position=position, question_count=question_count
+            interview_id=interview_id,
+            position=position,
+            question_count=question_count,
+            difficulty=base_difficulty(difficulty),
+            difficulty_locked=difficulty != ADAPTIVE,
         )
         config = run_config(interview_id, question_count)
         yield _event("meta", {

@@ -4,8 +4,9 @@
       SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块与难度曲线
 
 流程：起 uvicorn 子进程（8765 端口）→ healthz 就绪 → 注册账号（FR-23）→ 反向验证
-未登录 401 → POST 创建（SSE 开场）→ 循环 POST 消息到 done → GET 报告 + 决策回放
-（FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
+未登录 401 → 题库（P1-M6 FR-12/FR-14：分面 / 浏览分页 / 关键词检索 / 容量校验，
+与直查 SQL 对账）+ 难度锁定场次 → POST 创建（SSE 开场）→ 循环 POST 消息到 done →
+GET 报告 + 决策回放（FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
 
 P1-M4.7-D 人味层（真实链路上才看得出效果，故放在 smoke 而非单测）：
 重连问候（?reconnect=true 重发当前题干）、六类衔接语的连读观感、结束陈词是否踩红线；
@@ -42,6 +43,8 @@ _REAL_DB = Path(__file__).resolve().parents[2] / "data" / "marda.sqlite3"
 with sqlite3.connect(os.environ["DB_PATH"]) as _dst:
     _dst.execute("ATTACH DATABASE ? AS real", (str(_REAL_DB),))
     _dst.execute("CREATE TABLE questions AS SELECT * FROM real.questions")
+    # 题库浏览要挂来源明细（M5 拆表），来源表同样拷快照
+    _dst.execute("CREATE TABLE question_sources AS SELECT * FROM real.question_sources")
     _dst.execute("DETACH DATABASE real")
 
 import httpx
@@ -180,12 +183,125 @@ async def main() -> None:
             print(f"账号 OK：{SMOKE_USER}（id={me['id'][:8]}…）")
             # 反向验证：未登录必须被拦
             async with httpx.AsyncClient(timeout=30) as anon:
-                for path in ("/api/interviews", "/api/auth/me"):
+                for path in ("/api/interviews", "/api/auth/me",
+                             "/api/bank/questions", "/api/bank/facets", "/api/bank/capacity"):
                     assert (await anon.get(f"{BASE}{path}")).status_code == 401, f"{path} 未拦截"
                 assert (await anon.post(
                     f"{BASE}/api/interviews", json={"position": "x", "question_count": 2}
                 )).status_code == 401
-            print("未登录 401 OK（GET 列表 / GET me / POST 创建）")
+            print("未登录 401 OK（面试列表 / me / 创建 / 题库三端点）")
+
+            # ── 题库（P1-M6 FR-12）：分面 / 浏览分页 / 关键词检索 ──────────────
+            # 与直查 SQL 对账：接口写错了这里立刻暴露（题库只读，对账无副作用）
+            facets = (await client.get(f"{BASE}/api/bank/facets")).json()
+            with sqlite3.connect(get_settings().db_path) as conn:
+                enabled = conn.execute(
+                    "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                ).fetchone()[0]
+            assert set(facets) == {"domain", "difficulty", "company", "round"}, facets.keys()
+            assert sum(c["count"] for c in facets["domain"]) == enabled, "分面计数与题库总数不符"
+            # 难度按档位排（有序维度，计数序会把 L2 顶到 L1 前面）；其余三维计数降序
+            assert [c["value"] for c in facets["difficulty"]] == ["L1", "L2", "L3"], \
+                f"难度分面未按档位排：{[c['value'] for c in facets['difficulty']]}"
+            for column, values in facets.items():
+                if column == "difficulty":
+                    continue
+                counts = [c["count"] for c in values]
+                assert counts == sorted(counts, reverse=True), f"{column} 计数未按降序"
+            print(f"分面 OK：{len(facets['domain'])} 域 / {len(facets['company'])} 厂商 / "
+                  f"{len(facets['round'])} 面次（enabled {enabled} 题）")
+
+            params = {"domain": "rag", "difficulty": "L2", "page": 1, "page_size": 5}
+            browse = (await client.get(f"{BASE}/api/bank/questions", params=params)).json()
+            with sqlite3.connect(get_settings().db_path) as conn:
+                expected = conn.execute(
+                    "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                    " AND domain='rag' AND difficulty='L2'"
+                ).fetchone()[0]
+            assert browse["mode"] == "browse" and browse["total"] == expected, \
+                f"浏览总数 {browse['total']} ≠ 直查 {expected}"
+            assert all(i["domain"] == "rag" and i["difficulty"] == "L2" for i in browse["items"])
+            no_url = 0
+            for item in browse["items"]:
+                names = [s["source"] for s in item["sources"]]
+                assert item["source"] in names, f"{item['question_id']} 缺主源明细"
+                assert names[0] == item["source"], f"{item['question_id']} 主源未排首位：{names}"
+                assert all(s["license"] for s in item["sources"]), "来源缺 license（合规红线）"
+                no_url += sum(1 for s in item["sources"] if not s["url"])
+            second = (await client.get(
+                f"{BASE}/api/bank/questions", params={**params, "page": 2}
+            )).json()
+            page1 = {i["question_id"] for i in browse["items"]}
+            page2 = {i["question_id"] for i in second["items"]}
+            assert not (page1 & page2), f"分页重复（排序不稳定）：{page1 & page2}"
+            assert len(page1 | page2) == min(expected, 10), "两页合计条数对不上"
+            print(f"浏览 OK：rag/L2 共 {expected} 题，前 5 条主源排首位、license 齐"
+                  f"（其中 {no_url} 条无 url = 个人题库本地语料）；第 1/2 页无重叠")
+
+            search = (await client.get(
+                f"{BASE}/api/bank/questions", params={"q": "RAG 切片策略怎么选"}
+            )).json()
+            assert search["mode"] == "search" and search["total"] is None
+            assert search["items"], "关键词检索无结果（Qdrant/重排链路未就绪？）"
+            print(f"关键词检索 OK：混合检索 top {len(search['items'])} 条，"
+                  f"首条「{search['items'][0]['question'][:28]}…」"
+                  f"[{search['items'][0]['domain']}/{search['items'][0]['difficulty']}]")
+
+            # ── 容量校验（P1-M6 FR-14）：难度 × 题数的直供能力 ──────────────
+            capacity = (await client.get(
+                f"{BASE}/api/bank/capacity", params={"counts": "5,10,15"}
+            )).json()["options"]
+            assert len(capacity) == 12, f"4 难度 × 3 题数 应 12 项：{len(capacity)}"
+            verdict = {(o["difficulty"], o["question_count"]): o for o in capacity}
+            for option in capacity:
+                assert option["ok"] is (not option["shortfalls"]), "ok 与不足明细不一致"
+                assert option["base"] == ("L1" if option["difficulty"] == "adaptive"
+                                          else option["difficulty"])
+                if option["ok"]:
+                    continue
+                with sqlite3.connect(get_settings().db_path) as conn:  # 不足明细逐条复核
+                    for s in option["shortfalls"]:
+                        have = conn.execute(
+                            "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                            " AND difficulty=? AND domain=?", (option["base"], s["domain"])
+                        ).fetchone()[0]
+                        assert s["available"] == have, \
+                            f"{s['domain']} 供给 {s['available']} ≠ 直查 {have}"
+                        assert have < s["required"], f"{s['domain']} 并未短缺（直查 {have}）"
+            for count in (5, 10, 15):  # 自适应 = 从 L1 起步，直供能力应与 L1 同款
+                assert verdict[("adaptive", count)]["ok"] == verdict[("L1", count)]["ok"]
+            blocked = [o for o in capacity if not o["ok"]]
+            print(f"容量校验 OK：12 项中 {len(blocked)} 项直供不足 —— " + (
+                "；".join(
+                    f"{o['difficulty']} × {o['question_count']} 题（"
+                    + "、".join(f"{domain_label(s['domain'])} 需 {s['required']} 有 {s['available']}"
+                                for s in o["shortfalls"]) + "）"
+                    for o in blocked
+                ) if blocked else "真实题库每档都能直供"))
+            if not blocked:  # 数据变化不该让 smoke 变红，但要知道禁用态在真库上没被验到
+                print("  ⚠ 真库当前无直供不足组合——禁用态（FR-14 前端）的真数据验收要靠 M9 难度补样")
+
+            # ── 难度锁定（P1-M6 FR-14）：固定 L3 的场次首题必须是 L3 ────────
+            async with client.stream(
+                "POST", f"{BASE}/api/interviews",
+                json={"position": "Agent/AI 工程师", "question_count": 5, "difficulty": "L3"},
+            ) as r:
+                assert r.status_code == 200, f"L3 场次创建失败: {r.status_code}"
+                locked_events = await _events(r)
+            locked_id = locked_events[0][1]["interview_id"]
+            async with client.stream(
+                "POST", f"{BASE}/api/interviews/{locked_id}/messages",
+                json={"content": CANDIDATE_ANSWERS[0]},
+            ) as r:
+                assert r.status_code == 200, f"L3 场次作答失败: {r.status_code}"
+                await _events(r)
+            trace_locked = (await client.get(f"{BASE}/api/interviews/{locked_id}/trace")).json()
+            first_ask = next(e for e in trace_locked["events"] if e["type"] == "ask")
+            stored = db.get_interview(get_settings().db_path, locked_id)["difficulty"]
+            assert (first_ask["detail"]["difficulty"], stored) == ("L3", "L3"), \
+                f"难度未锁定：首题 {first_ask['detail']['difficulty']}、落库 {stored}"
+            print(f"难度锁定 OK：L3 场次首题 "
+                  f"[{domain_label(first_ask['detail']['domain'])}/L3]，落库 difficulty=L3\n")
 
             # 创建面试（SSE 开场）
             async with client.stream(

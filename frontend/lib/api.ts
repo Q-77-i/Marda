@@ -161,12 +161,13 @@ export function dispatcher(handlers: SSEHandlers): (event: SSEEvent) => void {
 export async function createInterview(
   position: string,
   questionCount: number,
+  difficulty: string,
   onEvent: (event: SSEEvent) => void,
 ): Promise<string> {
   let interviewId = "";
   await postSSE(
     "/api/interviews",
-    { position, question_count: questionCount },
+    { position, question_count: questionCount, difficulty },
     (event) => {
       if (!interviewId && event.event === "meta") {
         interviewId = JSON.parse(event.data).interview_id ?? "";
@@ -225,4 +226,68 @@ export async function deleteInterview(interviewId: string): Promise<void> {
     method: "DELETE",
   });
   if (!response.ok) throw new Error(await responseError(response));
+}
+
+// ---- 题库（FR-12 浏览搜索 / FR-14 容量校验，P1-M6）----
+
+export type BankSource = {
+  source: string;
+  license: string | null;
+  url: string | null;
+  source_detail: string | null;
+};
+
+export type BankQuestion = {
+  question_id: string;
+  question: string;
+  answer: string;
+  key_points: string[];
+  follow_ups: string[];
+  domain: string;
+  topic: string;
+  difficulty: string;
+  company: string | null;
+  round: string | null;
+  source: string | null;
+  /** 来源明细，主源首位（合规四要素，M5 拆表） */
+  sources: BankSource[];
+};
+
+export type BankListResponse = {
+  /** browse = 筛选浏览（可翻页，total 有值）；search = 关键词混合检索（单页，total 为 null） */
+  mode: "browse" | "search";
+  total: number | null;
+  page: number;
+  page_size: number;
+  items: BankQuestion[];
+};
+
+export type FacetValue = { value: string; count: number };
+export type BankFacets = {
+  domain: FacetValue[];
+  difficulty: FacetValue[];
+  company: FacetValue[];
+  round: FacetValue[];
+};
+
+export type CapacityOption = {
+  difficulty: string;
+  /** 实际校验用的难度（adaptive → L1 起点） */
+  base: string;
+  question_count: number;
+  ok: boolean;
+  shortfalls: { domain: string; required: number; available: number }[];
+};
+
+export function getBankQuestions(params: URLSearchParams): Promise<BankListResponse> {
+  return getJSON<BankListResponse>(`/api/bank/questions?${params.toString()}`);
+}
+
+export function getBankFacets(): Promise<BankFacets> {
+  return getJSON<BankFacets>("/api/bank/facets");
+}
+
+/** 容量校验（FR-14）：只回被问到的题数配置。 */
+export function getBankCapacity(counts: number[]): Promise<{ options: CapacityOption[] }> {
+  return getJSON(`/api/bank/capacity?counts=${counts.join(",")}`);
 }

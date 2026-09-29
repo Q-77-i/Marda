@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -31,6 +32,8 @@ class CreateRequest(BaseModel):
     position: str = Field(min_length=1, max_length=100)
     # 轮次语义（T7a-R1）：全场问答轮次，≥2（1 轮 = 0 技术 + 1 场景无意义）
     question_count: int = Field(default=10, ge=2, le=20)
+    # 难度（P1-M6 FR-14）：adaptive=自适应（默认，从 L1 起升降）；L1/L2/L3=全场锁定该档
+    difficulty: Literal["adaptive", "L1", "L2", "L3"] = "adaptive"
 
 
 class MessageRequest(BaseModel):
@@ -49,10 +52,14 @@ async def create_interview(
         interview_id=interview_id,
         position=req.position,
         question_count=req.question_count,
+        difficulty=req.difficulty,
         user_id=user["id"],
     )
     return EventSourceResponse(
-        service.start_interview(interview_id, req.position, req.question_count, user_id=user["id"]),
+        service.start_interview(
+            interview_id, req.position, req.question_count, user_id=user["id"],
+            difficulty=req.difficulty,
+        ),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),

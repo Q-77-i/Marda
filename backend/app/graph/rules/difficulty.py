@@ -22,7 +22,13 @@ def _shift(difficulty: str, delta: int) -> str:
 
 
 def update_difficulty(state: InterviewState) -> None:
-    """按当前题评分更新难度与连击计数（原地，无返回值）。"""
+    """按当前题评分更新难度与连击计数（原地，无返回值）。
+
+    固定难度场次（P1-M6 FR-14：创建时选了 L1/L2/L3）直接返回——难度由用户指定，
+    连击不累计（累计了也无处可用：唯一消费者是升降档）。
+    """
+    if state.difficulty_locked:
+        return
     score = state.current_question.score if state.current_question else None
     if score is None:
         return
