@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import json
 import re
 from collections import Counter
+from pathlib import Path
 from typing import Final
 
 from app.domain import DOMAIN_LABELS, ENABLED_DOMAINS
@@ -232,3 +234,45 @@ def print_stats(questions: list[dict]) -> None:
     )
     rate = complete / len(enabled) * 100 if enabled else 0.0
     print(f"\nenabled {len(enabled)} 题，必填字段完整率：{rate:.1f}%")
+
+
+# ---- 人工改判表（逐题修正归域/状态）----
+# 场景：题干问的是「候选人自己的项目」，但 key_points 是「怎么讲」（三段式/埋钩子），
+# 这类题落在技术域里既占技术题配额、又把叙事漏点灌进学习推荐的检索查询（见 CLAUDE.md Changelog M9）。
+
+
+def load_overrides(path: Path) -> dict[str, dict]:
+    """读人工改判表 `{question_id: {domain?, status?, reason}}`；文件不存在 = 无改判。
+
+    每条必须带 `reason`——没有理由的改判，三个月后没人敢删。
+    """
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    overrides: dict[str, dict] = {}
+    for item in payload.get("overrides", []):
+        if not item.get("reason"):
+            raise ValueError(f"改判条目缺 reason：{item.get('question_id')}")
+        overrides[item["question_id"]] = item
+    return overrides
+
+
+def apply_overrides(questions: list[dict], overrides: dict[str, dict]) -> list[str]:
+    """按 question_id 改判题目，返回**未命中的条目 id**（不静默）。
+
+    只负责两件事：换域（换到未启用域时 status 自动转 draft，见 finalize_status）与直接置 draft。
+    question_id 是题干的内容哈希，**题干改一个字条目就失效**——未命中必须报出来，
+    否则题库会悄悄长回原样。
+    """
+    unmatched = set(overrides)
+    for question in questions:
+        override = overrides.get(question["question_id"])
+        if override is None:
+            continue
+        unmatched.discard(question["question_id"])
+        if override.get("domain"):
+            question["domain"] = override["domain"]
+            finalize_status(question)  # 换域后 status 跟着重算
+        if override.get("status"):
+            question["status"] = override["status"]  # 显式置位优先于域推导
+    return sorted(unmatched)

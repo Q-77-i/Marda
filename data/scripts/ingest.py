@@ -8,7 +8,10 @@
   布局与 embedding 服务见 backend/embedding_service/
 - 只入 status=enabled 的题；draft 题只进 SQLite，不进向量库
 
-用法：docker compose up -d embedding && python data/scripts/ingest.py [--dry-run]
+用法：docker compose up -d embedding && python data/scripts/ingest.py [--dry-run] [--force]
+
+**护栏**：公共题是全量同步（DELETE NOT IN），指错输入文件会整批删题且看起来「跑得挺正常」——
+故入库题量与库内相差 >50% 时直接停，确认无误用 --force 越过。
 """
 
 from __future__ import annotations
@@ -36,7 +39,10 @@ from app.config import get_settings
 from app.tools.embedding import EmbeddingClient, question_doc_text, to_sparse_vector
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_IN = REPO_ROOT / "data" / "parsed" / "questions_enriched.json"
+# 默认输入 = **合并后**的富化产物（个人题库 + 四源开源语料）。别指回 questions_enriched.json：
+# 那是个人题库单源的中间产物（342 题），在全量同步语义下裸跑一次会删掉整批开源题。
+DEFAULT_IN = REPO_ROOT / "data" / "parsed" / "questions_combined_enriched.json"
+SCALE_GUARD_RATIO = 0.5  # 入库题量与库内相差超过五成 → 多半是指错了输入文件
 COLLECTION = "questions"
 DENSE = "dense"
 SPARSE = "sparse"
@@ -130,6 +136,42 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for column in ("license", "url"):
         if column in columns:
             conn.execute(f"ALTER TABLE questions DROP COLUMN {column}")
+
+
+def existing_public_count(db_path: Path) -> int:
+    """库内现有公共题数；库或表还不存在 → 0（首次入库不设护栏）。"""
+    if not db_path.exists():
+        return 0
+    with sqlite3.connect(db_path) as conn:
+        try:
+            tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "questions" not in tables:
+                return 0
+            return conn.execute(
+                "SELECT COUNT(*) FROM questions WHERE user_id IS NULL"
+            ).fetchone()[0]
+        except sqlite3.OperationalError:  # 拆表前的老库没有 user_id 列
+            return 0
+
+
+def check_scale_guard(incoming: int, existing: int, *, force: bool = False) -> None:
+    """入库护栏：题量与库内相差 > 50% 直接停（`--force` 越过），首次入库不拦。
+
+    为什么需要它：公共题是全量同步语义（`DELETE ... WHERE id NOT IN (管道 ids)`），
+    **指错一个输入文件就会把库内多出的题整批删掉**，而表现只是「跑完了，输出还挺正常」——
+    2026-09-30 实测差点踩到：`DEFAULT_IN` 曾指向个人题库单源的旧产物（342 题），
+    裸跑一次会删掉库内 1229 道开源题。
+    """
+    if force or existing == 0:
+        return
+    delta = abs(incoming - existing) / existing
+    if delta > SCALE_GUARD_RATIO:
+        raise SystemExit(
+            f"入库护栏：输入 {incoming} 题，库内现有 {existing} 题（相差 {delta:.0%}，"
+            f"超过 {SCALE_GUARD_RATIO:.0%}）。\n"
+            f"公共题是全量同步——继续会把库内多出的题删掉。确认无误加 --force；"
+            f"否则检查 --in 是不是指错了文件（默认应为合并后的 questions_combined_enriched.json）。"
+        )
 
 
 def write_sqlite(questions: list[dict], db_path: Path) -> None:
@@ -252,6 +294,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="题目 JSON → SQLite + Qdrant")
     parser.add_argument("--in", dest="in_path", type=Path, default=DEFAULT_IN)
     parser.add_argument("--dry-run", action="store_true", help="只写 SQLite，不调嵌入、不写 Qdrant")
+    parser.add_argument("--force", action="store_true", help="越过入库护栏（题量相差 >50% 时确属预期）")
     args = parser.parse_args()
 
     settings = get_settings()
@@ -268,6 +311,7 @@ def main() -> None:
         )
 
     print(f"读入 {len(questions)} 题，其中 enabled {len(enabled)} 题待入库")
+    check_scale_guard(len(questions), existing_public_count(settings.db_path), force=args.force)
 
     write_sqlite(questions, settings.db_path)
     with sqlite3.connect(settings.db_path) as conn:

@@ -21,7 +21,9 @@ from pathlib import Path
 import bootstrap  # noqa: F401  # 把 backend/ 加进 sys.path
 from bank import (
     SOURCE_PERSONAL,
+    apply_overrides,
     find_duplicates,
+    load_overrides,
     merge_exact_duplicates,
     print_stats,
 )
@@ -30,6 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PERSONAL = REPO_ROOT / "data" / "parsed" / "questions_enriched.json"
 DEFAULT_OPEN = REPO_ROOT / "data" / "parsed" / "questions_open.json"
 DEFAULT_OUT = REPO_ROOT / "data" / "parsed" / "questions_combined.json"
+DEFAULT_OVERRIDES = REPO_ROOT / "data" / "curation" / "question_overrides.json"
 
 # 个人题库除 sources 外必须逐字不变的字段：动了任何一个都是回归
 FROZEN_FIELDS = (
@@ -114,6 +117,7 @@ def main() -> None:
     parser.add_argument("--personal", type=Path, default=DEFAULT_PERSONAL)
     parser.add_argument("--open", dest="open_path", type=Path, default=DEFAULT_OPEN)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--overrides", type=Path, default=DEFAULT_OVERRIDES)
     args = parser.parse_args()
 
     personal = load(args.personal)
@@ -138,6 +142,15 @@ def main() -> None:
 
     print_stats(questions)
     report_duplicates(questions)
+
+    # 人工改判表：放在零回归校验**之后**——改判就是要动 domain/status，不是回归
+    overrides = load_overrides(args.overrides)
+    unmatched = apply_overrides(questions, overrides)
+    print(f"\n人工改判：应用 {len(overrides) - len(unmatched)} / {len(overrides)} 条（{args.overrides.name}）")
+    if unmatched:
+        print(f"  ⚠ 未命中 {len(unmatched)} 条——题干一改 question_id 就变，条目已失效：")
+        for qid in unmatched:
+            print(f"    {qid}（原意：{overrides[qid].get('question', '')[:32]}…）")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     payload = {

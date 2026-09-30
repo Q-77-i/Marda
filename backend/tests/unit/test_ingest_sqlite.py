@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 
 import ingest
+import pytest
 
 # 阶段 1 单源 schema（拆表前）：来源四要素平铺在 questions 上
 OLD_DDL = """
@@ -224,3 +225,42 @@ def test_迁移补user_id列(tmp_path):
             " user_id) VALUES ('p_x', '题？', '答案。', 'rag', '主题', 'L1', 'u1')"
         )
     assert rows(db, "SELECT user_id FROM questions") == [("u1",)]
+
+
+# ---- 入库护栏（2026-09-30：默认输入曾指向单源产物，裸跑会删光开源题）----
+
+
+def test_护栏_量级正常放行():
+    ingest.check_scale_guard(1571, 1571)  # 不抛异常即通过
+    ingest.check_scale_guard(1000, 1200)  # 差 17%，在阈值内
+
+
+def test_护栏_缩水过半直接停():
+    with pytest.raises(SystemExit, match="入库护栏"):
+        ingest.check_scale_guard(342, 1571)  # 差 78%——指错文件了
+
+
+def test_护栏_暴涨同样拦():
+    """幂等入库不该出现题量翻倍：多半是拿旧产物覆盖新产物。"""
+    with pytest.raises(SystemExit, match="入库护栏"):
+        ingest.check_scale_guard(3000, 1571)
+
+
+def test_护栏_force越过():
+    ingest.check_scale_guard(342, 1571, force=True)
+
+
+def test_护栏_首次入库不拦(tmp_path):
+    assert ingest.existing_public_count(tmp_path / "nope.sqlite3") == 0
+    ingest.check_scale_guard(342, 0)
+
+
+def test_现有公共题数_排除私有题(tmp_path):
+    """护栏比的是公共题：私有题由 app 层写入、不在管道 JSON 里，算进去会误报缩水。"""
+    db = tmp_path / "marda.sqlite3"
+    ingest.write_sqlite([question(), question(question_id="q_bbb")], db)
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO questions (id, question, answer, domain, topic, difficulty,"
+                     " user_id) VALUES ('p_x', '私有题', '答', 'rag', 't', 'L1', 'u1')")
+
+    assert ingest.existing_public_count(db) == 2

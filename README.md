@@ -90,12 +90,21 @@ backend/.venv/bin/python data/scripts/parse_open.py     # 四源开源语料 →
 backend/.venv/bin/python data/scripts/combine.py        # 个人题库 + 开源语料合并（自带零回归校验）
 backend/.venv/bin/python data/scripts/enrich.py         # LLM 补 key_points / follow_ups（可断点续跑）
 backend/.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant 双写（重嵌 dense+sparse，需 embedding 在跑）
+# 入库护栏：题量与库内相差 >50% 直接停（公共题是全量同步语义，指错文件会整批删题；--force 越过）
+
+# 只改判十来道题（归域/上下架）时不必重跑全链：改判表 → 已落库的库
+backend/.venv/bin/python data/scripts/apply_overrides.py [--dry-run]
 ```
+
+**人工改判表**（`data/curation/question_overrides.json`）：逐题修正 `domain`/`status`，`combine.py` 每次运行都会应用。
+用于个别题目归错域的场合（如 P1-M9 把「请介绍你的 Agent 项目」这类**项目叙事题**从技术域摘进行为面——它们
+占技术题配额，还会把叙事漏点灌进学习推荐的检索查询）。key 是 `question_id`，即**题干的内容哈希**——题干改一个字
+条目就失效，所以每次运行都会把未命中的条目标出来；已落库的库用 `apply_overrides.py` 补齐（幂等，不动其余题）。
 
 `bank.py` 是三个解析脚本的共享层（`question_id` 生成、主源裁决、同题合并、来源四要素、状态判定），单测直接打在它上面。
 解析口径与四源形态见 [docs/SPEC.md](docs/SPEC.md) §6.5/§6.6。
 
-**语料规模**：个人题库 342 题 + 四源开源语料 1229 题 = 1571 题（enabled 1095）。
+**语料规模**：个人题库 342 题 + 四源开源语料 1229 题 = 1571 题（enabled 1085——10 道项目叙事题已按改判表转入行为面 draft，见上）。
 开源语料以 **Agent 岗方向**为主（agent-architecture / engineering-observability / rag），
 LLM 模型层理论的页落在未启用的 `cs-fundamentals` 域、以 draft 只进 SQLite（域启用时零重采成本）。
 
@@ -118,7 +127,7 @@ LLM 模型层理论的页落在未启用的 `cs-fundamentals` 域、以 draft �
 - **决策回放（FR-21）**：每个节点把「输入 / 决策 / 原因 / 状态变化」追加进 state 的 `trace_log`，`GET /interviews/{id}/trace` 一次取回整场事件流——为什么追问（答错澄清 / 覆盖率低补遗漏 / 达标深挖）、为什么换题（全场补救额度用尽 / 漏点均已追问 / 单题上限）、难度何时变档，逐轮可查。决策与原因**同源**（`explain_decision` 是唯一实现），回放里的原因不是旁白，是当时真正生效的那一条
 
 ```bash
-uv run pytest -q                                    # 后端 428 个测试
+uv run pytest -q                                    # 后端 440 个测试
 uv run python scripts/smoke_graph.py                # 真实 DeepSeek + Qdrant 跑一场短面试
 ```
 
@@ -184,7 +193,7 @@ pnpm lint && pnpm build
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）；**P1-M5 会话 2 已完成**（开源语料扩充：WenQu 登记表定位的四源 MIT 语料接入，342 → 1571 题 / enabled 1095，Qdrant 重建 1095 点，smoke_graph + smoke_api 零回归）；**P1-M6 已完成**（题库页 + 容量校验：`/api/bank/*` 三端点与 `/bank` 页、创建时可选难度（固定档位全程不升降）、题量按题库直供能力禁用并写明缺在哪；真库上唯一不可选的组合是 L3 × 15 题）；**P1-M7 已完成**（私有题库：模板 md/PDF 上传与确定性解析、部分成功语义、混入式出题（私有题与公共题同池随机、不进向量库）、`/bank/private` 管理与归档）；**P1-M8 已完成**（报告导出 PDF：服务端渲染真文本 PDF，雷达图为后端手绘 SVG，pypdf 读回断言「中文无乱码」）；**P1-M9 已完成**（学习推荐：报告短板域 → 漏点关键词驱动混合检索 → 资料卡（题干/答案/来源四要素），报告页与 `/learn` 双展示，本场已问过的不重复推荐）。后续 M10–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1）进行中：**P1-M1 面试复盘与回放已完成**（逐题复盘卡 / 只读回放 / 报告走 v4-pro）；**P1-M2 账号体系已完成**（后端 JWT 鉴权 + 多用户隔离，前端登录注册页 + 路由守卫 + 401 处置）；**P1-M3 混合检索与 rerank 已完成**（本地 BGE-M3 双向量 + Qdrant RRF + SiliconFlow rerank：hybrid_search 三路链路与六大域相关性抽查通过，M6 题库搜索时对用户可见）；**P1-M4 已完成**（会话 1：决策回放事件流 + `/trace` 接口 + Langfuse 接入；会话 2：前端 `/trace/[id]` 逐轮回放页与报告页入口）；**P1-M4.5 已完成**（出题接上下文 + 深挖追问 + R1 追问密度修复）；**P1-M4.6 已完成**（阶段重排：项目深挖前置 + `project_count` 公式 + 标签统一）；**P1-M4.7 已完成**（面试官人味层：六类衔接语 + 结束陈词红线 + 技术题同域成块）；**M4 整体收官**（含流内 `error` 事件的重试出口小修，浏览器手点一次完整面试验收通过）；**P1-M5 会话 1 已完成**（`question_sources` 拆表：一题多源 provenance 落地 + 老库迁移，342 题全字段零回归）；**P1-M5 会话 2 已完成**（开源语料扩充：WenQu 登记表定位的四源 MIT 语料接入，342 → 1571 题 / enabled 1095，Qdrant 重建 1095 点，smoke_graph + smoke_api 零回归）；**P1-M6 已完成**（题库页 + 容量校验：`/api/bank/*` 三端点与 `/bank` 页、创建时可选难度（固定档位全程不升降）、题量按题库直供能力禁用并写明缺在哪；真库上唯一不可选的组合是 L3 × 15 题）；**P1-M7 已完成**（私有题库：模板 md/PDF 上传与确定性解析、部分成功语义、混入式出题（私有题与公共题同池随机、不进向量库）、`/bank/private` 管理与归档）；**P1-M8 已完成**（报告导出 PDF：服务端渲染真文本 PDF，雷达图为后端手绘 SVG，pypdf 读回断言「中文无乱码」）；**P1-M9 已完成**（学习推荐：报告短板域 → 漏点关键词驱动混合检索 → 资料卡（题干/答案/来源四要素），报告页与 `/learn` 双展示，本场已问过的不重复推荐；两场实测暴露「项目叙事题混在技术域」会污染推荐查询 → 已建**人工改判表**把 10 道这类题摘出技术域）。后续 M10–M12 见 [docs/PRD.md](docs/PRD.md) §8.1。
 
 ## 文档
 

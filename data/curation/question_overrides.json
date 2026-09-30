@@ -1,0 +1,65 @@
+{
+  "_说明": "人工改判表：逐题修正归域/状态。管线每次运行都会应用（combine 内联，已落库的库用 data/scripts/apply_overrides.py 补齐，两者同源）。key = question_id，是**题干的内容哈希**——题干改一个字 key 就失效，未命中的条目会在运行报告里列出来，不静默。每条必须写 reason。",
+  "overrides": [
+    {
+      "question_id": "q_acd842ef08fa",
+      "question": "介绍一下你的 Agent 项目：为什么做？能解决什么问题？有什么收益？",
+      "domain": "behavioral",
+      "reason": "项目叙事题：key_points 是「三段式回答：痛点→方案→收益」这类讲述结构，不是知识点"
+    },
+    {
+      "question_id": "q_2cdd0a72529d",
+      "question": "请介绍一下你做过的 Agent 项目，重点说清楚 Agent 的完整链路是怎么跑起来的。",
+      "domain": "behavioral",
+      "reason": "项目叙事题：问的是候选人自己的项目，技术域只放「不依赖自述经历即可作答」的题"
+    },
+    {
+      "question_id": "q_40bd2e5900a5",
+      "question": "请介绍你的 Agent 项目，说明架构设计和你的具体贡献。",
+      "domain": "behavioral",
+      "reason": "项目叙事题：key_points 含「主动埋钩子引导面试官追问」这类面试技巧，不是知识点"
+    },
+    {
+      "question_id": "q_22fc2608d113",
+      "question": "请介绍一下你的 Agent 项目，包括整体架构和你负责的部分。",
+      "domain": "behavioral",
+      "reason": "项目叙事题：key_points 是「五段式讲述」结构（实测该题被推荐给刚被问过它的候选人）"
+    },
+    {
+      "question_id": "q_b375a5d9b302",
+      "question": "请介绍一个你做得最深入的 Agent 项目：业务背景、你的角色、技术选型、最终效果。",
+      "domain": "behavioral",
+      "reason": "项目叙事题：漏点是「角色要讲独立负责的模块，避免用『我们』」这类叙事建议，实测污染学习推荐查询"
+    },
+    {
+      "question_id": "q_a91a411f0db1",
+      "question": "你的 Agent 项目中最难的技术决策是什么？当时怎么权衡、事后看是否正确？",
+      "domain": "behavioral",
+      "reason": "项目叙事题：key_points 是讲述要求（说清问题为何无标准答案 / 列出候选方案…），不是知识点"
+    },
+    {
+      "question_id": "q_0adbfc491454",
+      "question": "你的 Agent 系统在线上遇到过最严重的问题是什么？怎么解决的？",
+      "domain": "behavioral",
+      "reason": "项目叙事题：key_points 是选材与讲述结构（现象→定位→根因→修复→沉淀），不是排查方法本身"
+    },
+    {
+      "question_id": "q_812c521f3125",
+      "question": "这套 Agent+RAG 系统上线后的性能表现如何？解决了哪些业务问题？你们是如何评估效果的？",
+      "domain": "behavioral",
+      "reason": "项目叙事题：题干预设候选人自有上线系统；评估指标框架已有独立知识题承载"
+    },
+    {
+      "question_id": "q_0d352a3968a7",
+      "question": "这套架构对我自己做 Agent 有什么借鉴？",
+      "status": "draft",
+      "reason": "追问残片：源站里是紧跟前文的追问，「这套架构」脱离上下文指代不明，不是独立题"
+    },
+    {
+      "question_id": "q_26fb2441566f",
+      "question": "这套扩展体系对自研 Agent 的启发？",
+      "status": "draft",
+      "reason": "追问残片：同上一类，脱离上文不成立"
+    }
+  ]
+}
