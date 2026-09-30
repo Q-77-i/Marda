@@ -211,6 +211,50 @@ export function getReport(interviewId: string): Promise<ReportResponse> {
   return getJSON<ReportResponse>(`/api/interviews/${interviewId}/report`);
 }
 
+// ---- 学习推荐（FR-20，P1-M9）----
+
+/**
+ * 推荐资料卡（一张题库题卡）：短板域里检索到的新题，附答案全文与来源明细。
+ *
+ * 本场已问过的题不会出现在这里（复盘卡已给过它们的参考答案），故卡片一定"没见过"。
+ */
+export type RecommendCard = {
+  question_id: string;
+  question: string;
+  answer: string;
+  key_points: string[];
+  domain: string;
+  topic: string;
+  difficulty: string;
+  company: string | null;
+  round: string | null;
+  /** 来源明细，主源首位（同题库页） */
+  sources: BankSource[];
+};
+
+/**
+ * 一个短板域的分组。`status` 由后端判定（空分组不静默隐藏，前端按它给文案）：
+ * `ok` 有卡片；`exhausted` 该域题目已全部练过；`empty` 该域题库暂无题。
+ */
+export type RecommendationGroup = {
+  domain: string;
+  /** 报告里的学习建议（同一批 LLM 文案，不重复调用）；缺省为 null */
+  advice: string | null;
+  status: "ok" | "exhausted" | "empty";
+  cards: RecommendCard[];
+};
+
+export type RecommendationsResponse = {
+  interview_id: string;
+  position: string;
+  groups: RecommendationGroup[];
+};
+
+/** 学习推荐（FR-20）：读该场报告的短板域现检索，未结束/无报告 404。 */
+export function getRecommendations(interviewId: string): Promise<RecommendationsResponse> {
+  return getJSON<RecommendationsResponse>(`/api/interviews/${interviewId}/recommendations`);
+}
+
 /** 报告导出 PDF（FR-18）：二进制响应，不能走 getJSON（它按 JSON 解析）。 */
 export async function exportReportPdf(interviewId: string): Promise<Blob> {
   const response = await authorizedFetch(`/api/interviews/${interviewId}/report.pdf`);

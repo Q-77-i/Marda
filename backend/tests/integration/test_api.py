@@ -21,6 +21,8 @@ from pypdf import PdfReader
 from app import db, llm
 from app.config import get_settings
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
+from app.tools import hybrid_search, recommend
+from bank_fixture import create_tables, insert_sources
 from fake_llm import DEFAULT_CLOSING, FakeLLMClient
 
 # 一场 2 轮面试的完整轮次（轮次语义：2 轮 = 1 项目深挖 + 1 技术；
@@ -334,6 +336,121 @@ async def test_导出他人场次报告PDF404(login_as):
 
     assert (await alice.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 200
     assert (await bob.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 404
+
+
+# ---- 学习推荐（FR-20，P1-M9）----
+
+
+def _hit(qid: str, domain: str) -> dict:
+    return {
+        "question_id": qid, "question": f"{qid} 题干", "answer": "答案",
+        "key_points": ["k"], "domain": domain, "source": "个人题库",
+    }
+
+
+@pytest.fixture
+def install_hybrid(monkeypatch):
+    """推荐检索的 fake（真实嵌入 + RRF + rerank 链路由 smoke_api 验）。
+
+    推荐卡片要挂来源明细，而 `question_sources` 由语料管道建表（不在 app.db.ensure_schema），
+    故按管道 DDL 先把题库两表建好——tmp 库与真实库的差别就只剩「有没有数据」。
+    """
+
+    def _install(hits: dict[str, list[dict]]):
+        calls: list[dict] = []
+
+        async def _search(query, *, k=5, filters=None, db_path=None):
+            domain = (filters or {}).get("domain")
+            calls.append({"query": query, "k": k, "domain": domain})
+            return [dict(row) for row in hits.get(domain, [])][:k]
+
+        monkeypatch.setattr(hybrid_search, "hybrid_search", _search)
+        return calls
+
+    create_tables(get_settings().db_path)
+    return _install
+
+
+async def _finish(client) -> str:
+    interview_id, _ = await _create(client)
+    for turn in TURNS:
+        await _send(client, interview_id, turn)
+    return interview_id
+
+
+async def test_学习推荐_按短板域给卡片并排除本场已问题(client, install_hybrid):
+    interview_id = await _finish(client)
+    report = (await client.get(f"/api/interviews/{interview_id}/report")).json()["report"]
+    asked = [c["question_id"] for c in report["per_question_comments"] if c["question_id"]]
+    domain = report["weaknesses"][0]
+
+    # 假命中里故意混入本场问过的题：它必须被过滤掉，且检索条数按「k + 已问数」放宽
+    calls = install_hybrid({domain: [_hit(q, domain) for q in [*asked, "q_new1", "q_new2", "q_new3"]]})
+    # 来源明细：一题两源，主源（questions.source）必须排首位（合规四要素进卡片，FR-20 资料卡）
+    insert_sources(get_settings().db_path, [
+        ("q_new1", "个人题库", "personal", None, None, "enabled"),
+        ("q_new1", "ai-agents-from-zero", "MIT", "https://example.com/x", "第 3 章", "enabled"),
+    ])
+
+    r = await client.get(f"/api/interviews/{interview_id}/recommendations")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["interview_id"] == interview_id
+    assert body["position"] == "Agent/AI 工程师"
+    assert [g["domain"] for g in body["groups"]] == report["weaknesses"]
+    group = body["groups"][0]
+    assert group["status"] == "ok"
+    assert [c["question_id"] for c in group["cards"]] == ["q_new1", "q_new2", "q_new3"]
+    assert all(c["domain"] == domain for c in group["cards"])
+    # 资料卡的来源明细（合规四要素 + 主源排首位）；无来源的题给空列表，前端按空处理
+    assert [c["question_id"] for c in group["cards"] if c["sources"]] == ["q_new1"]
+    assert [s["source"] for s in group["cards"][0]["sources"]] == ["个人题库", "ai-agents-from-zero"]
+    assert group["cards"][0]["sources"][1]["url"] == "https://example.com/x"
+    assert group["cards"][1]["sources"] == []
+    # 查询文本 = 域名 + 该域漏点（本场全答对 → 回退域名标签）；条数 = k + 已问数
+    assert calls[0]["k"] == recommend.RECOMMEND_K + len(asked)
+    assert calls[0]["domain"] == domain and calls[0]["query"]
+
+
+async def test_学习推荐_该域题目全练过时给提示态(client, install_hybrid):
+    """空分组不静默隐藏：命中非空但全被过滤 = 已练过，与「该域没题」区分开。"""
+    interview_id = await _finish(client)
+    report = (await client.get(f"/api/interviews/{interview_id}/report")).json()["report"]
+    asked = [c["question_id"] for c in report["per_question_comments"] if c["question_id"]]
+    domain = report["weaknesses"][0]
+    install_hybrid({domain: [_hit(q, domain) for q in asked]})
+
+    r = await client.get(f"/api/interviews/{interview_id}/recommendations")
+
+    group = r.json()["groups"][0]
+    assert group["status"] == "exhausted"
+    assert group["cards"] == []
+
+
+async def test_学习推荐_该域无题时给空态(client, install_hybrid):
+    interview_id = await _finish(client)
+    install_hybrid({})  # 任何域都检索不到
+
+    r = await client.get(f"/api/interviews/{interview_id}/recommendations")
+
+    assert r.json()["groups"][0]["status"] == "empty"
+
+
+async def test_学习推荐_未结束与不存在404(client):
+    interview_id, _ = await _create(client)
+    assert (await client.get(f"/api/interviews/{interview_id}/recommendations")).status_code == 404
+    assert (await client.get("/api/interviews/nope/recommendations")).status_code == 404
+
+
+async def test_学习推荐_越权404(login_as):
+    """越权与不存在同为 404（不泄露场次存在性）——沿用报告端点的归属校验。"""
+    alice = await login_as("alice", "secret123")
+    bob = await login_as("bob", "secret123")
+    interview_id = await _finish(alice)
+
+    r = await bob.get(f"/api/interviews/{interview_id}/recommendations")
+    assert r.status_code == 404
 
 
 async def test_已结束再发消息409(client):

@@ -121,15 +121,15 @@ def db(tmp_path: Path) -> Path:
         conn.execute(
             "CREATE TABLE questions (id TEXT PRIMARY KEY, question TEXT, answer TEXT,"
             " key_points JSON, follow_ups JSON, domain TEXT, topic TEXT, difficulty TEXT,"
-            " company TEXT, round TEXT, status TEXT DEFAULT 'enabled')"
+            " company TEXT, round TEXT, source TEXT, status TEXT DEFAULT 'enabled')"
         )
         conn.execute(
-            "INSERT INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ("q1", "题目一", "答案一", '["k1", "k2"]', '["f1"]', "rag", "检索", "L1", None, "一面", "enabled"),
+            "INSERT INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("q1", "题目一", "答案一", '["k1", "k2"]', '["f1"]', "rag", "检索", "L1", None, "一面", "个人题库", "enabled"),
         )
         conn.execute(
-            "INSERT INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            ("q2", "草稿题", "", '["k"]', "[]", "rag", "检索", "L1", None, None, "draft"),
+            "INSERT INTO questions VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            ("q2", "草稿题", "", '["k"]', "[]", "rag", "检索", "L1", None, None, None, "draft"),
         )
     return path
 
@@ -141,6 +141,7 @@ def test_fetch_字段映射与JSON解析(db):
     assert rows[0]["question"] == "题目一"
     assert rows[0]["key_points"] == ["k1", "k2"]
     assert rows[0]["follow_ups"] == ["f1"]
+    assert rows[0]["source"] == "个人题库"  # 主源（学习推荐的来源列表靠它排首位）
 
 
 def test_fetch_draft不入结果(db):

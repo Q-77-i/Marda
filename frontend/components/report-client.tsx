@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { AppHeader } from "@/components/app-header";
+import { RecommendGroups } from "@/components/recommend-groups";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { ReviewCard } from "@/components/review-card";
 import { Badge } from "@/components/ui/badge";
@@ -245,6 +246,23 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
                 </li>
               ))}
             </ul>
+          </CardContent>
+        </Card>
+
+        {/* 学习推荐（FR-20）：短板域 → 该域新材料。跟着「学习建议」走（建议给方向、推荐给题），
+            独立请求 + 懒加载；跳学习页时带上本场次，页面上不会串到别的场次去 */}
+        <Card>
+          <CardHeader className="flex-row items-center justify-between gap-4">
+            <CardTitle>针对性练习推荐</CardTitle>
+            <Link
+              href={`/learn?interview=${interviewId}`}
+              className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+            >
+              查看全部推荐
+            </Link>
+          </CardHeader>
+          <CardContent>
+            <RecommendGroups interviewId={interviewId} showAdvice={false} />
           </CardContent>
         </Card>
       </main>

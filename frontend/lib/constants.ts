@@ -155,7 +155,7 @@ export function difficultyLabel(value: string): string {
  * 顶层导航（P1-M6 拍板：顶栏 tab 而非侧边栏）。
  *
  * `ready: false` 的项**渲染成不可点的灰文本**（不是 `<a>`，也没有 href）——
- * 能力档案/学习推荐分别在 P1-M10 / P1-M9 落地，先把信息架构占住；
+ * 能力档案在 P1-M10 落地，先把信息架构占住；
  * 灰度即路线图，但绝不给出会 404 的链接。
  */
 export const NAV_ITEMS = [
@@ -163,6 +163,6 @@ export const NAV_ITEMS = [
   { href: "/bank", label: "题库", ready: true },
   { href: "/bank/private", label: "我的题库", ready: true },
   { href: "/profile", label: "能力档案", ready: false },
-  { href: "/learn", label: "学习推荐", ready: false },
+  { href: "/learn", label: "学习推荐", ready: true },
 ] as const;
 

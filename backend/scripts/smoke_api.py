@@ -527,6 +527,36 @@ async def main() -> None:
             print(f"报告导出（FR-18）：{len(r.content) // 1024} KB · "
                   f"PDF 文本读回命中岗位/五维/总评/{len(report['per_question_comments'])} 道题干")
 
+            # 学习推荐（FR-20）：真链路走一遍完整混合检索（嵌入 → RRF → rerank → SQLite join）
+            r = await client.get(f"{BASE}/api/interviews/{interview_id}/recommendations")
+            assert r.status_code == 200, f"推荐查询失败：{r.status_code}"
+            groups = r.json()["groups"]
+            asked_ids = {item["question_id"] for item in report["per_question_comments"] if item["question_id"]}
+            assert [g["domain"] for g in groups] == report["weaknesses"], \
+                f"推荐分组与报告短板域不一致：{[g['domain'] for g in groups]} vs {report['weaknesses']}"
+            cards = [card for g in groups for card in g["cards"]]
+            for group in groups:
+                assert group["status"] in {"ok", "exhausted", "empty"}
+                for card in group["cards"]:
+                    assert card["domain"] == group["domain"], "推荐卡跨域了"
+                    assert card["question_id"] not in asked_ids, f"推荐了本场已问过的题：{card['question_id']}"
+                    assert card["answer"] and card["question"], "资料卡缺题干/答案"
+            print("=" * 60)
+            print("学习推荐（FR-20）：短板域 → 资料卡")
+            print("=" * 60)
+            for group in groups:
+                label = domain_label(group["domain"])
+                if group["status"] != "ok":
+                    print(f"  {label}：{group['status']}（{group['advice'] or '无学习建议'}）")
+                    continue
+                print(f"  {label}｜建议：{(group['advice'] or '—')[:40]}")
+                for card in group["cards"]:
+                    sources = "、".join(s["source"] for s in card["sources"]) or "无来源"
+                    print(f"    [{card['difficulty']}] {card['question'][:36]}… · 来源：{sources}")
+            print(f"推荐 OK：{len(groups)} 个短板域 / {len(cards)} 张资料卡，"
+                  f"全部落在短板域内、无本场已问题"
+                  + ("" if cards else "（本场短板域在题库里暂时没有新题）"))
+
             # 决策回放（FR-21）：整场事件流一次取回，逐轮证据自包含
             r = await client.get(f"{BASE}/api/interviews/{interview_id}/trace")
             assert r.status_code == 200, f"回放查询失败: {r.status_code}"

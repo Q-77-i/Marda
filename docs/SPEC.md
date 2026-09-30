@@ -334,6 +334,17 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **运行环境**：容器装 `libpango-1.0-0 / libpangoft2-1.0-0 / libharfbuzz-subset0 + fonts-noto-cjk`（缺字体就是一整页豆腐块）；macOS 宿主机需 `brew install pango` **和 `brew install --cask font-noto-sans-cjk-sc`**（后者缺失时字体栈会退到系统字体，导出物在 Safari/预览里缺字），且 Homebrew 的 glib 不在 dyld 默认搜索路径里——`report_pdf._ensure_native_libs()` 在 import weasyprint 之前补一条 `DYLD_FALLBACK_LIBRARY_PATH`（ctypes 的 macholib 每次 dlopen 现读 `os.environ`，所以运行时补也来得及）。
 - **验收口径**：单测断言雷达几何 + PDF 读回（中文/参考答案/旧 payload 容缺/东八区时间）；集成测试断言内容类型、下载头、越权 404、内容与报告接口同源；smoke 在真链路取回 PDF 再读回核对。
 
+## 4.10 学习推荐（P1-M9 / FR-20）
+
+**数据源 = 报告 payload 本身**（§4.6）：`weaknesses` 给短板域，逐题 `missed_key_points` 给具体漏点。`tools/recommend.py` 每次请求现检索题库（**不重算分数、不落库**）——题库更新即新鲜，报告 payload 与 PDF 导出因此零回归。
+
+- **查询文本 = 域中文标签 + 该域漏点关键词**（去重保序、最多 6 个；无漏点回退域名，因为 `hybrid_search` 收到空串会抛 ValueError）。漏点来自评分官输出，**零新增 LLM 调用**；用中文标签而非英文 key——题干与关键点都是中文，嵌入时 `agent-architecture` 这类 key 是噪点，域约束由 `filters={"domain": …}` 承担。
+- **排除本场已问过的题**：复盘卡（§4.6）已给过它们的参考答案，推荐要给同域新材料。检索条数取 **`k + 本场该域已问数`**——最多只有这么多条会被过滤掉，故过滤后仍 ≥ k（题库够的话）；**比固定 margin 稳**，不依赖「题库比 margin 厚」的假设。生成题（`question_id` 为空）无从排除，也不进排除集。
+- **多域并发检索**（`asyncio.gather`），结果保序 = 报告里短板域的展示顺序；**检索失败直接抛**（同 §5.2 的 rerank 口径），端点 500 透传、前端给错误态 + 重试，绝不静默给半份推荐。
+- **空分组不静默隐藏**（用户看不到会以为系统漏了）：后端给 `status` 三态，前端给文案——`ok` 有卡片 / `exhausted` 命中的候选全是本场问过的（该域已无检索得到的新题）/ `empty` 该域一道题都没命中。
+- **卡片带来源明细**（`bank_query.attach_sources`，主源首位）：复用 M5 的合规四要素。`question_search.fetch_by_ids` 为此多 select 一列 `source`——否则「（答案主源）」会标在按字典序排第一的来源上（**主源标签不能靠猜**）。
+- **展示两处**：报告页「针对性练习推荐」卡（传 `showAdvice=false`——同页已有「学习建议」卡，同一批文案不复述）+ `/learn` 学习页（场次选择器）。从报告页跳转时用 `?interview=<id>` **承接来源场次**，默认选中它不是最近一场——否则用户点「查看全部推荐」会落到另一场的推荐上，路径断裂（判定纯函数在 `frontend/lib/learn.ts`）。
+
 ## 5. RAG
 
 ### 5.1 向量层（M3 会话 1 落地）
@@ -403,7 +414,6 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **个人题库在前**：完全同分时先导入者优先（与入库口径一致）；个人题库 `SOURCE_PRIORITY` 恒 0，开源答案再长也不顶替主源
 - **自带零回归校验**：个人题库 12 个字段逐字比对，只允许新增 `sources` 明细行；不过则非零退出——**不允许带病入库**（开源语料解析改动后重跑，个人题库产物逐字节一致）
 - **近似重复只报不并**：相似度 ≥0.9 的候选对打印清单（含个人×开源对），人工登记白名单后才合（§8.1）
-
 ## 7. API 契约
 
 **鉴权（FR-23）**：`/api/interviews/*` 与 `/api/bank/*` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）；题库是公共资产、无归属隔离（私有题库留待 M7 另立维度），故题库端点只有 401 没有 404。
@@ -418,6 +428,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
+| GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传 |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
@@ -518,6 +529,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-30 P1-M9（学习推荐 FR-20）：新增 §4.10（数据源 = 报告 payload、查询 = 域标签 + 漏点、排除已问题且条数取 `k + 已问数`、多域并发保序、`status` 三态不静默隐藏、卡片带来源四要素、两处展示与场次承接）与 §7 的 `/recommendations` 契约。新增 `app/tools/recommend.py`（`build_query_items` 纯函数 + `recommend_for_report` 编排，`searcher`/`db_path` 可注入）；`question_search.fetch_by_ids` 多 select 一列 `source`（答案主源——来源列表的首位标签不能靠字典序猜）。前端 `lib/learn.ts`（默认场次承接/空分组文案纯逻辑）+ `components/recommend-groups.tsx`（报告页与学习页共用，含展开交互）+ `/learn` 页与导航转正；报告页新增「针对性练习推荐」卡并带 `?interview=<id>` 跳学习页
 - 2026-09-30 P1-M8（PDF 导出 FR-18）：新增 §4.9（路线选型与服务端渲染的理由、payload 单一来源、雷达 SVG 两条引擎约束、东八区时间、线程池与不落盘、autoescape、容器与 macOS 宿主的运行环境、验收口径）；§7 补 `/report.pdf` 契约（下载头 RFC 5987、404 同报告端点）；§2 目录树补 `report_pdf.py` 与 `templates/`。新增 `app/report_pdf.py`（`radar_svg` / `render_report_pdf` / `content_disposition`；`_ensure_native_libs` 解 macOS 宿主 pango 搜索路径）与 `app/templates/report.html.j2`；五维中文标签上移到 `aggregate.DIMENSION_LABELS`（`FIVE_DIMS` 由它派生，PDF 与前端展示同源）。前端 `lib/download.ts`（文件名纯逻辑）+ 报告页「导出 PDF」按钮。**顺带修掉一条 M7 遗留**：smoke_api 的三处题库对账按全表计数，M7 起接口只认公共题（`user_id IS NULL`），真库一有私有题就误报「分面计数与题库总数不符」——抽出 `_PUBLIC_ENABLED` 谓词统一带上。**浏览器验收报出字体事故并当日修复**（用户：「PDF 在浏览器打开乱码、WPS 正常」）：字体栈只写在 `body` 上，`@page` 页边距框与 SVG `<text>` 不继承它 → 雷达标签与页眉页脚落到系统字体（macOS 苹方/宋体），而 macOS PDFKit 系渲染不了 weasyprint 嵌的苹方子集 → 整片缺字；Chrome/WPS 回退到系统同名字体故看不出。修法见 §4.9（`FONT_STACK` 单一来源 + 三处声明 + 模板 `| safe`），回归测试 `test_PDF只用随镜像分发的字体_不混进本机字体` 反向验证过。**修复后用户在浏览器复验通过（2026-09-30），P1-M8 验收闭环**
 - 2026-09-29 P1-M6（题库页 FR-12 + 容量校验 FR-14）：新增 `tools/bank_query.py`（浏览查询层：SQL 分页 + 四维分面计数 + 来源明细挂载 + 供给统计）与 `api/bank.py`（三端点：`/questions` 双模式、`/facets`、`/capacity`）；§4.3 新增 capacity.py 口径 + `difficulty_locked` 分工（**落库 `interviews.difficulty` 存用户的选择、`state.difficulty` 存当前档位**）；§5.2 补筛选下推两路 prefetch 与 `query_filter` 参数名；§7 补三端点契约 + 创建接口的 `difficulty` 入参 + 题库端点的 401/404 分工；§9 补导航 IA（**顶栏 tab 定调**、未做页面占位不发出 404 链接）、题库页与容量禁用口径（不足要写明缺在哪、拉取失败一律不禁用）；§10 补 M6 测试行。前端 `lib/bank.ts`（筛选/分页/容量纯逻辑 15 例）+ `/bank` 页 + `MainNav`。**验收反馈两处**（2026-09-29 用户）：① 下拉与 chips **不带计数**（数字塞进选项显脏，条数只在结果区给总数）；② 难度分面**按档位 L1→L3 排**而非计数序（有序维度，L2 计数最多也不该顶到 L1 前）。**真库事实**（只读核对）：enabled 1095 题（L1 154 / L2 873 / L3 68），12 个「难度 × 题量」组合里**只有 L3 × 15 直供不足**（规划与推理范式 需 2 有 1，L3 × 10 需 1 有 1 恰好通过）——禁用态在真库上真实可见，smoke 用真实题库断言这一点并逐条复核不足明细。322 → 350 passed；前端 vitest 89 → 104；smoke_api 补题库三端点与 L3 锁定场次（对账直查 SQL：分面计数、浏览总数、分页不重不漏、主源排首位、license 齐、不足明细）
 - 2026-09-29 P1-M5 会话 2（开源语料扩充，四源接入）：新增 §6.5（`parse_open.py` 四源 adapter——形态/题量/解析要点、未采项逐项进报告、占位答案判据）与 §6.6（`combine.py` 合并 + 个人题库零回归校验 + 近似重复只报不并）；§1 目录树补 `bank`/`parse_open`/`combine`。四源 license 逐仓核对（均仓库自带 MIT）：ai-agents-from-zero 89 / FAQ_Of_LLM_Interview 71 / ai-agent-interview-guide 261 / llm-interview-guide 809 = 1230 条来源明细；题库 342 → 1571 题（enabled 1095），`question_sources` 1572 行，Qdrant 重建 1095 点（dense+sparse）。新增 `test_parse_open.py` 与 `bank` 共享层用例（实质答案判据、聚合缺省不为空串、括号答案标记），302 → 322 passed；smoke_graph + smoke_api 零回归

@@ -20,6 +20,7 @@ from app import db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.service import InterviewFinishedError, InterviewNotFoundError
+from app.tools import recommend
 
 router = APIRouter(
     prefix="/api/interviews", tags=["interviews"], dependencies=[Depends(get_current_user)]
@@ -138,6 +139,31 @@ async def export_interview_report_pdf(
         media_type="application/pdf",
         headers={"Content-Disposition": report_pdf.content_disposition(interview_id)},
     )
+
+
+@router.get("/{interview_id}/recommendations")
+async def get_interview_recommendations(
+    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """学习推荐（FR-20）：报告短板域 → 混合检索资料卡片。
+
+    与报告端点同一 404 判据（未结束/不存在/越权），因为推荐读的就是报告 payload
+    （weaknesses + 逐题漏点）；检索失败不吞——500 透传，前端给错误态 + 重试。
+    """
+    service = request.app.state.service
+    try:
+        row = await service.get_report(interview_id, user["id"])
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="报告不存在或面试未结束") from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
+    payload = row["payload"]
+    groups = await recommend.recommend_for_report(payload)
+    return {
+        "interview_id": interview_id,
+        "position": payload.get("position", ""),
+        "groups": groups,
+    }
 
 
 @router.get("/{interview_id}/trace")

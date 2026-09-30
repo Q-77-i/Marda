@@ -39,14 +39,15 @@ def get_qdrant_client() -> AsyncQdrantClient:
 def fetch_by_ids(db_path: Path, ids: list[str]) -> list[dict[str, Any]]:
     """SQLite join 完整题目（同步，由 search_questions 以 to_thread 包裹）。
 
-    出参 key 与 ingest 管道 JSON 一致（question_id/question/key_points/…）。
+    出参 key 与 ingest 管道 JSON 一致（question_id/question/key_points/…），另带 `source`
+    （答案**主源**，M5 口径）——学习推荐的资料来源列表靠它把主源排首位。
     """
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
         placeholders = ",".join("?" * len(ids))
         rows = conn.execute(
             f"SELECT id, question, answer, key_points, follow_ups, domain, topic, difficulty, "
-            f"company, round FROM questions WHERE id IN ({placeholders}) AND status='enabled'",
+            f"company, round, source FROM questions WHERE id IN ({placeholders}) AND status='enabled'",
             ids,
         ).fetchall()
     out: list[dict[str, Any]] = []
