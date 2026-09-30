@@ -11,6 +11,13 @@ ENV PYTHONUNBUFFERED=1 \
 # uv 本身走清华源（依赖走 pyproject 里已配置的 [[tool.uv.index]]）
 RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple uv
 
+# 报告 PDF 渲染（FR-18）：weasyprint 靠 pango/harfbuzz 排版，中文靠 Noto CJK 字体
+# ——不装字体，导出就是一整页豆腐块。层位置靠前：字体不随代码变，白拿缓存
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 \
+        fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # 依赖声明单独一层，改代码不触发重装

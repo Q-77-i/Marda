@@ -1,0 +1,260 @@
+{#- 能力评估报告 PDF 模板（FR-18）。上下文见 report_pdf._build_context。
+    版式口径：与报告页同源——同一份 payload、同一套文案，不重算分数、不新增结论。
+    两栏用 display:table 而非 flexbox：打印引擎对表格布局支持最稳（flex 失效会串行错版）。
+    配色是前端 oklch 设计令牌的十六进制近似（PDF 引擎不必依赖 oklch 解析）。 -#}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>码达 Marda · 能力评估报告{% if position %} · {{ position }}{% endif %}</title>
+<style>
+  /* 字体栈在 @page 与 html 两处都要显式声明：页边距框不继承 body（见 report_pdf.FONT_STACK）。
+     必须 `| safe`——autoescape 会把字体名的引号转成 &#39;，而 CSS 不认 HTML 实体，
+     整份文档会静默退化到系统默认字体（宋体/Times），正是这套字体栈要避免的事。 */
+  @page {
+    size: A4;
+    margin: 14mm 13mm 15mm;
+    font-family: {{ font_stack | safe }};
+    @bottom-center {
+      content: "码达 Marda · 能力评估报告 · 第 " counter(page) " / " counter(pages) " 页";
+      font-size: 8pt;
+      color: #98a0a8;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html { font-family: {{ font_stack | safe }}; }
+
+  body {
+    margin: 0;
+    font-family: {{ font_stack | safe }};
+    font-size: 10pt;
+    line-height: 1.6;
+    color: #2b2f36;
+    hyphens: none;   /* 中文不做自动断词（WeasyPrint 70 起不再用 -weasy- 前缀） */
+  }
+
+  h1 { font-size: 19pt; margin: 2px 0 0; letter-spacing: 0.5px; }
+  h2 {
+    font-size: 11pt;
+    margin: 0 0 8px;
+    padding-left: 8px;
+    border-left: 3px solid #3a6ea5;
+    line-height: 1.2;
+  }
+
+  /* ---- 抬头 ---- */
+  .head { border-bottom: 2px solid #2b2f36; padding-bottom: 10px; margin-bottom: 14px; }
+  .brand { font-size: 8.5pt; letter-spacing: 2px; color: #6a7280; }
+  .stats { display: table; width: 100%; margin-top: 10px; }
+  .stat { display: table-cell; width: 33%; vertical-align: bottom; }
+  .stat .k { display: block; font-size: 8pt; color: #6a7280; }
+  .stat .v { font-size: 14pt; font-weight: 600; }
+  .stat .v em { font-size: 8.5pt; font-weight: 400; font-style: normal; color: #6a7280; }
+
+  /* ---- 卡片 ---- */
+  .card { border: 1px solid #e3e7ea; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
+  .cols { display: table; width: 100%; border-collapse: separate; border-spacing: 0; }
+  .col { display: table-cell; width: 50%; vertical-align: top; }
+  .col:first-child { padding-right: 12px; border-right: 1px solid #eef1f3; }
+  .col:last-child { padding-left: 14px; }
+
+  /* ---- 雷达图（内联 SVG；线条与填充的样式写在 SVG 呈现属性里，见 report_pdf.radar_svg） ---- */
+  .radar { display: block; margin: 0 auto 4px; }
+
+  .dims { display: table; width: 100%; margin: 0; padding: 0; list-style: none; }
+  .dims li { display: table-row; }
+  .dims .k, .dims .v { display: table-cell; padding: 1px 0; font-size: 9pt; }
+  .dims .v { text-align: right; font-weight: 600; }
+  .dims .k { color: #6a7280; }
+
+  /* ---- 知识域横条 ---- */
+  .bars { margin: 0 0 8px; padding: 0; list-style: none; }
+  .bars li { margin-bottom: 6px; }
+  .bars .row { display: table; width: 100%; }
+  .bars .k { display: table-cell; font-size: 9pt; }
+  .bars .v { display: table-cell; text-align: right; font-size: 9pt; font-weight: 600; }
+  .bars .k.weak { color: #b8762a; }
+  .bars .track { height: 5px; margin-top: 2px; background: #f0f3f5; border-radius: 3px; }
+  .bars .fill { height: 5px; border-radius: 3px; background: #3a6ea5; }
+  .bars .fill.weak { background: #c98a3a; }
+
+  .chips { margin-top: 6px; }
+  .chip {
+    display: inline-block; margin-right: 6px; padding: 1px 8px;
+    border: 1px solid #e6cfa8; border-radius: 10px;
+    font-size: 8.5pt; color: #b8762a; background: #fdf8f0;
+  }
+
+  /* ---- 正文 ---- */
+  .prose { margin: 0; white-space: pre-wrap; }
+
+  /* ---- 逐题复盘 ---- */
+  .q { border-top: 1px solid #eef1f3; padding-top: 10px; margin-top: 10px; }
+  .q:first-of-type { border-top: none; padding-top: 0; margin-top: 0; }
+  .q-head { margin-bottom: 3px; }
+  .q-no { font-size: 9.5pt; font-weight: 600; }
+  .q-domain { margin-left: 8px; font-size: 8.5pt; color: #6a7280; }
+  .q-text { margin: 0 0 6px; font-weight: 600; }
+
+  .answer { border-left: 2px solid #e3e7ea; padding-left: 9px; margin-bottom: 7px; }
+  .seg { margin-bottom: 4px; }
+  .seg-label { font-size: 8pt; color: #6a7280; }
+  .seg-text { margin: 0; white-space: pre-wrap; }
+
+  .q-dims { display: table; width: 100%; margin: 0 0 6px; padding: 0; list-style: none; }
+  .q-dims li { display: table-cell; font-size: 8.5pt; color: #6a7280; }
+  .q-dims b { color: #2b2f36; margin-left: 3px; }
+
+  .points { margin-bottom: 3px; font-size: 9pt; }
+  .points-label { color: #6a7280; margin-right: 4px; }
+  .pt.ok { color: #2f7d5f; }
+  .pt.miss { color: #b8762a; }
+
+  .comment { margin: 6px 0 0; }
+
+  .ref { margin-top: 7px; background: #f7f9fa; border-radius: 5px; padding: 8px 10px; }
+  .ref-label { font-size: 8.5pt; color: #6a7280; margin-bottom: 2px; }
+  .ref-text { margin: 0; white-space: pre-wrap; }
+
+  /* ---- 学习建议 ---- */
+  .advice { margin-bottom: 8px; }
+  .advice-domain {
+    display: inline-block; margin-bottom: 2px; padding: 0 7px;
+    border-radius: 3px; background: #eef2f6; color: #3a6ea5; font-size: 8.5pt;
+  }
+  .advice p { margin: 0; }
+
+  /* 段落别只剩一行跨页；标题后不孤行 */
+  p { orphans: 2; widows: 2; }
+  h2 { break-after: avoid; }
+</style>
+</head>
+<body>
+
+<header class="head">
+  <div class="brand">码达 Marda · 能力评估报告</div>
+  <h1>{{ position }}</h1>
+  <div class="stats">
+    <div class="stat">
+      <span class="k">五维均分</span>
+      <span class="v">{{ overall }}<em> / 5</em></span>
+    </div>
+    <div class="stat">
+      <span class="k">完成题量</span>
+      <span class="v">{{ answered_count }}<em> / {{ question_count }}</em></span>
+    </div>
+    {% if created_at %}
+    <div class="stat">
+      <span class="k">生成时间</span>
+      <span class="v">{{ created_at }}</span>
+    </div>
+    {% endif %}
+  </div>
+</header>
+
+<section class="card">
+  <table class="cols">
+    <tr>
+      <td class="col">
+        <h2>五维能力</h2>
+        {{ radar | safe }}
+        <ul class="dims">
+          {% for dim in dimensions %}
+          <li><span class="k">{{ dim.label }}</span><span class="v">{{ dim.value }}</span></li>
+          {% endfor %}
+        </ul>
+      </td>
+      <td class="col">
+        <h2>知识域均分</h2>
+        {% if domains %}
+        <ul class="bars">
+          {% for domain in domains %}
+          <li>
+            <div class="row">
+              <span class="k{% if domain.weak %} weak{% endif %}">{{ domain.label }}</span>
+              <span class="v">{{ domain.value }}</span>
+            </div>
+            <div class="track">
+              <div class="fill{% if domain.weak %} weak{% endif %}" style="width: {{ domain.percent }}%"></div>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+        {% endif %}
+        {% if weaknesses %}
+        <div class="chips">
+          <span class="points-label">短板域</span>
+          {% for domain in weaknesses %}<span class="chip">{{ domain }}</span>{% endfor %}
+        </div>
+        {% endif %}
+      </td>
+    </tr>
+  </table>
+</section>
+
+<section class="card">
+  <h2>总评</h2>
+  <p class="prose">{{ total_comment }}</p>
+</section>
+
+{% if questions %}
+<section class="card">
+  <h2>逐题复盘</h2>
+  {% for q in questions %}
+  <article class="q">
+    <div class="q-head">
+      <span class="q-no">{{ q.label }}</span>
+      {% if q.domain %}<span class="q-domain">{{ q.domain }}</span>{% endif %}
+    </div>
+    {% if q.text %}<p class="q-text">{{ q.text }}</p>{% endif %}
+    {% if q.segments %}
+    <div class="answer">
+      {% for segment in q.segments %}
+      <div class="seg">
+        <div class="seg-label">{{ segment.label }}</div>
+        <p class="seg-text">{{ segment.text }}</p>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% if q.has_score %}
+    <ul class="q-dims">
+      {% for dim in q.dimensions %}
+      <li>{{ dim.label }}<b>{{ dim.value }}</b></li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if q.covered %}
+    <div class="points"><span class="points-label">覆盖的关键点</span><span class="pt ok">{{ q.covered | join(' · ') }}</span></div>
+    {% endif %}
+    {% if q.missed %}
+    <div class="points"><span class="points-label">漏掉的关键点</span><span class="pt miss">{{ q.missed | join(' · ') }}</span></div>
+    {% endif %}
+    {% if q.comment %}<p class="comment">{{ q.comment }}</p>{% endif %}
+    {% if q.reference_answer %}
+    <div class="ref">
+      <div class="ref-label">参考答案</div>
+      <p class="ref-text">{{ q.reference_answer }}</p>
+    </div>
+    {% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if advice %}
+<section class="card">
+  <h2>学习建议</h2>
+  {% for item in advice %}
+  <div class="advice">
+    <span class="advice-domain">{{ item.label }}</span>
+    <p>{{ item.advice }}</p>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+</body>
+</html>

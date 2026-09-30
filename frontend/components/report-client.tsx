@@ -11,13 +11,16 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getReport, type ReportResponse } from "@/lib/api";
+import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
 import { DIMENSIONS, domainLabel } from "@/lib/constants";
+import { downloadBlob, reportFileName } from "@/lib/download";
 import { commentLabels, completedCount, formatScore, formatTime } from "@/lib/format";
 
 export function ReportClient({ interviewId }: { interviewId: string }) {
   const [data, setData] = useState<ReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -67,6 +70,21 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
   }
 
   const report = data.report;
+
+  /** 导出 PDF（FR-18）：后端现渲染，前端只负责落盘；失败就地给一行提示，不挡页面。 */
+  async function onExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const blob = await exportReportPdf(interviewId);
+      downloadBlob(blob, reportFileName(report.position, interviewId));
+    } catch (err: unknown) {
+      setExportError(err instanceof Error ? err.message : "导出失败，请重试");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   const overall =
     DIMENSIONS.reduce((sum, dim) => sum + (report.scores[dim.key] ?? 0), 0) /
     DIMENSIONS.length;
@@ -81,6 +99,14 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
       <AppHeader
         right={
           <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={exporting}
+              className={cn(buttonVariants({ size: "sm" }))}
+            >
+              {exporting ? "导出中…" : "导出 PDF"}
+            </button>
             <Link
               href={`/trace/${interviewId}`}
               className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
@@ -120,6 +146,12 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             <Stat label="生成时间" value={formatTime(data.created_at)} />
           </div>
         </div>
+
+        {exportError && (
+          <p className="text-sm text-destructive" role="alert">
+            {exportError}
+          </p>
+        )}
 
         <div className="grid gap-6 lg:grid-cols-2">
           <Card>

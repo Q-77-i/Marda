@@ -211,6 +211,13 @@ export function getReport(interviewId: string): Promise<ReportResponse> {
   return getJSON<ReportResponse>(`/api/interviews/${interviewId}/report`);
 }
 
+/** 报告导出 PDF（FR-18）：二进制响应，不能走 getJSON（它按 JSON 解析）。 */
+export async function exportReportPdf(interviewId: string): Promise<Blob> {
+  const response = await authorizedFetch(`/api/interviews/${interviewId}/report.pdf`);
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.blob();
+}
+
 /** 决策回放（FR-21）：未结束的场次同样可查；旧场次 events 为空表。 */
 export function getTrace(interviewId: string): Promise<TraceResponse> {
   return getJSON<TraceResponse>(`/api/interviews/${interviewId}/trace`);

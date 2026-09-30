@@ -5,7 +5,16 @@ from __future__ import annotations
 from app.domain import COUNTED_QUESTION_TYPES, DOMAIN_WEIGHTS
 from app.graph.state import QuestionRecord, ScoreItem
 
-FIVE_DIMS = ("technical_depth", "fundamentals", "project_experience", "communication", "problem_solving")
+# 五维键与中文标签同源（顺序即报告展示顺序：雷达图顶点、逐题得分列表都按它排）。
+# 前端 constants.DIMENSIONS 是该表的展示副本（P1-M8 起 PDF 直接消费本表）。
+DIMENSION_LABELS = {
+    "technical_depth": "技术深度",
+    "fundamentals": "基础掌握",
+    "project_experience": "项目经验",
+    "communication": "沟通表达",
+    "problem_solving": "问题解决",
+}
+FIVE_DIMS = tuple(DIMENSION_LABELS)
 
 
 def aggregate_scores(questions: list[QuestionRecord]) -> dict:

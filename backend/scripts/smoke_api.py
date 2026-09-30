@@ -7,7 +7,8 @@
 未登录 401 → 题库（P1-M6 FR-12/FR-14：分面 / 浏览分页 / 关键词检索 / 容量校验，
 与直查 SQL 对账）+ 私有题库（P1-M7 FR-13：上传判重 / 隔离 / 混入出题 / 管理闭环 /
 计入容量）+ 难度锁定场次 → POST 创建（SSE 开场）→ 循环 POST 消息到 done →
-GET 报告 + 决策回放（FR-21）+ 会话恢复 + 历史列表 → 核对场次归属，验证落库与用户隔离。
+GET 报告 + 报告导出 PDF（FR-18，pypdf 读回核对中文）+ 决策回放（FR-21）+ 会话恢复 +
+历史列表 → 核对场次归属，验证落库与用户隔离。
 
 P1-M4.7-D 人味层（真实链路上才看得出效果，故放在 smoke 而非单测）：
 重连问候（?reconnect=true 重发当前题干）、六类衔接语的连读观感、结束陈词是否踩红线；
@@ -22,13 +23,17 @@ Langfuse（P1-M4）：.env 配了 LANGFUSE_* 时把该场次的 trace 从云端�
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from pypdf import PdfReader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -58,6 +63,18 @@ from app.tools import question_search
 
 PORT = 8765
 BASE = f"http://127.0.0.1:{PORT}"
+
+
+def _pdf_text(data: bytes) -> str:
+    """PDF 全文去空白（CJK 逐字排版会插空格，比对前一律剥掉）。"""
+    reader = PdfReader(io.BytesIO(data))
+    return re.sub(r"\s+", "", "\n".join(page.extract_text() or "" for page in reader.pages))
+
+
+# 题库接口自 P1-M7 起只认公共题（私有题与公共题同表，靠 user_id 隔离），故与直查 SQL
+# 对账时必须带同款谓词：真库里一旦存在别人的私有题，少了它就误报「对不上」。
+# 本脚本的临时账号在上传自己那两道私有题之前就做完这些对账，因此公共口径 == (公共 OR 本人)。
+_PUBLIC_ENABLED = "status='enabled' AND user_id IS NULL"
 
 # 题量（轮次语义）：默认 2 轮快跑；SMOKE_QUESTION_COUNT=10 可跑长场次验证同域成块与难度曲线
 QUESTION_COUNT = int(os.environ.get("SMOKE_QUESTION_COUNT", "2"))
@@ -199,7 +216,7 @@ async def main() -> None:
             facets = (await client.get(f"{BASE}/api/bank/facets")).json()
             with sqlite3.connect(get_settings().db_path) as conn:
                 enabled = conn.execute(
-                    "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                    f"SELECT COUNT(*) FROM questions WHERE {_PUBLIC_ENABLED}"
                 ).fetchone()[0]
             assert set(facets) == {"domain", "difficulty", "company", "round"}, facets.keys()
             assert sum(c["count"] for c in facets["domain"]) == enabled, "分面计数与题库总数不符"
@@ -218,7 +235,7 @@ async def main() -> None:
             browse = (await client.get(f"{BASE}/api/bank/questions", params=params)).json()
             with sqlite3.connect(get_settings().db_path) as conn:
                 expected = conn.execute(
-                    "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                    f"SELECT COUNT(*) FROM questions WHERE {_PUBLIC_ENABLED}"
                     " AND domain='rag' AND difficulty='L2'"
                 ).fetchone()[0]
             assert browse["mode"] == "browse" and browse["total"] == expected, \
@@ -265,7 +282,7 @@ async def main() -> None:
                 with sqlite3.connect(get_settings().db_path) as conn:  # 不足明细逐条复核
                     for s in option["shortfalls"]:
                         have = conn.execute(
-                            "SELECT COUNT(*) FROM questions WHERE status='enabled'"
+                            f"SELECT COUNT(*) FROM questions WHERE {_PUBLIC_ENABLED}"
                             " AND difficulty=? AND domain=?", (option["base"], s["domain"])
                         ).fetchone()[0]
                         assert s["available"] == have, \
@@ -492,6 +509,23 @@ async def main() -> None:
                       f"五维均分={sum(item['score'].values()) / 5:.1f} {ref} "
                       f"覆盖{len(item['covered_key_points'])}/遗漏{len(item['missed_key_points'])}"
                       f" · {item['comment'][:24]}…")
+
+            # 报告导出（FR-18）：真链路取回 PDF，再用 pypdf 把中文读回来核对——
+            # 「无乱码」在真链路里就等于「读回无替换字符 + 关键串逐条命中」
+            r = await client.get(f"{BASE}/api/interviews/{interview_id}/report.pdf")
+            assert r.status_code == 200, f"PDF 导出失败：{r.status_code}"
+            assert r.headers["content-type"] == "application/pdf"
+            assert "attachment" in r.headers.get("content-disposition", ""), "缺附件下载头"
+            pdf_text = _pdf_text(r.content)
+            assert pdf_text and "�" not in pdf_text, "PDF 中文乱码/缺字"
+            assert report["position"].replace(" ", "") in pdf_text, "PDF 缺岗位名"
+            assert "技术深度" in pdf_text and "问题解决" in pdf_text, "PDF 缺五维标签"
+            assert report["total_comment"].replace(" ", "")[:16] in pdf_text, "PDF 缺总评"
+            for item in report["per_question_comments"]:
+                needle = item["text"].replace(" ", "")[:16]
+                assert needle in pdf_text, f"PDF 缺题干：{item['text'][:24]}"
+            print(f"报告导出（FR-18）：{len(r.content) // 1024} KB · "
+                  f"PDF 文本读回命中岗位/五维/总评/{len(report['per_question_comments'])} 道题干")
 
             # 决策回放（FR-21）：整场事件流一次取回，逐轮证据自包含
             r = await client.get(f"{BASE}/api/interviews/{interview_id}/trace")

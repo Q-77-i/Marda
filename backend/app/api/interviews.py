@@ -11,12 +11,12 @@ import asyncio
 import uuid
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 from sse_starlette import EventSourceResponse
 from sse_starlette.sse import ServerSentEvent
 
-from app import db
+from app import db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.service import InterviewFinishedError, InterviewNotFoundError
@@ -114,6 +114,30 @@ async def get_interview_report(
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
     return {"interview_id": interview_id, "report": row["payload"], "created_at": row["created_at"]}
+
+
+@router.get("/{interview_id}/report.pdf")
+async def export_interview_report_pdf(
+    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """报告导出 PDF（FR-18）：与报告端点同一份 payload、同一套 404 语义。
+
+    每次现渲染、不落盘缓存——报告本身不可变，且渲染是纯 CPU 的确定性转换
+    （阻塞主循环，故丢线程池）；LLM 那份 60s 的耗时预算属于报告生成，不在这一步。
+    """
+    service = request.app.state.service
+    try:
+        row = await service.get_report(interview_id, user["id"])
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="报告不存在或面试未结束") from exc
+    if row is None:
+        raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
+    pdf = await asyncio.to_thread(report_pdf.render_report_pdf, row["payload"], row["created_at"])
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": report_pdf.content_disposition(interview_id)},
+    )
 
 
 @router.get("/{interview_id}/trace")

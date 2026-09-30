@@ -318,6 +318,22 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 **验证口径**：衔接分类、变体轮换、空格排版、缓冲门控、重连门控由单测离线固化（21+ 项）；连读观感只能真链路看——`scripts/smoke_api.py` 打印逐轮衔接语、逐块难度曲线与结束陈词成品。
 
+## 4.9 报告导出 PDF（P1-M8 / FR-18）
+
+**路线：服务端 HTML+CSS 渲染**（`app/report_pdf.py` + `app/templates/report.html.j2`，jinja2 + weasyprint）。选它的理由是**验收可判**：产出的是真文本 PDF（可选中、可检索），「中文无乱码」于是能用 pypdf 读回断言（无 U+FFFD + 关键串逐条命中），而浏览器截图再拼 PDF 的路线文字不可选、长卡被拦腰切断、且无任何可断言的产物。代价是后端镜像要装 pango 与中文字体（见下）。
+
+- **数据来源是报告 payload 本身**（§4.6），导出不重算任何分数：页面显示什么，PDF 就显示什么。旧 payload 缺字段（FR-25 之前）按缺失略过，不报错。
+- **五维键与中文标签单一来源 = `graph/rules/aggregate.DIMENSION_LABELS`**（`FIVE_DIMS` 由它派生）；前端 `constants.DIMENSIONS` 是展示副本。雷达图顶点顺序即该表顺序。
+- **雷达图 = 内联 SVG 手绘**（五轴五点，0–5 线性映射，越界截断）。两条打印引擎的硬约束，都踩过：
+  1. **样式写 SVG 呈现属性，不写 CSS** —— `fill-opacity` 走 CSS 会被忽略（数据多边形糊成实心黑）；
+  2. **画布与坐标系 1:1** —— 引擎对 `<text>` **不套用 viewBox 变换**（五边形按 viewBox 缩放、文字按原始坐标摆），靠 viewBox 留白给标签腾位置会被裁掉半截字；改为收紧半径把标签收进框内。
+- **时间**：`created_at` 落库是 UTC，PDF 是给人看的文档，按**东八区**渲染（`format_created_at`），与页面的本地时间一致；解析不了就不显示时间，不影响导出。
+- **渲染是纯 CPU 的确定性转换**，走 `asyncio.to_thread` 不阻塞事件循环；报告不可变故不落盘缓存（LLM 那份 60s 预算属于报告生成，不在这一步）。
+- **模板 autoescape=True**：候选人回答与 LLM 文案都是不可信自由文本，直出 HTML 等于开了注入面；雷达 SVG 是自己拼的，模板里 `|safe` 放行。
+- **字体必须钉死，不能落到本机字体**（`report_pdf.FONT_STACK` 是单一来源）：字体栈要在 `@page`（页边距框**不继承 body**）与 SVG `<text>` 上**各声明一次**，模板里用 `| safe`（autoescape 会把字体名引号转成 `&#39;`，CSS 不认 HTML 实体 → 静默退化到宋体）。**踩过的坑**：漏声明时那些文字会落到系统默认字体（macOS 上是苹方/宋体），而 **macOS 的 PDFKit 系（Safari / 预览 / Quick Look）渲染不了 weasyprint 嵌的苹方子集** → 整片缺字；Chrome 与 WPS 会回退到系统同名字体，**在开发机上完全看不出来**。回归由 `test_PDF只用随镜像分发的字体_不混进本机字体` 钉死——只有断言「PDF 里实际用到的字体名」拦得住，读文本、看渲染图、验嵌入与否都拦不住。
+- **运行环境**：容器装 `libpango-1.0-0 / libpangoft2-1.0-0 / libharfbuzz-subset0 + fonts-noto-cjk`（缺字体就是一整页豆腐块）；macOS 宿主机需 `brew install pango` **和 `brew install --cask font-noto-sans-cjk-sc`**（后者缺失时字体栈会退到系统字体，导出物在 Safari/预览里缺字），且 Homebrew 的 glib 不在 dyld 默认搜索路径里——`report_pdf._ensure_native_libs()` 在 import weasyprint 之前补一条 `DYLD_FALLBACK_LIBRARY_PATH`（ctypes 的 macholib 每次 dlopen 现读 `os.environ`，所以运行时补也来得及）。
+- **验收口径**：单测断言雷达几何 + PDF 读回（中文/参考答案/旧 payload 容缺/东八区时间）；集成测试断言内容类型、下载头、越权 404、内容与报告接口同源；smoke 在真链路取回 PDF 再读回核对。
+
 ## 5. RAG
 
 ### 5.1 向量层（M3 会话 1 落地）
@@ -401,6 +417,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
+| GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
@@ -501,6 +518,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-30 P1-M8（PDF 导出 FR-18）：新增 §4.9（路线选型与服务端渲染的理由、payload 单一来源、雷达 SVG 两条引擎约束、东八区时间、线程池与不落盘、autoescape、容器与 macOS 宿主的运行环境、验收口径）；§7 补 `/report.pdf` 契约（下载头 RFC 5987、404 同报告端点）；§2 目录树补 `report_pdf.py` 与 `templates/`。新增 `app/report_pdf.py`（`radar_svg` / `render_report_pdf` / `content_disposition`；`_ensure_native_libs` 解 macOS 宿主 pango 搜索路径）与 `app/templates/report.html.j2`；五维中文标签上移到 `aggregate.DIMENSION_LABELS`（`FIVE_DIMS` 由它派生，PDF 与前端展示同源）。前端 `lib/download.ts`（文件名纯逻辑）+ 报告页「导出 PDF」按钮。**顺带修掉一条 M7 遗留**：smoke_api 的三处题库对账按全表计数，M7 起接口只认公共题（`user_id IS NULL`），真库一有私有题就误报「分面计数与题库总数不符」——抽出 `_PUBLIC_ENABLED` 谓词统一带上。**浏览器验收报出字体事故并当日修复**（用户：「PDF 在浏览器打开乱码、WPS 正常」）：字体栈只写在 `body` 上，`@page` 页边距框与 SVG `<text>` 不继承它 → 雷达标签与页眉页脚落到系统字体（macOS 苹方/宋体），而 macOS PDFKit 系渲染不了 weasyprint 嵌的苹方子集 → 整片缺字；Chrome/WPS 回退到系统同名字体故看不出。修法见 §4.9（`FONT_STACK` 单一来源 + 三处声明 + 模板 `| safe`），回归测试 `test_PDF只用随镜像分发的字体_不混进本机字体` 反向验证过
 - 2026-09-29 P1-M6（题库页 FR-12 + 容量校验 FR-14）：新增 `tools/bank_query.py`（浏览查询层：SQL 分页 + 四维分面计数 + 来源明细挂载 + 供给统计）与 `api/bank.py`（三端点：`/questions` 双模式、`/facets`、`/capacity`）；§4.3 新增 capacity.py 口径 + `difficulty_locked` 分工（**落库 `interviews.difficulty` 存用户的选择、`state.difficulty` 存当前档位**）；§5.2 补筛选下推两路 prefetch 与 `query_filter` 参数名；§7 补三端点契约 + 创建接口的 `difficulty` 入参 + 题库端点的 401/404 分工；§9 补导航 IA（**顶栏 tab 定调**、未做页面占位不发出 404 链接）、题库页与容量禁用口径（不足要写明缺在哪、拉取失败一律不禁用）；§10 补 M6 测试行。前端 `lib/bank.ts`（筛选/分页/容量纯逻辑 15 例）+ `/bank` 页 + `MainNav`。**验收反馈两处**（2026-09-29 用户）：① 下拉与 chips **不带计数**（数字塞进选项显脏，条数只在结果区给总数）；② 难度分面**按档位 L1→L3 排**而非计数序（有序维度，L2 计数最多也不该顶到 L1 前）。**真库事实**（只读核对）：enabled 1095 题（L1 154 / L2 873 / L3 68），12 个「难度 × 题量」组合里**只有 L3 × 15 直供不足**（规划与推理范式 需 2 有 1，L3 × 10 需 1 有 1 恰好通过）——禁用态在真库上真实可见，smoke 用真实题库断言这一点并逐条复核不足明细。322 → 350 passed；前端 vitest 89 → 104；smoke_api 补题库三端点与 L3 锁定场次（对账直查 SQL：分面计数、浏览总数、分页不重不漏、主源排首位、license 齐、不足明细）
 - 2026-09-29 P1-M5 会话 2（开源语料扩充，四源接入）：新增 §6.5（`parse_open.py` 四源 adapter——形态/题量/解析要点、未采项逐项进报告、占位答案判据）与 §6.6（`combine.py` 合并 + 个人题库零回归校验 + 近似重复只报不并）；§1 目录树补 `bank`/`parse_open`/`combine`。四源 license 逐仓核对（均仓库自带 MIT）：ai-agents-from-zero 89 / FAQ_Of_LLM_Interview 71 / ai-agent-interview-guide 261 / llm-interview-guide 809 = 1230 条来源明细；题库 342 → 1571 题（enabled 1095），`question_sources` 1572 行，Qdrant 重建 1095 点（dense+sparse）。新增 `test_parse_open.py` 与 `bank` 共享层用例（实质答案判据、聚合缺省不为空串、括号答案标记），302 → 322 passed；smoke_graph + smoke_api 零回归
 - 2026-09-28 P1-M5 会话 1（`question_sources` 拆表）：§8 的 questions 表去掉 license/url、新增 `question_sources`（PK `(question_id, source)`）；§8.1 由「接入新源时怎么扩」改写为已落地口径（`source_rank`/`_rank` 主源裁决、`merge_sources` 每源留最优、列探测迁移、来源表整表重建、对上层透明）；§6.1 解析产物补 `sources` 明细与主源字段语义。新增 `backend/tests/unit/test_ingest_sqlite.py`（老库迁移与幂等、多源明细、全量同步删除），`test_parse_md.py` 补主源裁决与同源多记录用例（302 passed）。老库迁移在副本上逐字段对账后落真库：342 题零回归，`source_detail`（261 条）为老 schema 从未落库、本次顺带补回

@@ -9,11 +9,14 @@ SSE 响应由 httpx 逐行解析（不引第三方解析库）；心跳 ping=15s
 
 from __future__ import annotations
 
+import io
 import json
+import re
 import sqlite3
 from types import SimpleNamespace
 
 import pytest
+from pypdf import PdfReader
 
 from app import db, llm
 from app.config import get_settings
@@ -254,9 +257,10 @@ async def test_删除场次_三表与接口全部清除(client):
     assert _db_rows(f"SELECT * FROM interviews WHERE id='{interview_id}'") == []
     assert _db_rows(f"SELECT * FROM answers WHERE interview_id='{interview_id}'") == []
     assert _db_rows(f"SELECT * FROM reports WHERE interview_id='{interview_id}'") == []
-    # checkpointer 线程已删：会话/报告/发消息全部 404
+    # checkpointer 线程已删：会话/报告/导出/发消息全部 404
     assert (await client.get(f"/api/interviews/{interview_id}")).status_code == 404
     assert (await client.get(f"/api/interviews/{interview_id}/report")).status_code == 404
+    assert (await client.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 404
     async with client.stream(
         "POST", f"/api/interviews/{interview_id}/messages", json={"content": "hi"},
     ) as r:
@@ -283,6 +287,53 @@ async def test_未结束查报告404(client):
     interview_id, _ = await _create(client)
     r = await client.get(f"/api/interviews/{interview_id}/report")
     assert r.status_code == 404
+
+
+def _pdf_text(data: bytes) -> str:
+    """PDF 全文去空白（CJK 逐字排版会插空格，比对前一律剥掉）。"""
+    reader = PdfReader(io.BytesIO(data))
+    return re.sub(r"\s+", "", "\n".join(page.extract_text() or "" for page in reader.pages))
+
+
+async def test_导出报告PDF(client):
+    """FR-18：导出真文本 PDF（中文可读回），内容与报告接口同源。"""
+    interview_id, _ = await _create(client)
+    for turn in TURNS:
+        await _send(client, interview_id, turn)
+
+    r = await client.get(f"/api/interviews/{interview_id}/report.pdf")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/pdf"
+    assert r.headers["content-disposition"].startswith("attachment;")
+    assert "filename*=UTF-8''" in r.headers["content-disposition"]  # 中文名走 RFC 5987 编码
+    assert r.content[:5] == b"%PDF-"
+
+    # 报告主体来自同一份 payload：总评/逐题点评/学习建议/五维标签都在，且无缺字
+    text = _pdf_text(r.content)
+    assert "�" not in text
+    assert "Agent/AI工程师" in text
+    assert "整体表现良好" in text and "回答到位" in text and "深入检索" in text
+    assert "技术深度" in text and "问题解决" in text
+    assert "参考答案" in text  # 题库题（q_arch）带参考答案
+    assert "码达" in text
+
+
+async def test_未结束与不存在导出PDF404(client):
+    interview_id, _ = await _create(client)
+    assert (await client.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 404
+    assert (await client.get("/api/interviews/nope/report.pdf")).status_code == 404
+
+
+async def test_导出他人场次报告PDF404(login_as):
+    """越权与不存在同为 404（不泄露场次存在性）——PDF 端点沿用报告端点的归属校验。"""
+    alice = await login_as("alice", "secret123")
+    bob = await login_as("bob", "secret123")
+    interview_id, _ = await _create(alice)
+    for turn in TURNS:
+        await _send(alice, interview_id, turn)
+
+    assert (await alice.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 200
+    assert (await bob.get(f"/api/interviews/{interview_id}/report.pdf")).status_code == 404
 
 
 async def test_已结束再发消息409(client):
