@@ -392,7 +392,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 ## 4.13 离线评估体系（P1-M12）
 
 **定位**：`backend/evals/` 是离线评测包（**只被 `scripts/` 下的入口 import，`app` 永不 import**）。
-评测**不进 pytest 常规套件**——它要真 Qdrant + 嵌入容器 + DeepSeek/SiliconFlow，而常规用例必须保持无密钥可跑（`uv run pytest` 仍是一条命令）。门禁是显式命令。会话 1 交付**检索评估**（RAGAS 离线），会话 2 交付**评分一致性**（DeepEval 门禁）。
+评测**不进 pytest 常规套件**——它要真 Qdrant + 嵌入容器 + DeepSeek/SiliconFlow，而常规用例必须保持无密钥可跑（`uv run pytest` 仍是一条命令）。门禁是显式命令。会话 1 交付**检索评估**（RAGAS 离线），会话 2 交付**评分一致性**（门禁为**自研** harness：DeepEval 没有现成的一致性/准确性 metric，引包只买到 TestCase/assert 骨架——选型修正与理由）。
 
 ### 检索基线（`scripts/eval_retrieval_run.py`）
 
@@ -413,6 +413,27 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **无漏点的组不参与**（查询退化为纯域名）：没有「要补的知识点」，这个指标**无从打分**——不是 0 分也不是 1 分，是「不适用」，单列计数。
 - **总体 = 组间等权**（每组先按组内漏点取均值）：否则漏点多的域会顶掉漏点少的域。
 - **ragas 接线三条**：指标名是 `ContextRelevance`（0.3 起由 `ContextRelevancy` 改名）；`llm_factory` 内部建 `ChatOpenAI`、**只认 `OPENAI_API_KEY` 这个变量名**（脚本内从 settings 直接赋值——用 `setdefault` 会静默沿用开发机 shell 里的别的键，表现为每个样本 401 且**被 ragas 吞成 nan 分数**，故脚本对 nan 直接 `SystemExit`）；DeepSeek 的 `json_schema` 坑位（§11.1）没有触发——ragas 走 prompt 内注入 schema，不是 `response_format`。
+
+### 评分一致性（`scripts/eval_judge_run.py`，会话 2）
+
+三条线：**一致性**（同一道题、同一份回答重复评 K 次，分数自己晃多少——**噪声地板**）、**准确性**（vs 人审期望分）、**区分度**（同一道题的弱/中/强三档是否单调）。
+
+- **测的就是生产 prompt**：消息由 `judge.judge_messages(...)` 构造（judge 节点同一入口）、schema 走 `score_schema_for`、生产温度走 `judge.JUDGE_TEMPERATURE`（0.3）。评测若自己拼一遍 prompt，模板一改就静默失配——由单测钉死「评测消息与生产节点逐字一致」。
+- **golden 三臂**（`judge_items.json`，37 条 / sha256 `8d9afad7`）：`real` 20 条（真库技术面历史回答，按总分**分层抽**：1-2/2-3/3-4/4-5 四档各 5）；`behavioral` 8 条（行为面，四场各 2）；`persona` 9 条（**同一道题**的弱/中/强三答，`group` 相同——不同题的弱中强不构成单调性证据，由 golden 校验拦下）。真库样本取**最终记录**（首答+追问补充的合并回答）。
+- **期望分 = 独立标注，不是「当时实得」**：`deepseek-v4-pro` 温度 0 按独立 rubric 预判（与评分官 flash 异模型，避免同源偏差互相抵消）→ `judge_review.md` 人工复核。**拿实得分当基准 = 评分官自己给自己打分**，实得只作对照。复核人记为 Claude（AI 复核，不冒充人工）；`expected` 里同时记 `covered_indexes`（期望覆盖的关键点序号）。
+- **指标**：一致性 = σ̄（逐题总分的样本标准差取均值）· 完全一致率 · 覆盖率集合 Jaccard · 覆盖率比例标准差 · error_flag 翻转率；准确性 = 总分/各维 MAE + **偏置**（正 = 评分官偏高；只看 MAE 分不出放水与苛刻）· 维度命中率（|多次运行均值 − 期望| ≤ 0.5）· 覆盖率 F1 **与**覆盖率比例误差；区分度 = 每题各档取中位数后逐组判严格递增。
+- **覆盖率为什么两个口径**：集合口径（F1）按关键点**原文精确匹配**，而评分官偶尔截断/改写长要点（实测 7/185 与 3/185 次运行：把带从句的长要点只回前半句，或换成自己的说法）——这类点对不上会让集合口径**低估**；比例口径只比「答到了几成」，不受改写影响，且它正是 70% 追问阈值的输入。两个都读：严格的那个给诊断（`unmatched_key_points` 计数不静默），稳的那个给判据。
+- **温度对照是实验，不改生产**：`--no-control` 可关。实测温度 0 的 σ̄ 约为 0.3 的一半（0.063 vs 0.126，该对照与主基线跑自**不同的两轮**——同一 golden，生产臂两轮的 σ̄ 分别是 0.126 与 0.113，这个差就是上文「指标自身波动」）、完全一致率 0.595 vs 0.378，准确性持平（MAE 0.218 vs 0.227）。**要不要改生产温度是独立决策**（影响评分/报告/PDF/能力曲线，需单独回归），本脚本不改任何生产常量。
+- **基线**（2026-10-01，K=5，生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3** 组。**读法**：MAE 与 σ̄ 同量级（0.225 vs 0.113），即评分官的误差约为它自身晃动幅度的 2 倍——**低于 σ̄ 的 MAE 变化不构成结论**。
+- **局限（如实记进报告）**：行为面样本集中低-中分段（真库单题均值 1.6–3.8，无 ≥4 分），高分段的评分一致性未覆盖；5/8 条行为题**无关键点**（真库 14 道启用行为题里有 6 道 `key_points` 为空，覆盖率对它们不适用、引擎里恒为 1.0）——**M11 遗留、非评测侧问题，归属 P2 补题库时处理**；评测输入统一为「单轮回答」（`followup_log` 恒「无」），追问过程中的评分不在覆盖范围。
+
+### 门禁（`scripts/eval_judge_gate.py`）
+
+`uv run python scripts/eval_judge_gate.py`（跑生产臂 K=5 再判；`--result <file>` 判已有结果、不重新调用）。**失败非零退出**，逐项列出哪里没过。改评分 prompt / 维度表 / 评分模型 / 温度之后必须跑。
+
+- **阈值 = 基线 + 余量**，余量取自「同一 golden 连跑多轮生产臂」的指标**自身波动**（三轮实证：σ̄ 0.126/0.113/0.095 · MAE 0.227/0.225/0.209 · 偏置 +0.039/+0.017/+0.031 · 维度命中率 ±0.016），取 2–4 倍作安全边际。检查项：σ̄、总分 MAE、偏置绝对值、覆盖率比例误差、三档单调组数、无掉出样本、调用零失败。**门禁自身也在这三轮上复验过**（第三轮即以门禁默认路径跑出，全过）。
+- **完全一致率不进门禁**：37 条样本上的二值统计量，单次抽样噪声 ≈0.077（`sqrt(0.32·0.68/37)`），比「值得叫停的退化」还大——拿它设阈值只会误报。它照常进报告，读时带上噪声量级。
+- **golden `sha256` 不一致 → 拒绝比较**（换 golden = 换基准）：提示重跑基线并更新门禁常量，与检索侧的哈希纪律同源。
 
 ### 依赖（dev 组）
 
@@ -600,6 +621,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 8 | test_capacity / test_bank_query / test_bank_api（P1-M6） | 容量：配额 vs 直供的差集、自适应基准 = L1、`ok` 与不足明细互斥；浏览：分页稳定（同序不重不漏）、分面只计 enabled、来源按主源排序；接口：四筛选 + 关键词双模式（browse 有 total / search 无）、页码越界、`counts` 解析（夹紧去重升序）、未登录 401 |
 | 9 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
 | 10 | test_retrieval_metrics / test_golden / test_retrieve_pool / test_label_review（P1-M12） | 指标口径（分级增益 `2^g−1`、二值相关 `≥1`、退化输入返回 0 而不抛错）；golden 校验（id 重复 / scene 白名单 / filters 未知维度 / grade 越界 / **没有任何相关项的 query**）；池构建（按上限截断、并集保序去重、池比单变体深）；复核产物（「最该看的行」只收「✗0 排进前 5」）。**真栈基线不进 pytest**（要真 Qdrant/嵌入/rerank），由 `scripts/eval_retrieval_run.py` 显式跑 |
+| 11 | test_judge_metrics / test_judge_golden / test_judge_messages / test_judge_run / test_personas / test_corpus_samples（P1-M12 会话 2） | 指标口径（样本标准差、Jaccard 空集取 1、无关键点时空值而非 0、三档取中位数）；golden 校验（臂与类型绑定、维度键必须与类型维度表一致、**同组题干必须一致**、档位重复/缺档）；**评测消息与生产节点逐字一致**（`judge_messages` 单一来源 + 生产温度常量）；运行层（`bool` 不混进维度表、重试一次、失败记 failure 不静默、有效运行不足的样本被排除并亮出来）；persona（不喂关键点、未知档位报错）；真库取样（关键点优先题库原表、生成题退回并集、按类型过滤、老场次 NULL ≡ tech）。**真栈基线不进 pytest**，由 `scripts/eval_judge_run.py` 显式跑 |
 
 ## 11. 风险注意点（实现时强制）
 
@@ -611,11 +633,14 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 6. `chat_history` 只增不截（回放与 SSE 差分共用，见 §4.6）——别在 `add_history` 里做上限
 7. 回放事件（§4.7）：`detail` 必须纯标量（进 checkpoint 序列化）；**决策与原因必须同源**（`explain_decision`），禁止在别处另算一份「换题原因」——两份实现迟早漂移，而回放的价值就在于它忠实
 8. 检索指标（§4.13）是**池内口径**（池外视作不相关）：跨版本可比，**不能当绝对召回率读**；改池策略 = 换基准——两份结果文件的 golden `sha256` 不同就只能各自读，别直接比数字。差值小于噪声地板（`hybrid` ±0.005）时不要下结论
+9. 评分门禁（§4.13 会话 2）的阈值 = **基线 + 余量**，余量按「同一基线连跑两次的指标自身波动」定：**MAE 低于评分官的 σ̄ 时不构成结论**（分不出「偏了」还是「本来就晃」）；golden `sha256` 变了 = 换了基准，门禁**拒绝比较**并提示先重跑基线。改 `judge_messages`/维度表/评分模型后必须跑一次门禁
+10. 评分评测的输入统一是「单轮回答」（`followup_log` 恒「无」）：带追问的真实样本取**合并后的最终答案**，中间轮次的评分任务不入 golden——重建其输入需要 trace，代价不值。这点的后果是「追问过程中的评分」不在覆盖范围内，如实写进报告局限
 
 ---
 
 ## 12. Changelog
 
+- 2026-10-01 P1-M12 会话 2（评估体系 · 评分一致性 + 门禁）：§4.13 新增「评分一致性」「门禁」两节（三条线、生产 prompt 单一来源、golden 三臂与分层抽样、期望分=独立标注非实得、覆盖率两口径的理由、温度对照的边界、基线数字与局限、门禁阈值来自两次基线的自身波动、完全一致率不进门的理由、哈希纪律）+ §10 测试行 11 + §11 风险点 9/10（门禁阈值纪律、单轮回答形态的局限）。**选型修正**：原定 DeepEval 改**自研 harness**——它没有现成的一致性/准确性 metric，本会话要测的三样都得自研，引包只买到 TestCase/assert 骨架 + 重依赖树（PRD §8.1 有专节，规划报告按历史记录保留原文 + 顶部修订注）。新增 `app/graph/nodes/judge.py::judge_messages` + `JUDGE_TEMPERATURE`（**评测与生产共用同一入口**，单测钉死逐字一致）、`evals/judge_metrics.py`（一致性/准确性/单调性纯函数）、`evals/judge_golden.py`（校验：臂与类型绑定、维度键、**同组题干必须一致**）、`evals/judge_run.py`（生产 prompt 跑 K 次 + 失败不静默 + 原始运行落盘可复算）、`evals/personas.py`（三档 persona，从 /tmp 脚本归档，硬约束=不喂关键点）、`evals/corpus.py::answer_samples`（真库取样，关键点优先题库原表）；`scripts/eval_judge_golden.py` / `eval_judge_run.py` / `eval_judge_gate.py`。**基线**（37 条 golden / K=5 / 生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3**；**温度对照**（实验，未改生产）：温度 0 的 σ̄ 0.063（≈0.3 的一半）、准确性持平；**指标自身的重复性**（两次基线）：σ̄ ±0.013 · MAE ±0.002 · 偏置 ±0.022。**实测发现**：评分官会截断/改写长的关键点（7/185 与 3/185 次），故覆盖率补「比例误差」口径（集合口径会被改写低估）；真库 6 道启用行为题 `key_points` 为空（M11 遗留）。测试 552 → 606 passed
 - 2026-10-01 P1-M12 会话 1（评估体系 · 检索评估）：新增 §4.13（离线评测包的定位与边界、四变体与**池内口径**、分级标注 `2^g−1` 与 Precision 取代 MRR 的理由、噪声地板、golden 构建与人工复核口径、RAGAS 按**单条漏点**打分的理由、dev 组三条依赖钉法）+ §10 测试行 + §11 风险点 8（池内口径与哈希不同不可比）。新增 `backend/evals/`（`retrieval_metrics` 指标纯函数 / `golden` 校验 / `retrieve` 四变体 / `label_relevance` 判级与复核产物 / `corpus` 真库报告只读）+ `scripts/eval_build_golden.py`、`scripts/eval_retrieval_run.py`、`scripts/eval_ragas_context.py`；`recommend.build_query_items` 返回值补 `missed` 字段（拼进 query 的漏点原文——离线评测按单条漏点打分要用，切字符串不可靠：187 条漏点里有 4 条自身含「；」）。**真栈基线**（31 条 query / 1972 条标注 / golden sha256 `1e40a8d6e84a`）：dense NDCG@5 0.787 · sparse 0.749 · **rrf 0.783** · hybrid（生产）0.746；**rerank 净贡献按场景分叉**——bank_search（短查询，18 条）**+0.045**、missed_point（长查询：域名标签 + 多个漏点拼接，13 条）**−0.152**；域维度上 tool-use（0.634）与 agent-architecture（0.676）是 rerank 伤得最重的两处。**RAGAS ContextRelevance（按单条漏点，13 组 / 67 条漏点）**：总体 0.504，tool-use 0.217 与 agent-architecture 0.208 垫底——与 NDCG 的域排序**互相印证**（两条独立指标指向同一处短板）。噪声地板：同 golden 连跑两次 dense/sparse 逐位一致、rrf ±0.003、hybrid ±0.005。测试 510 → 552 passed
 - 2026-10-01 P1-M11（行为面 / HR 面 FR-22）：新增 §4.12（会话类型与 position 正交、单 BEHAVIORAL 段流程、行为题整池检索（不限难度）、题量上限 10、行为面五维与第 3 维对齐、**deepen-only 追问**（key_points 是讲述结构不是知识点）、聚合（域为空、短板改维度）、报告/PDF/推荐/档案的四处分派、`ASKABLE_DOMAINS`「可出题但不属于技术配额」、`enable_behavioral.py` 的 Qdrant 逐点核对验收、不做清单）；§4.1 补 `Phase.BEHAVIORAL` / `BaseScore`+`BehavioralScoreItem` / `interview_type`；§4.3 补 `explain_decision(deepen_only=)` 与 `Reason.DEEPEN_LIMIT`；§4.11 补**行为面排除（过滤字段 = 报告 payload 的 `interview_type`）**与响应新增 `excluded`；§7 创建接口补 `interview_type`（行为面 >10 题 422）、推荐与档案契约同步；§8 interviews 补 `interview_type` 列（老库补列 NULL ≡ tech，不回填）。新增 `data/scripts/enable_behavioral.py`（幂等：`finalize_status` 同源判定 + ingest 同源点构造 + **写后从 Qdrant 读回逐点核对**；真库已执行：behavioral enabled 14 题 / Qdrant 1099 点）。测试 470 → 506 passed
 - 2026-09-30 P1-M10（能力档案 FR-19）：新增 §4.11（数据源 = 报告 payload、取数 `reports ⋈ interviews` 升序、**以 reports 表为准不按 status 过滤**、总分口径单一来源 `aggregate.overall_score`、域洞断线不补零、短板三态 `new/persistent/resolved` 与首场不产出、响应不含图表序列的理由、端点无场次参数故无 404 面、前端三形态与小倍图选型）与 §7 的 `/api/profile` 契约；§7 鉴权范围加 `/api/profile`。**总分口径收敛（D1）**：报告 payload 新增 `overall`（五维等权均值），报告页 / PDF / 档案共用同一个数——此前报告页与 PDF 各写了一遍同一公式，档案会是第三处。新增 `app/tools/profile.py`（`build_profile` 纯函数）、`app/api/profile.py`、`db.list_reports`、`service.get_profile`；前端 `lib/profile.ts`（刻度 / 断点 / 变化文案纯逻辑，vitest）、`components/profile-charts.tsx`（总分主曲线 + 小倍图）、`components/profile-client.tsx`、`/profile` 页与导航转正（**五项导航全部就绪**）；`report-charts` 的 `ChartFrame`/`tooltipStyles` 改为导出复用（不复制一套图表外观）
