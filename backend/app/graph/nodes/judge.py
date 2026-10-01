@@ -23,6 +23,37 @@ from app.graph.state import (
     score_schema_for,
 )
 
+JUDGE_TEMPERATURE = 0.3
+"""评分官温度（生产值）。**离线评测（P1-M12 会话 2）以它为「生产臂」的基准**——
+温度 0 只作对照实验，改这个值要连带回归评分/报告/PDF（评分波动直接进能力曲线）。"""
+
+
+def judge_messages(
+    *,
+    question: str,
+    key_points: list[str],
+    answer: str,
+    followup_log: list[str] | tuple[str, ...] = (),
+    interview_type: str,
+) -> list[dict]:
+    """评分官的对话消息（**生产与离线评测的唯一构造入口**）。
+
+    评测 harness 若自己拼一遍 prompt，模板一改就会静默失配——量到的是旧口径。
+    故这里抽成公共函数：`judge_node` 与 `evals.judge_run` 都从这里拿消息，
+    「评测测的就是生产 prompt」由单测钉死。
+    """
+    template = (
+        BEHAVIORAL_JUDGE_TEMPLATE
+        if interview_type == INTERVIEW_BEHAVIORAL
+        else JUDGE_TEMPLATE
+    )
+    return [{"role": "system", "content": template.format(
+        question=question,
+        key_points="\n".join(f"- {k}" for k in key_points),
+        followup_log="\n".join(f"- {line}" for line in followup_log) or "无",
+        content=answer,
+    )}]
+
 
 async def judge_node(state: InterviewState) -> dict:
     question = state.current_question
@@ -31,20 +62,16 @@ async def judge_node(state: InterviewState) -> dict:
     # 先合并再评分（P1-M4.5-R1）：判官看到累计回答（首答+全部追问补充，按标记分段），
     # 「评分以当前掌握程度为准」的 prompt 口径才真正可执行；覆盖率允许下降，反映真实掌握程度
     question.answer = merge_answer(question.answer, state.user_input)
-    template = (
-        BEHAVIORAL_JUDGE_TEMPLATE
-        if state.interview_type == INTERVIEW_BEHAVIORAL
-        else JUDGE_TEMPLATE
-    )
     score = await llm.chat_json(
-        [{"role": "system", "content": template.format(
+        judge_messages(
             question=question.text,
-            key_points="\n".join(f"- {k}" for k in question.key_points),
-            followup_log="\n".join(f"- {line}" for line in question.followup_log) or "无",
-            content=question.answer,
-        )}],
+            key_points=question.key_points,
+            answer=question.answer,
+            followup_log=question.followup_log,
+            interview_type=state.interview_type,
+        ),
         schema=score_schema_for(state.interview_type),
-        temperature=0.3,
+        temperature=JUDGE_TEMPERATURE,
     )
     question.score = score
     add_history(state, "user", state.user_input)
