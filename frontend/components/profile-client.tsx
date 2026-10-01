@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 
-import { MiniTrend, OverallTrend } from "@/components/profile-charts";
+import { DomainHeatmap, OverallTrend } from "@/components/profile-charts";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { Button, buttonVariants } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProfile, type ProfileResponse, type ProfileSession } from "@/lib/api";
 import {
@@ -18,7 +18,20 @@ import {
   domainLabel,
 } from "@/lib/constants";
 import { formatScore } from "@/lib/format";
-import { deltaLabel, overallRows, profileStage, scoreRows, tickLabels, weaknessRows } from "@/lib/profile";
+import {
+  HEATMAP_WINDOW,
+  WEAKNESS_WINDOW,
+  deltaLabel,
+  dimensionStats,
+  heatRows,
+  heatmapWindow,
+  insightLine,
+  overallRows,
+  profileStage,
+  recentSlice,
+  tickLabels,
+  weaknessRows,
+} from "@/lib/profile";
 import { cn } from "@/lib/utils";
 
 /**
@@ -27,6 +40,9 @@ import { cn } from "@/lib/utils";
  * 三种形态（判定在 lib/profile.ts）：**空档案**给引导与入口（空态不只是告知，要给出路）、
  * **只有一场**画不出曲线故给该场快照、**多场**才是完整档案。
  * 数据一次取回、本地切图（场次规模小，不为切图多跑往返）。
+ *
+ * 多场态的**卡片顺序 = 认知路径**（P1-M10.5 用户定）：五维对照（我是谁，静态）→
+ * 总分曲线（在变好还是变差，整体）→ 知识域趋势（哪个细分方向，交叉对比）→ 短板变化（逐场明细）。
  */
 export function ProfileClient() {
   const router = useRouter();
@@ -80,6 +96,7 @@ export function ProfileClient() {
   const sessions = data.sessions;
   const latest = sessions[sessions.length - 1];
   const labels = tickLabels(sessions);
+  const insight = insightLine(sessions, WEIGHTED_DOMAINS);
   const labelOf = (interviewId: string) =>
     labels[sessions.findIndex((session) => session.interview_id === interviewId)] ?? "";
 
@@ -88,9 +105,16 @@ export function ProfileClient() {
       <SummaryTiles data={data} labelOf={labelOf} />
 
       {stage === "single" ? (
-        <SingleSession session={latest} />
+        // 单场态没有曲线与短板变化，顺序仍是「先快照、后明细」
+        <>
+          <SingleSession session={latest} />
+          <HeatmapCard sessions={sessions} labels={labels} insight={insight} />
+          <DimensionCard sessions={sessions} />
+        </>
       ) : (
         <>
+          <DimensionCard sessions={sessions} />
+
           <Card>
             <CardHeader>
               <CardTitle>总分曲线</CardTitle>
@@ -104,63 +128,76 @@ export function ProfileClient() {
             </CardContent>
           </Card>
 
+          <HeatmapCard sessions={sessions} labels={labels} insight={insight} />
+
           <WeaknessChanges data={data} />
         </>
       )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>知识域趋势</CardTitle>
-        </CardHeader>
-        <CardContent className="flex flex-col gap-3">
-          <p className="text-xs text-muted-foreground">
-            每场只考部分知识域，没考到的场次曲线断开——不是 0 分。
-          </p>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {WEIGHTED_DOMAINS.map((domain) => {
-              const rows = scoreRows(sessions, [domain], "domain_scores");
-              const values = rows
-                .map((row) => row[domain])
-                .filter((value): value is number => typeof value === "number");
-              return (
-                <MiniTrend
-                  key={domain}
-                  title={domainLabel(domain)}
-                  rows={rows}
-                  dataKey={domain}
-                  footnote={
-                    values.length ? `最近 ${formatScore(values[values.length - 1])}` : null
-                  }
-                />
-              );
-            })}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>五维趋势</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {DIMENSIONS.map((dim) => {
-            const rows = scoreRows(sessions, [dim.key], "scores");
-            const values = rows
-              .map((row) => row[dim.key])
-              .filter((value): value is number => typeof value === "number");
-            return (
-              <MiniTrend
-                key={dim.key}
-                title={dim.label}
-                rows={rows}
-                dataKey={dim.key}
-                footnote={values.length ? `最近 ${formatScore(values[values.length - 1])}` : null}
-              />
-            );
-          })}
-        </CardContent>
-      </Card>
     </div>
+  );
+}
+
+/** 知识域热力图卡：默认只出最近 7 场（列再多数字就难读），场次超了才给「查看全部」。 */
+function HeatmapCard({
+  sessions,
+  labels,
+  insight,
+}: {
+  sessions: ProfileSession[];
+  labels: string[];
+  insight: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const shown = heatmapWindow(sessions, labels, expanded);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>知识域趋势</CardTitle>
+        {sessions.length > HEATMAP_WINDOW ? (
+          <CardAction>
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "收起" : `查看全部 ${sessions.length} 场`}
+            </Button>
+          </CardAction>
+        ) : null}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        {/* 不写「颜色越深分越高」：暗色主题下高分是更亮，这句只在明色成立 */}
+        <p className="text-xs text-muted-foreground">
+          行 = 知识域、列 = 场次，同一行的左右就是该域的走向；颜色分五档表示分数高低（见下方色阶）。
+        </p>
+        <DomainHeatmap rows={heatRows(shown.sessions, WEIGHTED_DOMAINS)} labels={shown.labels} />
+        {insight ? <p className="text-sm text-muted-foreground">洞察：{insight}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * 五维对照（M10.5）：场均 / 最近一场两列数字。
+ *
+ * 五维的走向与总分曲线同步（真数据上五条线近乎平行），单独画 5 张趋势图是重复信息；
+ * 真正有差异的是**水平**——哪一维常年偏弱，数字比线读得准，也不必引入分类色板。
+ */
+function DimensionCard({ sessions }: { sessions: ProfileSession[] }) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>五维对照</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-2">
+        <p className="text-xs text-muted-foreground">
+          五维各场同涨同跌（走向见下方总分曲线），这里只对照各自的位置——哪一维常年偏弱。
+        </p>
+        <DimensionTable sessions={sessions} />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -205,6 +242,28 @@ function SummaryTiles({
             <span className="truncate text-xs text-muted-foreground">{tile.hint}</span>
           </CardContent>
         </Card>
+      ))}
+    </div>
+  );
+}
+
+function DimensionTable({ sessions }: { sessions: ProfileSession[] }) {
+  const stats = dimensionStats(
+    sessions,
+    DIMENSIONS.map((dim) => dim.key),
+  );
+
+  return (
+    <div className="grid grid-cols-[1fr_4.5rem_4.5rem] items-center gap-y-1 text-sm">
+      <span className="text-xs text-muted-foreground">维度</span>
+      <span className="text-right text-xs text-muted-foreground">场均</span>
+      <span className="text-right text-xs text-muted-foreground">最近一场</span>
+      {DIMENSIONS.map((dim, index) => (
+        <Fragment key={dim.key}>
+          <span className="text-muted-foreground">{dim.label}</span>
+          <span className="text-right tabular-nums">{formatScore(stats[index].average)}</span>
+          <span className="text-right tabular-nums">{formatScore(stats[index].latest)}</span>
+        </Fragment>
       ))}
     </div>
   );
@@ -263,14 +322,34 @@ function SingleSession({ session }: { session: ProfileSession }) {
   );
 }
 
-/** 短板变化：逐场对比上一场，三种走向分开说（不是笼统的「短板变了」）。 */
+/**
+ * 短板变化：逐场对比上一场，三种走向分开说（不是笼统的「短板变了」）。
+ *
+ * 默认只出最近 5 场：每场 3–5 行文字，再多场次就淹没在列表里；想看旧场次的明细，
+ * 点总分曲线上对应的点进那一场的报告（那里有完整复盘）。
+ */
 function WeaknessChanges({ data }: { data: ProfileResponse }) {
-  const rows = weaknessRows(data.sessions, data.weakness_changes).reverse(); // 最近一场在最上面
+  const [expanded, setExpanded] = useState(false);
+  // 先按时间升序取尾部窗口、再倒序展示（顺序反了会切到最旧的 5 场）
+  const rows = recentSlice(weaknessRows(data.sessions, data.weakness_changes), WEAKNESS_WINDOW, expanded)
+    .reverse(); // 最近一场在最上面
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>短板变化</CardTitle>
+        {data.weakness_changes.length > WEAKNESS_WINDOW ? (
+          <CardAction>
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {expanded ? "收起" : `查看全部 ${data.weakness_changes.length} 场`}
+            </Button>
+          </CardAction>
+        ) : null}
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {rows.map((row) => {

@@ -42,6 +42,33 @@
   --warning: oklch(0.63 0.13 70);
   --warning-foreground: oklch(0.99 0.01 70);
 
+  /*
+   * 热力图色阶（P1-M10.5，能力档案专用）：品牌 H240 单色 5 级，
+   * 固定锚定评分制 1–5——同一分数永远同一颜色，新增场次不会重刷历史格子的颜色。
+   *
+   * 明暗各一套步值（暗色是重新选步不是翻转：暗=低分、亮=高分）。已过
+   * dataviz validate_palette.js 校验（明暗各一次）：单调 L / 相邻 ΔL≥0.06 / 单色相
+   * 三项 PASS；「最近底色档 ≥2:1」一项是 sequential 热力图被该 skill 明确豁免的口径
+   * （其文档自带的 sequential 蓝阶在同一检查下同样只挂这一项，1.32:1 < 本阶 1.53:1）。
+   * 兜底是二级编码：**每格都印数字**（1–5 档数字对比分别 ≥10 / ≥5，全部 ≥4.5:1）+ 单元格描边，
+   * 颜色只是副渠道，不单独表意。
+   */
+  --heat-1: oklch(0.86 0.042 240);
+  --heat-2: oklch(0.76 0.068 240);
+  --heat-3: oklch(0.66 0.09 240);
+  --heat-4: oklch(0.55 0.108 240);
+  --heat-5: oklch(0.44 0.116 240);
+  /* 两档墨色写死值、不写 var(--foreground)：正文色会跟着明暗主题翻，
+     而墨色必须跟着**格底色**走（暗色下 4–5 档是亮底，仍要用深字）。 */
+  --heat-ink-dark: oklch(0.235 0.012 250);
+  --heat-ink-light: oklch(0.99 0.005 240);
+  /* 数字墨色按档给，翻转点在 3→4 档（组件不做明暗判断，只按档取令牌） */
+  --heat-fg-1: var(--heat-ink-dark);
+  --heat-fg-2: var(--heat-ink-dark);
+  --heat-fg-3: var(--heat-ink-dark);
+  --heat-fg-4: var(--heat-ink-light);
+  --heat-fg-5: var(--heat-ink-light);
+
   --border: oklch(0.912 0.005 240);
   --input: oklch(0.912 0.005 240);
   --ring: oklch(0.5 0.113 240);
@@ -75,6 +102,19 @@
 
     --warning: oklch(0.66 0.12 72);
     --warning-foreground: oklch(0.18 0.03 72);
+
+    /* 热力图色阶（暗色）：同一品牌色相重新选步——暗=低分、亮=高分；
+       数字墨色的翻转点仍是 3→4 档，但方向与明色相反（亮底用深字）。 */
+    --heat-1: oklch(0.34 0.055 240);
+    --heat-2: oklch(0.44 0.075 240);
+    --heat-3: oklch(0.53 0.092 240);
+    --heat-4: oklch(0.66 0.11 240);
+    --heat-5: oklch(0.78 0.115 240);
+    --heat-fg-1: var(--heat-ink-light);
+    --heat-fg-2: var(--heat-ink-light);
+    --heat-fg-3: var(--heat-ink-light);
+    --heat-fg-4: var(--heat-ink-dark);
+    --heat-fg-5: var(--heat-ink-dark);
 
     --border: oklch(1 0 0 / 12%);
     --input: oklch(1 0 0 / 16%);

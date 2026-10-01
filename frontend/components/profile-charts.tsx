@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import {
   CartesianGrid,
   Line,
@@ -12,14 +13,18 @@ import {
 
 import { ChartFrame, tooltipStyles } from "@/components/report-charts";
 import { useChartTokens } from "@/lib/chart-tokens";
-import type { ProfileChartRow } from "@/lib/profile";
+import { domainLabel } from "@/lib/constants";
+import { formatScore } from "@/lib/format";
+import { axisTicks, heatLevel, type HeatRow, type ProfileChartRow } from "@/lib/profile";
+import { cn } from "@/lib/utils";
 
 /**
- * 能力档案图表（FR-19）。
+ * 能力档案图表（FR-19 / P1-M10.5）。
  *
- * 形态选择：总分用一张主曲线；五维与知识域用**小倍图**（每项一张迷你曲线）而不是多线图——
- * 5 条 / 6 条线缠在一张图里，两条线交叉的地方用户分不清谁是谁，还得配图例和一套分类色板；
- * 各自成图则「这条线在涨还是跌」一眼可见，每张只用一个主色。
+ * 形态选择：总分用一张主曲线；知识域用**热力图**（行 = 域、列 = 场次、格 = 色 + 数字）——
+ * 小倍图（每域一张迷你曲线）在真数据上暴露了硬伤：**各图 X 轴刻度不对齐**，
+ * 6 张形状不同的小图之间无法横向比较「第 3 场里哪个域最强」。热力图天然解决这一点
+ * （行 = 单域走向、列 = 单场横截面），且没有「断线」这个视觉问题，缺场格直接写「未考」。
  */
 
 /** Y 轴固定 0–5：跨场次的图必须同刻度，否则「涨了」可能只是纵轴被放大了。 */
@@ -54,6 +59,9 @@ export function OverallTrend({
             <CartesianGrid stroke={tokens.border} vertical={false} />
             <XAxis
               dataKey="label"
+              // 标签只标「一天一个」（同日多场靠 tooltip 与热力图列头区分），
+              // 点为数据本身、不受 ticks 影响：横轴只控制标签密度
+              ticks={axisTicks(rows.map((row) => String(row.label)))}
               axisLine={false}
               tickLine={false}
               tick={{ fill: tokens.muted, fontSize: 12 }}
@@ -87,61 +95,81 @@ export function OverallTrend({
 }
 
 /**
- * 迷你趋势图（小倍图单元）：一项一张。
+ * 知识域热力图：行 = 知识域、列 = 场次、单元格 = 色 + 数字；缺场写「未考」。
  *
- * `connectNulls={false}` 是**语义**不是样式：没考过的场次没有分，线在那里断开；
- * 连起来等于替用户编了一段「那场考了且得了这个分」的曲线。
+ * 用 CSS grid 而不是 recharts：后者没有热力图原语，用 Cell 拼是 hack；
+ * CSS grid 直接吃 CSS 变量（明暗自适应，不必等挂载后读令牌）、缺场格与窄屏横向滚动
+ * 都是天然的。**颜色只是副渠道**——每格都印数字、缺场格印「未考」，
+ * 色阶只负责「一眼看出高低」，不单独表意（同报告页 DomainBars 的口径）。
  */
-export function MiniTrend({
-  title,
-  rows,
-  dataKey,
-  footnote,
-}: {
-  title: string;
-  rows: ProfileChartRow[];
-  dataKey: string;
-  footnote?: string | null;
-}) {
-  const { tokens, mounted } = useChartTokens();
-  const hasValue = rows.some((row) => typeof row[dataKey] === "number");
-
+export function DomainHeatmap({ rows, labels }: { rows: HeatRow[]; labels: string[] }) {
   return (
-    <div className="rounded-lg border p-3">
-      <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="truncate text-sm">{title}</span>
-        {footnote ? (
-          <span className="shrink-0 text-xs text-muted-foreground">{footnote}</span>
-        ) : null}
+    <div className="flex flex-col gap-3">
+      <div className="overflow-x-auto">
+        <div
+          className="grid min-w-[520px] gap-1"
+          style={{
+            gridTemplateColumns: `minmax(6.5rem, 9rem) repeat(${labels.length}, minmax(3.25rem, 1fr))`,
+          }}
+        >
+          <div aria-hidden />
+          {labels.map((label) => (
+            <div key={label} className="pb-1 text-center text-xs text-muted-foreground">
+              {label}
+            </div>
+          ))}
+          {rows.map((row) => (
+            <Fragment key={row.domain}>
+              <div className="flex items-center pr-2 text-xs leading-snug text-muted-foreground">
+                {domainLabel(row.domain)}
+              </div>
+              {row.cells.map((value, index) => {
+                const level = heatLevel(value);
+                const title =
+                  value === null
+                    ? `${labels[index]} · ${domainLabel(row.domain)} · 未考`
+                    : `${labels[index]} · ${domainLabel(row.domain)} · ${formatScore(value)} 分`;
+                return (
+                  <div
+                    key={labels[index]}
+                    title={title}
+                    className={cn(
+                      "flex h-9 items-center justify-center rounded-[4px] text-xs tabular-nums",
+                      // 缺场不静默留白：写「未考」并虚线描边——「没有数据」与「低分」必须一眼分开
+                      value === null && "border border-dashed border-border text-[11px] text-muted-foreground",
+                    )}
+                    style={
+                      level === null
+                        ? undefined
+                        : { background: `var(--heat-${level})`, color: `var(--heat-fg-${level})` }
+                    }
+                  >
+                    {value === null ? "未考" : formatScore(value)}
+                  </div>
+                );
+              })}
+            </Fragment>
+          ))}
+        </div>
       </div>
-      {hasValue ? (
-        <ChartFrame height={96}>
-          {mounted && (
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rows} margin={{ top: 6, right: 6, bottom: 0, left: 6 }}>
-                <XAxis dataKey="label" hide />
-                <YAxis domain={Y_DOMAIN} ticks={Y_TICKS} hide />
-                <Tooltip
-                  {...tooltipStyles(tokens)}
-                  formatter={(value) => [value === null ? "该场未考" : `${value} 分`, title]}
-                />
-                <Line
-                  type="monotone"
-                  dataKey={dataKey}
-                  stroke={tokens.primary}
-                  strokeWidth={2}
-                  dot={{ r: 3, fill: tokens.primary, strokeWidth: 0 }}
-                  connectNulls={false}
-                  isAnimationActive={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          )}
-        </ChartFrame>
-      ) : (
-        // 不静默留白：从来没考过的域要说清楚，否则用户以为图表坏了
-        <p className="py-6 text-center text-xs text-muted-foreground">尚未考过</p>
-      )}
+
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span className="flex items-center gap-1">
+          低
+          {[1, 2, 3, 4, 5].map((level) => (
+            <span
+              key={level}
+              className="h-3.5 w-6 rounded-[3px]"
+              style={{ background: `var(--heat-${level})` }}
+            />
+          ))}
+          高
+        </span>
+        <span className="flex items-center gap-1">
+          <span className="h-3.5 w-6 rounded-[3px] border border-dashed border-border" />
+          未考 = 该场没有考到这个域
+        </span>
+      </div>
     </div>
   );
 }
