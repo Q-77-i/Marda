@@ -14,6 +14,8 @@ import {
   deltaLabel,
   dimensionStats,
   domainStats,
+  emptyProfileKind,
+  excludedNote,
   heatLevel,
   heatRows,
   heatmapWindow,
@@ -301,5 +303,19 @@ describe("weaknessRows", () => {
     ];
 
     expect(weaknessRows([], changes)[0].label).toMatch(/09-05/);
+  });
+});
+
+describe("行为面排除说明（P1-M11 D4）", () => {
+  it("有行为面场次时给一行说明，让用户知道那几场去哪了", () => {
+    expect(excludedNote({ behavioral: 3 })).toBe("另有 3 场行为面，不计入技术能力档案");
+    expect(excludedNote({})).toBeNull();
+    expect(excludedNote(undefined)).toBeNull();
+  });
+
+  it("空档案区分「一场没跑」与「只跑了行为面」（引导文案不同）", () => {
+    expect(emptyProfileKind({ behavioral: 2 })).toBe("behavioral-only");
+    expect(emptyProfileKind({})).toBe("none");
+    expect(emptyProfileKind(undefined)).toBe("none");
   });
 });

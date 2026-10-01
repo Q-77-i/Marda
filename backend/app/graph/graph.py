@@ -25,6 +25,7 @@ from app.graph.nodes import (
     report_node,
 )
 from app.graph.nodes.closing import CLOSING_QUESTION_LIMIT
+from app.domain import QUESTION_TYPE_BEHAVIORAL
 from app.graph.rules.advance import is_end_command, meets_end_quota
 from app.graph.rules.follow_up import Decision, decide_follow_up, remedy_used_total
 from app.graph.state import InterviewState, Phase
@@ -44,7 +45,7 @@ def route(state: InterviewState) -> str:
         return "intro"
     if state.phase is Phase.WARMUP:
         return "profile"
-    if state.phase in (Phase.TECH_BASE, Phase.PROJECT):
+    if state.phase in (Phase.TECH_BASE, Phase.PROJECT, Phase.BEHAVIORAL):
         return "judge"
     if state.phase is Phase.CLOSING:
         return "answer_candidate"
@@ -62,6 +63,8 @@ def followup_decision(state: InterviewState) -> str:
         deepen_used=question.deepen_used,
         remedy_used=remedy_used_total(state),
         asked_key_points=question.asked_key_points,
+        # 行为面 deepen-only（P1-M11 ①）：与 followup 节点同判据（按题型）
+        deepen_only=question.question_type == QUESTION_TYPE_BEHAVIORAL,
     )
     return (
         "followup"
@@ -134,12 +137,21 @@ def run_config(interview_id: str, question_count: int = 10) -> dict:
 
 def make_serde():
     """checkpoint 序列化器：显式允许 state 模块的 Pydantic 类型
-    （Phase/ScoreItem/QuestionRecord/InterviewState），否则 LangGraph 反序列化
-    告警且未来版本会阻断。T5 服务层构造 saver 时复用。"""
+    （Phase/ScoreItem/BehavioralScoreItem/QuestionRecord/InterviewState），否则 LangGraph
+    反序列化告警且未来版本会阻断。T5 服务层构造 saver 时复用。"""
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-    from app.graph.state import InterviewState, Phase, QuestionRecord, ScoreItem
+    from app.graph.state import (
+        BaseScore,
+        BehavioralScoreItem,
+        InterviewState,
+        Phase,
+        QuestionRecord,
+        ScoreItem,
+    )
 
     return JsonPlusSerializer(
-        allowed_msgpack_modules=[InterviewState, Phase, QuestionRecord, ScoreItem]
+        allowed_msgpack_modules=[
+            InterviewState, Phase, QuestionRecord, ScoreItem, BehavioralScoreItem, BaseScore
+        ]
     )

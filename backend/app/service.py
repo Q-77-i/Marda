@@ -21,7 +21,9 @@ from pydantic import BaseModel
 
 from app import db, llm, observability
 from app.config import Settings
+from app.domain import INTERVIEW_TECH
 from app.graph.graph import build_graph, make_serde, run_config
+from app.graph.rules.aggregate import dims_payload
 from app.graph.rules.capacity import ADAPTIVE, base_difficulty
 from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
@@ -194,14 +196,18 @@ class Service:
         question_count: int,
         user_id: str = "",
         difficulty: str = ADAPTIVE,
+        interview_type: str = INTERVIEW_TECH,
     ) -> AsyncIterator[dict]:
         """创建场次后立即执行开场（SPEC §7）：首事件 meta 携带 interview_id。
 
         difficulty（P1-M6 FR-14）：adaptive = 从 L1 起自适应升降；L1/L2/L3 = 全场锁定该档。
+        interview_type（P1-M11 FR-22）：tech / behavioral——只换题源与能力模型，
+        图结构与阶段推进复用（行为面走 BEHAVIORAL 单段）。
         """
         state = InterviewState(
             interview_id=interview_id,
             position=position,
+            interview_type=interview_type,
             user_id=user_id,  # 出题时并入本人私有题（P1-M7 FR-13）
             question_count=question_count,
             difficulty=base_difficulty(difficulty),
@@ -320,9 +326,13 @@ class Service:
         values = await self._current_values(interview_id)
         if not values:
             raise InterviewNotFoundError(interview_id)
+        interview_type = values.get("interview_type") or INTERVIEW_TECH
         return {
             "interview_id": interview_id,
             "position": values.get("position", ""),
+            # 维度表（P1-M11）：回放页按它渲染评分事件里的各维得分——judge 事件的 detail
+            # 是评分模型的裸 dump，键随会话类型变（技术面/行为面五维），标签不能靠前端猜
+            "dims": dims_payload(interview_type),
             "status": values.get("status", "running"),
             "answered_count": values.get("answered_count", 0),
             "question_count": values.get("question_count", 0),

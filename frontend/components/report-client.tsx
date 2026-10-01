@@ -13,7 +13,7 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
-import { DIMENSIONS, domainLabel } from "@/lib/constants";
+import { DIMENSIONS, domainLabel, isBehavioral } from "@/lib/constants";
 import { downloadBlob, reportFileName } from "@/lib/download";
 import { commentLabels, completedCount, formatScore, formatTime } from "@/lib/format";
 
@@ -86,11 +86,15 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
     }
   }
 
+  // 维度表由后端随 payload 给（P1-M11：行为面/技术面各一套，标签单一来源不在前端）；
+  // 老报告没有 dims → 退回技术面常量
+  const dims = report.dims?.length ? report.dims : DIMENSIONS;
+  const behavioral = isBehavioral(report.interview_type);
   // 总分以后端为准（P1-M10 D1：与能力档案曲线同一个数）；FR-19 之前的历史 payload
-  // 没有 overall 字段 → 按同一公式（五维等权均值）现算兜底
+  // 没有 overall 字段 → 按同一公式（各维等权均值）现算兜底
   const overall =
     report.overall ??
-    DIMENSIONS.reduce((sum, dim) => sum + (report.scores[dim.key] ?? 0), 0) / DIMENSIONS.length;
+    dims.reduce((sum, dim) => sum + (report.scores[dim.key] ?? 0), 0) / dims.length;
   const labels = commentLabels(
     report.per_question_comments,
     report.answered_count,
@@ -156,15 +160,15 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           </p>
         )}
 
-        <div className="grid gap-6 lg:grid-cols-2">
+        <div className={cn("grid gap-6", !behavioral && "lg:grid-cols-2")}>
           <Card>
             <CardHeader>
               <CardTitle>五维能力</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
-              <ScoreRadar scores={report.scores} />
+              <ScoreRadar scores={report.scores} dims={dims} />
               <ul className="grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
-                {DIMENSIONS.map((dim) => (
+                {dims.map((dim) => (
                   <li key={dim.key} className="flex items-baseline justify-between gap-2">
                     <span className="text-xs text-muted-foreground">{dim.label}</span>
                     <span className="tabular text-sm font-medium">
@@ -176,30 +180,52 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>知识域均分</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-4">
-              <DomainBars
-                domainScores={report.domain_scores}
-                weaknesses={report.weaknesses}
-                labels={Object.fromEntries(
-                  Object.keys(report.domain_scores).map((key) => [key, domainLabel(key)]),
+          {/* 知识域卡仅技术面（P1-M11 D5）：行为面整场一个域、没有域统计 */}
+          {!behavioral && (
+            <Card>
+              <CardHeader>
+                <CardTitle>知识域均分</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-4">
+                <DomainBars
+                  domainScores={report.domain_scores}
+                  weaknesses={report.weaknesses}
+                  labels={Object.fromEntries(
+                    Object.keys(report.domain_scores).map((key) => [key, domainLabel(key)]),
+                  )}
+                />
+                {report.weaknesses.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">短板域</span>
+                    {report.weaknesses.map((domain) => (
+                      <Badge key={domain} variant="outline" className="text-warning">
+                        {domainLabel(domain)}
+                      </Badge>
+                    ))}
+                  </div>
                 )}
-              />
-              {report.weaknesses.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-muted-foreground">短板域</span>
-                  {report.weaknesses.map((domain) => (
-                    <Badge key={domain} variant="outline" className="text-warning">
-                      {domainLabel(domain)}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </CardContent>
-          </Card>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* 行为面没有知识域可看：短板改为评分维度，跟着能力卡走 */}
+          {behavioral && report.weaknesses.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>短板维度</CardTitle>
+              </CardHeader>
+              <CardContent className="flex flex-wrap items-center gap-2">
+                {report.weaknesses.map((key) => (
+                  <Badge key={key} variant="outline" className="text-warning">
+                    {dims.find((dim) => dim.key === key)?.label ?? key}
+                  </Badge>
+                ))}
+                <span className="text-xs text-muted-foreground">
+                  按本场各维度均分定位，具体建议见下方学习建议与逐题复盘
+                </span>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         <Card>
@@ -225,6 +251,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
                   key={`${item.question_id}-${index}`}
                   item={item}
                   label={labels[index]}
+                  dims={dims}
                 />
               ))}
             </ol>
@@ -252,21 +279,24 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
         </Card>
 
         {/* 学习推荐（FR-20）：短板域 → 该域新材料。跟着「学习建议」走（建议给方向、推荐给题），
-            独立请求 + 懒加载；跳学习页时带上本场次，页面上不会串到别的场次去 */}
-        <Card>
-          <CardHeader className="flex-row items-center justify-between gap-4">
-            <CardTitle>针对性练习推荐</CardTitle>
-            <Link
-              href={`/learn?interview=${interviewId}`}
-              className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-            >
-              查看全部推荐
-            </Link>
-          </CardHeader>
-          <CardContent>
-            <RecommendGroups interviewId={interviewId} showAdvice={false} />
-          </CardContent>
-        </Card>
+            独立请求 + 懒加载；跳学习页时带上本场次，页面上不会串到别的场次去。
+            行为面不渲染（P1-M11 D5）：推荐检索的是六大技术域，行为面没有可推的域 */}
+        {!behavioral && (
+          <Card>
+            <CardHeader className="flex-row items-center justify-between gap-4">
+              <CardTitle>针对性练习推荐</CardTitle>
+              <Link
+                href={`/learn?interview=${interviewId}`}
+                className="text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+              >
+                查看全部推荐
+              </Link>
+            </CardHeader>
+            <CardContent>
+              <RecommendGroups interviewId={interviewId} showAdvice={false} />
+            </CardContent>
+          </Card>
+        )}
       </main>
     </div>
   );

@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 from app import llm
-from app.agents.prompts import INTRO_TEMPLATE
+from app.agents.prompts import INTRO_TEMPLATE, persona_for
+from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules.transition import estimated_minutes
 from app.graph.state import InterviewState, Phase, add_history
 
 
 async def intro_node(state: InterviewState) -> dict:
+    kind = (
+        "行为面（HR 面）模拟面试"
+        if state.interview_type == INTERVIEW_BEHAVIORAL
+        else "技术模拟面试"
+    )
     text = await llm.chat(
         [{"role": "system", "content": INTRO_TEMPLATE.format(
+            persona=persona_for(state.interview_type),
             position=state.position,
+            kind=kind,
             question_count=state.question_count,
             duration=estimated_minutes(state.question_count),  # 时长插槽（P1-M4.7-D）
         )}]

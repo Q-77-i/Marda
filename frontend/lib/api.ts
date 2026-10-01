@@ -13,6 +13,7 @@ export type Phase =
   | "warmup"
   | "tech_base"
   | "project"
+  | "behavioral"
   | "closing"
   | "finished";
 
@@ -50,6 +51,8 @@ export type Session = {
 export type InterviewRow = {
   id: string;
   position: string;
+  /** 会话类型（P1-M11）：tech / behavioral；老场次为 null（按技术面处理，不显示徽标） */
+  interview_type?: string | null;
   question_count: number;
   phase: Phase;
   difficulty: string;
@@ -59,14 +62,13 @@ export type InterviewRow = {
   report_ready: boolean;
 };
 
-/** 五维得分（FR-25 复盘卡逐题展示，与 backend aggregate.FIVE_DIMS 同源）。 */
-export type ScoreDimensions = {
-  technical_depth: number;
-  fundamentals: number;
-  project_experience: number;
-  communication: number;
-  problem_solving: number;
-};
+/**
+ * 五维得分（FR-25 复盘卡逐题展示）。
+ *
+ * P1-M11 起**不锁死键**：技术面与行为面各一套五维，维度表由报告 payload 的 `dims` 给
+ * （单一来源在后端 aggregate）；前端只按 dims 取键，不硬编。
+ */
+export type ScoreDimensions = Record<string, number>;
 
 /**
  * 逐题点评 / 复盘条目。
@@ -96,9 +98,20 @@ export type PerQuestionComment = {
 };
 export type StudyAdvice = { domain: string; advice: string };
 
+/** 评分维度表条目（P1-M11）：技术面/行为面各一套，标签单一来源在后端（报告与回放随响应下发）。 */
+export type Dim = { key: string; label: string };
+
 export type ReportPayload = {
   interview_id: string;
   position: string;
+  /** 会话类型（P1-M11）：tech / behavioral；老报告无该字段（按技术面处理） */
+  interview_type?: string;
+  /**
+   * 评分维度表 `[{key, label}]`（P1-M11，顺序即展示顺序）：技术面五维 / 行为面五维由后端
+   * 决定，前端按它渲染雷达与逐题得分（**不再硬编维度表**——行为面的中文标签否则要复制两份）。
+   * 老报告无该字段 → 退回技术面常量 DIMENSIONS（见 report-client 的 dimsOf）。
+   */
+  dims?: Dim[];
   scores: Record<string, number>;
   /** 总分（五维等权均值，后端单一来源，P1-M10 D1）。FR-19 之前的 payload 没有此字段 → 前端兜底现算。 */
   overall?: number;
@@ -132,6 +145,11 @@ export type TraceEvent = {
 export type TraceResponse = {
   interview_id: string;
   position: string;
+  /**
+   * 评分维度表 `[{key, label}]`（P1-M11）：judge 事件的 detail 是评分模型裸 dump，
+   * 键随会话类型变（技术面/行为面五维），标签由后端给。老场次无该字段 → 退回技术面常量。
+   */
+  dims?: Dim[];
   status: "running" | "finished";
   answered_count: number;
   question_count: number;
@@ -165,11 +183,12 @@ export async function createInterview(
   questionCount: number,
   difficulty: string,
   onEvent: (event: SSEEvent) => void,
+  interviewType: string = "tech",
 ): Promise<string> {
   let interviewId = "";
   await postSSE(
     "/api/interviews",
-    { position, question_count: questionCount, difficulty },
+    { position, question_count: questionCount, difficulty, interview_type: interviewType },
     (event) => {
       if (!interviewId && event.event === "meta") {
         interviewId = JSON.parse(event.data).interview_id ?? "";
@@ -296,6 +315,8 @@ export type ProfileResponse = {
   sessions: ProfileSession[];
   summary: ProfileSummary;
   weakness_changes: WeaknessChange[];
+  /** 未计入档案的场次计数（P1-M11：{"behavioral": N}），空态/混排时用来说明原因 */
+  excluded?: Record<string, number>;
 };
 
 /** 能力档案（FR-19）：登录用户级，无场次参数；没有场次返回零态结构而非 404。 */

@@ -42,6 +42,7 @@ class Reason(str, Enum):
     MISSING_LIMIT = "missing_limit"  # 遗漏追问达单题上限 → 换题
     MISSING_ASKED = "missing_asked"  # 有遗漏但遗漏点均已追问过 → 换题
     COVERAGE_OK = "coverage_ok"  # 覆盖达标但深挖已用尽/不可用 → 换题
+    DEEPEN_LIMIT = "deepen_limit"  # 行为面：深挖已用过 → 换题（deepen-only 口径，P1-M11）
 
 
 class FollowUpRules(BaseModel):
@@ -87,13 +88,22 @@ def explain_decision(
     remedy_used: int,
     asked_key_points: list[str],
     rules: FollowUpRules | None = None,
+    deepen_only: bool = False,
 ) -> tuple[Decision, Reason]:
     """按 PRD §4.2 规则表决策，并给出原因码（P1-M4 回放用）。
 
     **决策的唯一实现**：decide_follow_up 与条件边都走它，保证回放展示的原因
     与实际发生的转移永远同源（原因分支必须与决策分支一一对应，不许另起判断）。
+
+    ``deepen_only``（P1-M11 行为面）：行为题的 key_points 是**讲述结构**（「三段式」
+    「量化结果」）而非知识点——按覆盖率追问「补漏」语义不成立，澄清也不做（矛盾点不该在
+    HR 面被当场对质）。行为面追问的本质是**深挖细节**：单题至多一次深挖，用过即换题。
     """
     rules = rules or FollowUpRules()
+    if deepen_only:
+        if deepen_used < rules.deepen_limit:
+            return Decision.DEEPEN, Reason.DEEPEN_OK
+        return Decision.NEXT, Reason.DEEPEN_LIMIT
     # 澄清：不占池；用尽且错误仍在 → 换题（不深挖、不转遗漏）
     if score.error_flag and clarify_used < rules.clarify_limit:
         return Decision.CLARIFY, Reason.ERROR_FLAG
@@ -125,6 +135,7 @@ def decide_follow_up(
     remedy_used: int,
     asked_key_points: list[str],
     rules: FollowUpRules | None = None,
+    deepen_only: bool = False,
 ) -> Decision:
     """薄封装：decision, _ = explain_decision(...)，决策与原因同源。"""
     decision, _ = explain_decision(
@@ -136,5 +147,6 @@ def decide_follow_up(
         remedy_used=remedy_used,
         asked_key_points=asked_key_points,
         rules=rules,
+        deepen_only=deepen_only,
     )
     return decision

@@ -13,7 +13,12 @@ import re
 import pytest
 from pypdf import PdfReader
 
-from app.graph.rules.aggregate import DIMENSION_LABELS, FIVE_DIMS
+from app.graph.rules.aggregate import (
+    BEHAVIORAL_DIMENSION_LABELS,
+    BEHAVIORAL_DIMS,
+    DIMENSION_LABELS,
+    FIVE_DIMS,
+)
 from app.report_pdf import format_created_at, radar_svg, render_report_pdf
 
 SIZE = 260  # 与 radar_svg 默认值一致（几何断言按它算圆心）
@@ -211,3 +216,76 @@ def test_生成时间按东八区渲染():
     # 非法时间不抛——报告照常导出，只是不显示时间
     assert format_created_at("") == ""
     assert format_created_at("不是时间") == ""
+
+
+# ---- 行为面报告（P1-M11）----
+
+
+def _behavioral_payload() -> dict:
+    """行为面报告 payload：行为面五维、无知识域、类型字段齐（契约同 SPEC §4.6）。"""
+    return {
+        "interview_type": "behavioral",
+        "position": "Agent/AI 工程师",
+        "scores": {
+            "communication": 4, "logic_structure": 3, "project_experience": 4,
+            "values_motivation": 2, "career_stability": 5,
+        },
+        "domain_scores": {},
+        "weaknesses": ["values_motivation"],
+        "answered_count": 1,
+        "question_count": 1,
+        "total_comment": "总评：讲述清晰，动机一节需要更具体。",
+        "per_question_comments": [
+            {
+                "index": 1, "number": 1, "question_id": None,
+                "question_type": "behavioral", "domain": "behavioral",
+                "text": "讲讲你最有成就感的一段经历。",
+                "comment": "结构不错。", "candidate_answer": "我在实习里做了一个检索服务。",
+                "score": {
+                    "communication": 4, "logic_structure": 3, "project_experience": 4,
+                    "values_motivation": 2, "career_stability": 5,
+                },
+                "covered_key_points": ["背景清晰"], "missed_key_points": ["量化结果"],
+                "reference_answer": None,
+            },
+        ],
+        "study_advice": [{"domain": "价值观与动机", "advice": "把动机和岗位方向对上。"}],
+    }
+
+
+def test_行为面雷达图用行为面维度与标签():
+    svg = radar_svg(_behavioral_payload()["scores"], dims=BEHAVIORAL_DIMS)
+
+    assert len(_points(svg, "radar-data")) == 5
+    for label in BEHAVIORAL_DIMENSION_LABELS.values():
+        assert label in svg
+    assert "技术深度" not in svg
+
+
+def test_行为面PDF无知识域段且短板叫维度():
+    payload = _behavioral_payload()
+
+    text = _pdf_text(render_report_pdf(payload, "2026-10-01T10:00:00+00:00"))
+
+    assert "行为面" in text or "价值观与动机" in text
+    assert "短板维度" in text
+    assert "知识域均分" not in text
+    assert "技术深度" not in text
+    # 逐题复盘里的评分也是行为面维度
+    assert "职业稳定性" in text
+
+
+def test_行为面PDF只用随镜像分发的字体():
+    """同一约束对行为面报告同样成立（字体栈按渲染上下文逐处声明，P1-M8 教训）。"""
+    data = render_report_pdf(_behavioral_payload(), "2026-10-01T10:00:00+00:00")
+    reader = PdfReader(io.BytesIO(data))
+    fonts: set[str] = set()
+    for page in reader.pages:
+        resources = page.get("/Resources") or {}
+        for name, ref in (resources.get("/Font") or {}).items():
+            obj = ref.get_object()
+            fonts.add(str(obj.get("/BaseFont", "")))
+            for descendant in obj.get("/DescendantFonts", []) or []:
+                fonts.add(str(descendant.get_object().get("/BaseFont", "")))
+    assert fonts, "PDF 里没有字体信息"
+    assert all("Noto" in name or "SourceHan" in name for name in fonts), fonts

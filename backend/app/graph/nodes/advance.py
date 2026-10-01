@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from app.graph.rules.advance import phase_after_answer
 from app.graph.rules.follow_up import explain_decision, remedy_used_total
+from app.domain import QUESTION_TYPE_BEHAVIORAL
 from app.graph.state import InterviewState, TraceEvent, add_trace
 
 
 def advance_node(state: InterviewState) -> dict:
     """TECH_BASE 答满 → PROJECT；PROJECT 完成 → CLOSING（rules/advance.py 已单测）。"""
-    phase = phase_after_answer(state.phase, state.answered_count, state.question_count)
+    phase = phase_after_answer(
+        state.phase, state.answered_count, state.question_count,
+        interview_type=state.interview_type,
+    )
     question = state.current_question
     # 回放证据（FR-21 换题原因）：与条件边同一函数重算，计数未变故与决策一致
     _, reason = explain_decision(
@@ -20,6 +24,7 @@ def advance_node(state: InterviewState) -> dict:
         deepen_used=question.deepen_used,
         remedy_used=remedy_used_total(state),
         asked_key_points=question.asked_key_points,
+        deepen_only=question.question_type == QUESTION_TYPE_BEHAVIORAL,
     )
     add_trace(state, TraceEvent.ADVANCE, {
         "reason": reason.value,

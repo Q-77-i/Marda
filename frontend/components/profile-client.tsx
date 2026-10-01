@@ -23,6 +23,8 @@ import {
   WEAKNESS_WINDOW,
   deltaLabel,
   dimensionStats,
+  emptyProfileKind,
+  excludedNote,
   heatRows,
   heatmapWindow,
   insightLine,
@@ -91,18 +93,21 @@ export function ProfileClient() {
   }
 
   const stage = profileStage(data.sessions.length);
-  if (stage === "empty") return <EmptyProfile />;
+  if (stage === "empty") return <EmptyProfile excluded={data.excluded} />;
 
   const sessions = data.sessions;
   const latest = sessions[sessions.length - 1];
   const labels = tickLabels(sessions);
   const insight = insightLine(sessions, WEIGHTED_DOMAINS);
+  const note = excludedNote(data.excluded);
   const labelOf = (interviewId: string) =>
     labels[sessions.findIndex((session) => session.interview_id === interviewId)] ?? "";
 
   return (
     <div className="flex flex-col gap-6">
       <SummaryTiles data={data} labelOf={labelOf} />
+      {/* 行为面场次不计入档案（P1-M11 D4）：混排时说一句，别让用户以为那几场丢了 */}
+      {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
 
       {stage === "single" ? (
         // 单场态没有曲线与短板变化，顺序仍是「先快照、后明细」
@@ -399,20 +404,34 @@ function WeaknessLine({
   );
 }
 
-/** 空档案（D4）：文案说清怎么才有数据，按钮直接给出路。 */
-function EmptyProfile() {
+/**
+ * 空档案（M10 D4：空态要给出路）。
+ *
+ * P1-M11 D4：**只跑过行为面**时不能只说「还没有面试记录」——用户明明跑过，
+ * 要说清行为面不计入技术能力档案，否则看起来像系统把他的场次弄丢了。
+ */
+function EmptyProfile({ excluded }: { excluded?: Record<string, number> }) {
+  const behavioralOnly = emptyProfileKind(excluded) === "behavioral-only";
   return (
     <Card>
       <CardHeader>
         <CardTitle>能力档案</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col items-start gap-3">
-        <p className="text-sm text-muted-foreground">
-          还没有可分析的面试记录。完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，
-          并把每场暴露的短板变化连起来看。
-        </p>
+        {behavioralOnly ? (
+          <p className="text-sm text-muted-foreground">
+            你已完成 {excluded?.behavioral} 场行为面——行为面不计入技术能力档案（评分维度与
+            知识域体系都不同）。完成一场技术面后，这里会记录总分、五维能力与各知识域的走向，
+            并把每场暴露的短板变化连起来看。
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            还没有可分析的面试记录。完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，
+            并把每场暴露的短板变化连起来看。
+          </p>
+        )}
         <Link href="/" className={cn(buttonVariants({ size: "sm" }))}>
-          开始第一场面试
+          {behavioralOnly ? "开始第一场技术面" : "开始第一场面试"}
         </Link>
       </CardContent>
     </Card>

@@ -38,6 +38,16 @@ describe("finishedSessions", () => {
 
     expect(finishedSessions(rows).map((r) => r.id)).toEqual(["a"]);
   });
+
+  it("排除行为面场次（P1-M11 D5：推荐检索的是六大技术域）", () => {
+    const rows = [
+      row({ id: "tech", report_ready: true }),
+      row({ id: "beh", report_ready: true, interview_type: "behavioral" }),
+      row({ id: "old", report_ready: true, interview_type: null }),
+    ];
+
+    expect(finishedSessions(rows).map((r) => r.id)).toEqual(["tech", "old"]);
+  });
 });
 
 describe("pickDefaultInterview", () => {

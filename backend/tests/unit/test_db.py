@@ -218,3 +218,35 @@ def test_能力档案跳过没有报告的场次(tmp_path):
     db.save_report(path, "iv-ok", _report_row(3.0))
 
     assert [r["interview_id"] for r in db.list_reports(path, user_id="u1")] == ["iv-ok"]
+
+
+# ---- 会话类型列（P1-M11 FR-22） ----
+
+
+def test_创建面试记录会话类型(tmp_path):
+    path = tmp_path / "test.sqlite3"
+    db.ensure_schema(path)
+    db.create_interview(path, interview_id="iv-1", position="x", question_count=5)
+    db.create_interview(
+        path, interview_id="iv-2", position="x", question_count=5, interview_type="behavioral"
+    )
+
+    assert db.get_interview(path, "iv-1")["interview_type"] == "tech"  # 默认值
+    assert db.get_interview(path, "iv-2")["interview_type"] == "behavioral"
+
+
+def test_旧库自动补interview_type列(tmp_path):
+    """老库补列后为 NULL：语义等同 tech（历史场次全是技术面），不做全表回填。"""
+    path = tmp_path / "test.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE interviews (id TEXT PRIMARY KEY, thread_id TEXT UNIQUE, user_id TEXT,"
+            " position TEXT, question_count INT, phase TEXT, difficulty TEXT, status TEXT,"
+            " started_at TEXT, ended_at TEXT)"
+        )
+        conn.execute("INSERT INTO interviews (id, position, status) VALUES ('old-1', 'x', 'finished')")
+    db.ensure_schema(path)
+
+    row = db.get_interview(path, "old-1")
+    assert row["interview_type"] is None
+    db.ensure_schema(path)  # 幂等

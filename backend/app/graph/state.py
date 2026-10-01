@@ -11,6 +11,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field
 
+from app.domain import INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
+
 # 追问轮回答拼接标记（SPEC §4.1）：复盘卡按它分段展示（首答 / 追问补充 N），
 # 是给前端的契约（frontend/lib/constants.ts 同值），改文案要同步改前端。
 FOLLOWUP_ANSWER_MARKER = "【追问补充】"
@@ -39,22 +41,39 @@ class Phase(str, Enum):
     WARMUP = "warmup"
     TECH_BASE = "tech_base"
     PROJECT = "project"
+    BEHAVIORAL = "behavioral"  # 行为面问答段（P1-M11：行为面场次取代 PROJECT+TECH_BASE）
     CLOSING = "closing"
     FINISHED = "finished"
 
 
-class ScoreItem(BaseModel):
-    """单题评分（评分节点结构化输出，五维 1-5 整数，SPEC §4.1）。"""
+class BaseScore(BaseModel):
+    """评分公共部分（P1-M11）：关键点覆盖、错误标记与点评——技术面与行为面评分共用。
+
+    字段顺序上先于各维得分（子类字段排在后）：schema 注入 prompt 时是文档，无碍解析。
+    """
+
+    covered_key_points: list[str] = []
+    missed_key_points: list[str] = []
+    error_flag: bool = False
+    comment: str = ""
+
+    @property
+    def coverage(self) -> float:
+        """关键点覆盖率；无关键点数据时视为 1.0（不因数据缺失触发追问）。"""
+        total = len(self.covered_key_points) + len(self.missed_key_points)
+        if total == 0:
+            return 1.0
+        return len(self.covered_key_points) / total
+
+
+class ScoreItem(BaseScore):
+    """单题评分（技术面，评分节点结构化输出，五维 1-5 整数，SPEC §4.1）。"""
 
     technical_depth: int = Field(ge=1, le=5)
     fundamentals: int = Field(ge=1, le=5)
     project_experience: int = Field(ge=1, le=5)
     communication: int = Field(ge=1, le=5)
     problem_solving: int = Field(ge=1, le=5)
-    covered_key_points: list[str] = []
-    missed_key_points: list[str] = []
-    error_flag: bool = False
-    comment: str = ""
 
     @property
     def mean(self) -> float:
@@ -67,13 +86,34 @@ class ScoreItem(BaseModel):
             + self.problem_solving
         ) / 5
 
+
+class BehavioralScoreItem(BaseScore):
+    """行为面单题评分（P1-M11 FR-22）：五维同刻度 1-5，维度见 aggregate.BEHAVIORAL_DIMS。
+
+    第 3 维与同名技术维（project_experience）刻意对齐：两类型雷达图跨类型对照时语义一致。
+    """
+
+    communication: int = Field(ge=1, le=5)
+    logic_structure: int = Field(ge=1, le=5)
+    project_experience: int = Field(ge=1, le=5)
+    values_motivation: int = Field(ge=1, le=5)
+    career_stability: int = Field(ge=1, le=5)
+
     @property
-    def coverage(self) -> float:
-        """关键点覆盖率；无关键点数据时视为 1.0（不因数据缺失触发追问）。"""
-        total = len(self.covered_key_points) + len(self.missed_key_points)
-        if total == 0:
-            return 1.0
-        return len(self.covered_key_points) / total
+    def mean(self) -> float:
+        """五维等权均值（难度自适应沿用同一连击机制，行为面下是死数据、不参与出题）。"""
+        return (
+            self.communication
+            + self.logic_structure
+            + self.project_experience
+            + self.values_motivation
+            + self.career_stability
+        ) / 5
+
+
+def score_schema_for(interview_type: str):
+    """评分结构化输出 schema（按会话类型分派；judge 节点与测试共用）。"""
+    return BehavioralScoreItem if interview_type == INTERVIEW_BEHAVIORAL else ScoreItem
 
 
 class QuestionRecord(BaseModel):
@@ -97,7 +137,7 @@ class QuestionRecord(BaseModel):
     asked_key_points: list[str] = []  # 已追问过的 key_points（P1-M4.5-R1：同一漏点只追问一次）
     followup_log: list[str] = []
     answer: str | None = None
-    score: ScoreItem | None = None
+    score: ScoreItem | BehavioralScoreItem | None = None
     skipped: bool = False
     from_bank: bool = True
     question_type: str = "tech"  # 题型（T7a）：tech=技术题；scenario=场景题。均计入问答轮次，默认值兼容旧 checkpoint
@@ -115,6 +155,9 @@ class InterviewState(BaseModel):
 
     interview_id: str = ""
     position: str = ""
+    # 会话类型（P1-M11 FR-22）：tech（默认）/ behavioral。与 position 正交——两种类型
+    # 面向同一岗位，只换能力模型与题源。默认值兼容旧 checkpoint（历史场次全是技术面）。
+    interview_type: str = INTERVIEW_TECH
     # 场次归属（P1-M7 FR-13）：出题时用它并入该用户的私有题。空串 = 无归属（阶段 1 的历史场次，
     # 那些库里的 checkpoint 没有这个字段，默认值保证它们仍能 resume）——空值即只用公共题库。
     user_id: str = ""

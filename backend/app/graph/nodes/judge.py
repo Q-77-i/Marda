@@ -3,14 +3,25 @@
 副作用只在首次评分时做（追问补充重评只覆盖 score）——计数/难度一题一次，
 answered_questions 保持每题一条最终记录；回答则累加保留（首答 + 追问补充，SPEC §4.1），
 复盘卡（FR-25）据此展示「我的回答（含追问轮）」。
+
+行为面（P1-M11）：换行为面评分官与五维 schema；难度自适应**机制保留不关**（少一个分支），
+但行为面下难度不参与出题、只作 state 里的死数据（D3）。
 """
 
 from __future__ import annotations
 
 from app import llm
-from app.agents.prompts import JUDGE_TEMPLATE
+from app.agents.prompts import BEHAVIORAL_JUDGE_TEMPLATE, JUDGE_TEMPLATE
+from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules.difficulty import update_difficulty
-from app.graph.state import InterviewState, ScoreItem, TraceEvent, add_history, add_trace, merge_answer
+from app.graph.state import (
+    InterviewState,
+    TraceEvent,
+    add_history,
+    add_trace,
+    merge_answer,
+    score_schema_for,
+)
 
 
 async def judge_node(state: InterviewState) -> dict:
@@ -20,14 +31,19 @@ async def judge_node(state: InterviewState) -> dict:
     # 先合并再评分（P1-M4.5-R1）：判官看到累计回答（首答+全部追问补充，按标记分段），
     # 「评分以当前掌握程度为准」的 prompt 口径才真正可执行；覆盖率允许下降，反映真实掌握程度
     question.answer = merge_answer(question.answer, state.user_input)
+    template = (
+        BEHAVIORAL_JUDGE_TEMPLATE
+        if state.interview_type == INTERVIEW_BEHAVIORAL
+        else JUDGE_TEMPLATE
+    )
     score = await llm.chat_json(
-        [{"role": "system", "content": JUDGE_TEMPLATE.format(
+        [{"role": "system", "content": template.format(
             question=question.text,
             key_points="\n".join(f"- {k}" for k in question.key_points),
             followup_log="\n".join(f"- {line}" for line in question.followup_log) or "无",
             content=question.answer,
         )}],
-        schema=ScoreItem,
+        schema=score_schema_for(state.interview_type),
         temperature=0.3,
     )
     question.score = score

@@ -75,9 +75,15 @@ describe("commentLabels", () => {
   });
 
   it("T7a：未知题型无编号时显示原值，不猜", () => {
-    const items = [comment(null, "behavioral", null, "behavioral")];
+    const items = [comment(null, "coding", null, "coding")];
 
-    expect(commentLabels(items, 1, 2)).toEqual(["behavioral"]);
+    expect(commentLabels(items, 1, 2)).toEqual(["coding"]);
+  });
+
+  it("P1-M11：行为面题型有编号时带「行为面」标注（行为题计入问答轮次）", () => {
+    const items = [comment(null, "behavioral", 2, "behavioral")];
+
+    expect(commentLabels(items, 2, 2)).toEqual(["第 2 题 · 行为面"]);
   });
 
   it("15 题自然结束：第 16 条标项目深挖题而不是「第 16 题」", () => {

@@ -37,7 +37,8 @@ marda/
 │   ├── components/               # chat / radar / report / …
 │   └── lib/                      # api.ts / sse.ts / typewriter.ts / format.ts / constants.ts / chart-tokens.ts
 ├── data/
-│   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest
+│   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest / apply_overrides / enable_behavioral
+│   ├── curation/                 # 人工改判表（question_overrides.json）
 │   ├── parsed/                   # 解析产物（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
 ├── docker/
@@ -68,13 +69,20 @@ marda/
 ```python
 class Phase(str, Enum):
     INTRO="intro"; WARMUP="warmup"; TECH_BASE="tech_base"
-    PROJECT="project"; CLOSING="closing"; FINISHED="finished"
+    PROJECT="project"; BEHAVIORAL="behavioral"   # P1-M11：行为面场次的问答段（取代 PROJECT+TECH_BASE）
+    CLOSING="closing"; FINISHED="finished"
 
-class ScoreItem(BaseModel):
+class BaseScore(BaseModel):                      # P1-M11：两种评分的公共部分
+    covered_key_points: list[str]; missed_key_points: list[str]
+    error_flag: bool; comment: str               # coverage 为派生属性
+
+class ScoreItem(BaseScore):                      # 技术面（默认）
     technical_depth: int; fundamentals: int; project_experience: int
     communication: int; problem_solving: int            # 1-5 整数
-    covered_key_points: list[str]; missed_key_points: list[str]
-    error_flag: bool; comment: str
+
+class BehavioralScoreItem(BaseScore):            # 行为面（P1-M11）：第 3 维与技术面同名同义（跨类型对照）
+    communication: int; logic_structure: int; project_experience: int
+    values_motivation: int; career_stability: int
 
 class QuestionRecord(BaseModel):
     question_id: str | None; text: str; domain: str; topic: str
@@ -82,12 +90,13 @@ class QuestionRecord(BaseModel):
     follow_up_count: int = 0; clarify_used: int = 0; missing_used: int = 0
     followup_log: list[str] = []   # 评分节点需要追问记录（§4.5）
     answer: str | None = None      # 我的回答（含追问轮）：首答 + 「【追问补充】」标记追加（FR-25 复盘分段依据）
-    score: ScoreItem | None = None
+    score: ScoreItem | BehavioralScoreItem | None = None   # 按字段集自动落到对应模型（两套维度的必填字段不重叠）
     skipped: bool = False; from_bank: bool = True
-    question_type: str = "tech"    # 题型语义（tech/scenario 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
+    question_type: str = "tech"    # 题型语义（tech/scenario/behavioral 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
 
 class InterviewState(BaseModel):
     interview_id: str; position: str
+    interview_type: str = "tech"   # P1-M11 FR-22：tech / behavioral（与 position 正交；默认值兼容旧 checkpoint）
     question_count: int = 10   # 全场问答轮次（P1-M4.6-C 组成 = 项目深挖 project_count(N) + 技术 N−project_count(N)，见 domain.project_count）
     phase: Phase = Phase.INTRO
     current_question: QuestionRecord | None = None
@@ -137,8 +146,8 @@ flowchart TD
 ```python
 class Reason(str, Enum):   # 决策原因（回放展示 / 报告口径）
     ERROR_FLAG; COVERAGE_LOW; DEEPEN_OK          # → 追问
-    REMEDY_LIMIT; CLARIFY_LIMIT; MISSING_LIMIT; MISSING_ASKED; COVERAGE_OK   # → 换题
-    # TOTAL_LIMIT 为 P0 遗留值（旧事件数据），不再产出
+    REMEDY_LIMIT; CLARIFY_LIMIT; MISSING_LIMIT; MISSING_ASKED; COVERAGE_OK; DEEPEN_LIMIT  # → 换题
+    # TOTAL_LIMIT 为 P0 遗留值（旧事件数据），不再产出；DEEPEN_LIMIT = 行为面 deepen-only 下深挖用尽（P1-M11）
 
 def remedy_budget(question_count): return max(3, ceil(question_count * 0.7))
     # 全场补救预算（P1-M4.5-R1）：5 题 4 次 / 10 题 7 次 / 15 题 11 次；单一来源（仿 end_quota）
@@ -147,8 +156,11 @@ def remedy_used_total(state): return sum(q.missing_used for q in state.answered_
 def unasked_missed(score, asked): return [k for k in score.missed_key_points if k not in asked]
     # 同一 key_point 只追问一次（覆盖率跳变不触发重复追问）
 
-def explain_decision(score, *, question_count, clarify_used, missing_used, deepen_used, remedy_used, asked_key_points, rules) -> tuple[Decision, Reason]:
+def explain_decision(score, *, question_count, clarify_used, missing_used, deepen_used, remedy_used, asked_key_points, rules, deepen_only=False) -> tuple[Decision, Reason]:
     # 优先级（P1-M4.5-R1）：澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题
+    if deepen_only:   # P1-M11 行为面：只深挖一次，其余分支全部不适用（见 §4.12）
+        if deepen_used < rules.deepen_limit:  return Decision.DEEPEN, Reason.DEEPEN_OK
+        return Decision.NEXT, Reason.DEEPEN_LIMIT
     if score.error_flag and clarify_used < rules.clarify_limit:  return Decision.CLARIFY, Reason.ERROR_FLAG
     if score.error_flag:  return Decision.NEXT, Reason.CLARIFY_LIMIT      # 错误仍在 → 换题（不深挖）
     if score.coverage >= rules.coverage_threshold:
@@ -355,10 +367,28 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **域有洞是常态而非异常**（D2）：一场只考部分域（`tech_quota` 按权重分配题量），没考的域在该场 `domain_scores` 里**根本没有键**。前端据此**断线**（`connectNulls={false}`），**不补零**——补零会凭空造出一个「该场该域得 0 分」的低谷，那是假信号。
 - **短板变化**（`build_profile` 的 `weakness_changes`）= 逐场对**上一场**比，三态分开说：`new` 上场不是本场是 / `persistent` 两场都是 / `resolved` 上场是本场不是。三个列表按字典序（不随 payload 里 `weaknesses` 的排列漂）；**首场不产出条目**（无从比较），故条数恒为「场次数 − 1」。`resolved` 的口径是「本场不再是短板」——可能是真提升，也可能只是这场没考到该域，文案不替用户下结论。
 - **概览** `summary`：场次数、平均总分、最高/最低场（并列取最早）、最近一场相对上一场的变化 `latest_delta`（单场为 `null`）。
-- **响应形状 = `{sessions, summary, weakness_changes}`**，**不含图表序列**——曲线行是 Recharts 专用的展示整形，放前端 `lib/profile.ts`（纯函数 + vitest），后端重复算一遍等于同一批数字有两个来源。
+- **响应形状 = `{sessions, summary, weakness_changes, excluded}`**，**不含图表序列**——曲线行是 Recharts 专用的展示整形，放前端 `lib/profile.ts`（纯函数 + vitest），后端重复算一遍等于同一批数字有两个来源。`excluded`（P1-M11）是未计入的场次计数（形状 `{"behavioral": N}`），供空档案/混排时说明白「为什么看不到那几场」。
+- **行为面场次不计入档案（P1-M11 D4）**：**过滤字段 = 报告 payload 的 `interview_type`**（`payload.get("interview_type") or "tech"`，缺省视为技术面——FR-19 之前的老 payload 没有该字段，不能被误排除）。档案 = 技术能力档案：行为面的评分维度与知识域体系都不同，混入曲线会出现维度缺键造成的全 0 假点。排除掉的场次进 `excluded` 计数，前端据此渲染空态/提示（「行为面不计入技术能力档案」），不静默。
 - **端点 `GET /api/profile` 无场次参数**：档案看的是「我的全部场次」，隔离由 user_id 过滤承担，因此**没有 404/越权面**（对照面试各端点的 owner 校验）；**没有场次时返回零态结构而不是 404**——「还没有数据」是正常状态。
 - **前端三种形态**（判定在 `lib/profile.ts`）：空档案 → 文案 + 「开始第一场面试」CTA（**空态不只是告知，要给出路**）/ 只有一场 → 说明为什么画不出曲线 + 该场雷达等快照 + 「再开始一场」CTA / 多场 → 总分主曲线（点位可点进该场报告）+ 短板变化 + 知识域与五维的**小倍图**。选小倍图而不是多线图：5 条 / 6 条线缠在一张图里，交叉处用户分不清谁是谁，还得配图例与一套分类色板；各自成图则涨跌一眼可见，每张只用一个主色。横轴刻度同一天多场加序号（`MM-DD #2`）——只写日期会看起来是重复的点。
 - **验收口径**：单测覆盖总分口径、域洞、三态、并列取最早、历史残缺 payload；集成测试覆盖零态、与报告 payload 逐字段对账、用户隔离、未结束场次不入选；smoke 在真链路取回档案与报告对账。
+
+## 4.12 行为面 / HR 面（P1-M11 / FR-22）
+
+**复用同一状态机与报告体系，只换能力模型与题源**。会话类型 `interview_type ∈ {tech, behavioral}` 与岗位 `position` **正交**（两种类型面向同一岗位，position 恒为「Agent/AI 工程师」）；一条新列贯穿 `interviews.interview_type`（DB）→ `state.interview_type` → 报告 payload `interview_type`。
+
+- **流程（D1：单 BEHAVIORAL 段）**：`INTRO → WARMUP → BEHAVIORAL → CLOSING → 报告`。没有项目深挖段与技术分段——行为题池小（14 题）、题库里两类行为题（项目叙事 / HR 规划题）的元数据分不干净，随机混合与真实 HR 面一致。图结构一条边不动：`route` 把 `BEHAVIORAL` 与 `TECH_BASE/PROJECT` 同路分发到 `judge`；`advance.phase_after_answer(..., interview_type)` 答满 `question_count` → `CLOSING`。
+- **题源**：`domain="behavioral"` 整池随机——`search_questions(difficulty=None)` = **不限难度**（行为题的 L1-L3 是技术深度语义，挂行为题上没有意义；D3）。池子耗尽 → LLM 按同标准现场生成行为题兜底（`BEHAVIORAL_ASK_GENERATE_TEMPLATE`，不入库）。
+- **难度（D3）**：创建表单对行为面**隐藏难度选择器**，出题不消费难度；**自适应机制保留不关**（少一个分支）——`state.difficulty` 照常升降，但只是死数据（报告与列表都不展示难度徽标）。
+- **题量（D1）**：行为面上限 **10 题**（`BEHAVIORAL_MAX_QUESTIONS`，API 层 422 校验 + 表单只给 5/10）——14 题的池子在 15 题场会当场耗尽走 LLM 兜底。
+- **评分（D2）**：`BehavioralScoreItem` 五维 1-5——沟通表达 / 逻辑结构 / **项目经验**（与技术面同名同义，两类型雷达图跨类型对照时语义一致）/ 价值观与动机 / 职业稳定性。**维度表单一来源在后端**：报告 payload 与回放响应（`/trace`，judge 事件是评分模型裸 dump）都带 `dims: [{key, label}]`，前端与 PDF 都消费它，不再各自硬编维度表（老 payload 无该字段 → 前端退回技术面常量）。
+- **追问 = deepen-only（P1-M11 ①）**：行为题的 key_points 是**讲述结构**（「用 STAR 说清情境与任务」）而非知识点——按覆盖率追问「补漏」语义不成立，澄清（当场对质矛盾点）也不做。`explain_decision(..., deepen_only=True)`：单题至多一次深挖（问细节：情境 / 个人动作 / 可验证结果 / 复盘），用过即换题（`Reason.DEEPEN_LIMIT`）；`error_flag` 仍由评分官产出，但只用于报告展示。判据按**题型**（`question_type == "behavioral"`）而非会话类型——将来若混排也成立。
+- **聚合**：`aggregate_scores(..., interview_type)` 行为面走行为面维度表，`domain_scores` 恒为空（整场一个域），`weaknesses` 改为**最弱的评分维度**（同一「最低 2 个、并列第三也带」规则，`_weakest`）。总分仍走 `overall_score`（加 `dims` 参数，默认技术面五维——M10 D1 的单一来源不变）。
+- **报告与 PDF**：报告页按 `dims` 渲染雷达与逐题得分；行为面**不渲染知识域卡与「针对性练习推荐」卡**（D5——推荐检索的是六大技术域，行为面没有可推的域；接口也直接返回空分组，不做无效检索）。PDF 模板按 `has_domains` 收起右栏（维度全宽展示），短板标签为「短板维度」；**导出按钮照常**（D 补充④）。
+- **题库启用（D6）**：`data/scripts/enable_behavioral.py` 把**有实质答案**的行为题翻成 enabled 并补进 Qdrant（幂等；复用 `finalize_status` 与 ingest 的点构造，管线入库域已含行为面，下一次整链重跑结果一致）。**验收口径：脚本最后从 Qdrant 读回该域的点逐点核对**（只翻 status 不算数）。私有题库**不开放行为面域**（D7，`ENABLED_DOMAINS` 不含它）。
+- **出题池隔离（验收②）**：行为面进 `ASKABLE_DOMAINS`（**可出题但不属于技术配额**——集合内域都能出题，但只有 `DOMAIN_WEIGHTS` 的键参与配额分配）；`pick_domain` 只在权重表分配，技术面永远抽不到 behavioral（单测 + 集成反查双保险）。
+- **不做**：混合模式（两类型各自验证完再议）、行为面私有题、行为面学习推荐与档案（均按 D4/D5 排除）。
+
 
 ## 5. RAG
 
@@ -430,6 +460,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **自带零回归校验**：个人题库 12 个字段逐字比对，只允许新增 `sources` 明细行；不过则非零退出——**不允许带病入库**（开源语料解析改动后重跑，个人题库产物逐字节一致）
 - **近似重复只报不并**：相似度 ≥0.9 的候选对打印清单（含个人×开源对），人工登记白名单后才合（§8.1）
 - **人工改判表**（`data/curation/question_overrides.json`）：逐题修正 `domain` / `status`，`combine` 每次运行都应用（P1-M9 起，见 §4.10 的叙事题污染）。key 是 `question_id` —— **题干的内容哈希**，题干改一个字条目就失效，故未命中的条目会列进运行报告（`bank.apply_overrides` 返回未命中集，不静默）；每条必须写 `reason`，缺了直接报错。改判在零回归校验**之后**执行（改判就是要动 `domain`/`status`，不是回归）。**已落库的库**用 `data/scripts/apply_overrides.py` 补齐（幂等，改判成 draft 的从 Qdrant 撤点、仍在 enabled 但换域的改 payload 的 `domain`——它是检索过滤字段）——只为十来道题重建 1095 个向量点不值当。
+- **入库 status 规则**（P1-M11 起）：`domain ∈ ASKABLE_DOMAINS ∪ ENABLED_DOMAINS` 且有实质答案 → enabled（行为面自 M11 起进可出题域，管线重跑与 `enable_behavioral.py` 的判定同源）；两个集合之外的域（cs-fundamentals）解析入库但置 draft。
+- **启用行为面题库**（`data/scripts/enable_behavioral.py`，P1-M11）：把有实质答案的行为题翻成 enabled 并补进 Qdrant（幂等；写后从 Qdrant 读回逐点核对，只翻 status 不算数）。与 `apply_overrides.py` 同一模式：**就地补齐**，避免为十来道题全量重建向量库。
 
 ## 7. API 契约
 
@@ -440,15 +472,15 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | POST /api/auth/register | `{username, password}`（username 3–32 位 `[A-Za-z0-9_]`，**统一小写存储**；password 6–72） | **201** `{token, username}`；重名（含大小写变体）409 |
 | POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（不泄露账号是否注册，文案一致） |
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
-| POST /api/interviews | `{position, question_count, difficulty}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
+| POST /api/interviews | `{position, question_count, difficulty, interview_type}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422；**interview_type ∈ `tech`/`behavioral`，默认 `tech`，行为面 question_count > 10 → 422**） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
-| GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传 |
-| GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
+| GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传；**行为面报告直接返回空 `groups`**（P1-M11 D5，不做无效检索） |
+| GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, dims, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7）。`dims`（P1-M11）= 评分维度表 `[{key,label}]`：judge 事件的 detail 是评分模型裸 dump，键随会话类型变，标签由后端给（老场次无该字段 → 前端退回技术面五维常量） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
-| GET /api/profile | — | 能力档案（FR-19）：`{sessions, summary, weakness_changes}`（§4.11）。**无路径参数**（用户级），隔离由 user_id 过滤承担；**没有场次时返回零态结构（不是 404）**——`session_count=0` 是正常状态，前端据此渲染空态 + 引导 |
+| GET /api/profile | — | 能力档案（FR-19）：`{sessions, summary, weakness_changes, excluded}`（§4.11）。**无路径参数**（用户级），隔离由 user_id 过滤承担；**没有场次时返回零态结构（不是 404）**——`session_count=0` 是正常状态，前端据此渲染空态 + 引导；**行为面场次不计入**（按报告 payload 的 `interview_type` 过滤，P1-M11 D4），只进 `excluded` 计数 |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty`（`L1`\|`L2`\|`L3`）/ `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含 `question_id`/题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（来源明细，**主源排首位**） |
 | GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值——扩语料后新厂商/面次自动出现 |
@@ -482,8 +514,9 @@ question_sources(question_id TEXT, source TEXT, license TEXT, url TEXT,
   PRIMARY KEY (question_id, source))                   -- 一题多源 = 多行（SPEC §8.1）
 users(id TEXT PK, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, created_at TEXT)
-interviews(id TEXT PK, thread_id TEXT UNIQUE, user_id TEXT, position TEXT, question_count INT,
-  phase TEXT, difficulty TEXT, status TEXT, started_at TEXT, ended_at TEXT)
+interviews(id TEXT PK, thread_id TEXT UNIQUE, user_id TEXT, position TEXT, interview_type TEXT,
+  question_count INT, phase TEXT, difficulty TEXT, status TEXT, started_at TEXT, ended_at TEXT)
+  -- interview_type（P1-M11）：tech/behavioral；老库补列后为 NULL，语义等同 tech，不做全表回填
 answers(id INTEGER PK AUTOINCREMENT, interview_id TEXT, question_id TEXT,
   domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT,
   skipped INT DEFAULT 0, score_json TEXT, created_at TEXT)
@@ -547,6 +580,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-10-01 P1-M11（行为面 / HR 面 FR-22）：新增 §4.12（会话类型与 position 正交、单 BEHAVIORAL 段流程、行为题整池检索（不限难度）、题量上限 10、行为面五维与第 3 维对齐、**deepen-only 追问**（key_points 是讲述结构不是知识点）、聚合（域为空、短板改维度）、报告/PDF/推荐/档案的四处分派、`ASKABLE_DOMAINS`「可出题但不属于技术配额」、`enable_behavioral.py` 的 Qdrant 逐点核对验收、不做清单）；§4.1 补 `Phase.BEHAVIORAL` / `BaseScore`+`BehavioralScoreItem` / `interview_type`；§4.3 补 `explain_decision(deepen_only=)` 与 `Reason.DEEPEN_LIMIT`；§4.11 补**行为面排除（过滤字段 = 报告 payload 的 `interview_type`）**与响应新增 `excluded`；§7 创建接口补 `interview_type`（行为面 >10 题 422）、推荐与档案契约同步；§8 interviews 补 `interview_type` 列（老库补列 NULL ≡ tech，不回填）。新增 `data/scripts/enable_behavioral.py`（幂等：`finalize_status` 同源判定 + ingest 同源点构造 + **写后从 Qdrant 读回逐点核对**；真库已执行：behavioral enabled 14 题 / Qdrant 1099 点）。测试 470 → 506 passed
 - 2026-09-30 P1-M10（能力档案 FR-19）：新增 §4.11（数据源 = 报告 payload、取数 `reports ⋈ interviews` 升序、**以 reports 表为准不按 status 过滤**、总分口径单一来源 `aggregate.overall_score`、域洞断线不补零、短板三态 `new/persistent/resolved` 与首场不产出、响应不含图表序列的理由、端点无场次参数故无 404 面、前端三形态与小倍图选型）与 §7 的 `/api/profile` 契约；§7 鉴权范围加 `/api/profile`。**总分口径收敛（D1）**：报告 payload 新增 `overall`（五维等权均值），报告页 / PDF / 档案共用同一个数——此前报告页与 PDF 各写了一遍同一公式，档案会是第三处。新增 `app/tools/profile.py`（`build_profile` 纯函数）、`app/api/profile.py`、`db.list_reports`、`service.get_profile`；前端 `lib/profile.ts`（刻度 / 断点 / 变化文案纯逻辑，vitest）、`components/profile-charts.tsx`（总分主曲线 + 小倍图）、`components/profile-client.tsx`、`/profile` 页与导航转正（**五项导航全部就绪**）；`report-charts` 的 `ChartFrame`/`tooltipStyles` 改为导出复用（不复制一套图表外观）
 - 2026-09-30 项目叙事题改判 + 入库护栏（M9 实测整改）：§6.6 新增**人工改判表**口径（`data/curation/question_overrides.json`：逐题 `domain`/`status` + 必填 `reason`，key 是题干内容哈希故**未命中必报**，改判在零回归校验之后执行，已落库的库用 `apply_overrides.py` 补齐）；`ingest.py` 的 `DEFAULT_IN` 改指**合并后**的富化产物（原指个人题库单源的旧产物——全量同步语义下裸跑一次会删掉 1229 道开源题），并新增**入库护栏**（题量相差 >50% 直接停，`--force` 越过）。新增 `bank.load_overrides/apply_overrides`、`data/scripts/apply_overrides.py`、`test_curation.py` 与护栏用例
 - 2026-09-30 P1-M9（学习推荐 FR-20）：新增 §4.10（数据源 = 报告 payload、查询 = 域标签 + 漏点、排除已问题且条数取 `k + 已问数`、多域并发保序、`status` 三态不静默隐藏、卡片带来源四要素、两处展示与场次承接）与 §7 的 `/recommendations` 契约。新增 `app/tools/recommend.py`（`build_query_items` 纯函数 + `recommend_for_report` 编排，`searcher`/`db_path` 可注入）；`question_search.fetch_by_ids` 多 select 一列 `source`（答案主源——来源列表的首位标签不能靠字典序猜）。前端 `lib/learn.ts`（默认场次承接/空分组文案纯逻辑）+ `components/recommend-groups.tsx`（报告页与学习页共用，含展开交互）+ `/learn` 页与导航转正；报告页新增「针对性练习推荐」卡并带 `?interview=<id>` 跳学习页

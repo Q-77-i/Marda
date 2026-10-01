@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from app.domain import DOMAIN_LABELS
+from app.domain import DOMAIN_LABELS, INTERVIEW_BEHAVIORAL
 from app.graph.state import InterviewState, Phase, QuestionRecord
 
 MINUTES_PER_QUESTION = 3  # 开场白时长插槽：每题按 3 分钟估（含追问）
@@ -26,6 +26,7 @@ class TransitionKind(str, Enum):
     """衔接分类（六类黏合点里「阶段过渡 / 题间衔接」的细分）。"""
 
     OPEN_PROJECT = "open_project"  # 首题：WARMUP → PROJECT
+    OPEN_BEHAVIORAL = "open_behavioral"  # 首题（行为面）：WARMUP → BEHAVIORAL（P1-M11）
     PROJECT_NEXT = "project_next"  # 项目段续题（换切入点）
     TO_TECH = "to_tech"  # PROJECT → TECH_BASE
     SAME_DOMAIN = "same_domain"  # 技术段同域续问（同域成块，P1-M4.7-D2）
@@ -36,6 +37,10 @@ _VARIANTS: dict[TransitionKind, tuple[str, ...]] = {
     TransitionKind.OPEN_PROJECT: (
         "谢谢你的自我介绍。那我们先从你的项目聊起，看几道设计题。",
         "好的，了解了。接下来我们结合你的项目经历，聊几个实际的设计问题。",
+    ),
+    TransitionKind.OPEN_BEHAVIORAL: (
+        "谢谢你的自我介绍。接下来我们聊几个行为面的问题，讲讲你的真实经历就好。",
+        "好的，了解了。下面我们从几个行为面问题聊起，不用紧张，按实际情况说就行。",
     ),
     TransitionKind.PROJECT_NEXT: (
         "好，那我们换个角度，再看一个项目相关的问题。",
@@ -105,6 +110,8 @@ def transition_kind(state: InterviewState, new_question: QuestionRecord) -> Tran
     """
     previous = state.current_question
     if previous is None:
+        if state.interview_type == INTERVIEW_BEHAVIORAL:
+            return TransitionKind.OPEN_BEHAVIORAL
         return TransitionKind.OPEN_PROJECT
     if previous.question_type == "scenario":
         return (
@@ -137,11 +144,13 @@ def buffer_line(state: InterviewState) -> str | None:
 def reconnect_line(state: InterviewState) -> str | None:
     """重连问候（GET /interviews/{id}?reconnect=true）：重发当前题干作锚点。
 
-    仅进行中且处于答题阶段（项目/技术）的场次生成；开场/自我介绍/反问阶段与已结束
-    场次没有「刚才那道题」可回去，返回 None（前端静默恢复）。文案不落 checkpoint，
+    仅进行中且处于答题阶段（项目/技术/行为面）的场次生成；开场/自我介绍/反问阶段与
+    已结束场次没有「刚才那道题」可回去，返回 None（前端静默恢复）。文案不落 checkpoint，
     只在响应里附一次——连续刷新不会堆叠。
     """
-    if state.status != "running" or state.phase not in (Phase.PROJECT, Phase.TECH_BASE):
+    if state.status != "running" or state.phase not in (
+        Phase.PROJECT, Phase.TECH_BASE, Phase.BEHAVIORAL
+    ):
         return None
     question = state.current_question
     if question is None or not question.text:

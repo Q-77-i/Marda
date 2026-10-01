@@ -5,10 +5,16 @@
 
 本模块只做「多场之间的比较」：单场的分数、短板由报告聚合（rules/aggregate）决定，
 这里不重新定义任何评分口径（总分走 `overall_score` 同一个函数）。
+
+**行为面排除（P1-M11 D4）**：档案 = 技术能力档案，过滤字段是报告 payload 里的
+`interview_type`（缺省视为 tech）——行为面场次不计入曲线与短板变化，但会被计入
+`excluded` 计数回给前端：用户有行为面场次时，空档案要说明白「为什么看不到」，
+不能让他以为系统漏了那几场。
 """
 
 from __future__ import annotations
 
+from app.domain import INTERVIEW_TECH
 from app.graph.rules.aggregate import FIVE_DIMS, overall_score
 
 
@@ -21,11 +27,18 @@ def build_profile(rows: list[dict]) -> dict:
     没考的域在该场的 `domain_scores` 里**根本没有键**——前端据此断线，不补零
     （补零会凭空造出一个「该场该域得 0 分」的低谷，那是假信号）。
     """
-    sessions = [_session(row) for row in rows]
+    sessions, excluded = [], {}
+    for row in rows:
+        interview_type = (row.get("payload") or {}).get("interview_type") or INTERVIEW_TECH
+        if interview_type != INTERVIEW_TECH:
+            excluded[interview_type] = excluded.get(interview_type, 0) + 1
+            continue
+        sessions.append(_session(row))
     return {
         "sessions": sessions,
         "summary": _summary(sessions),
         "weakness_changes": _weakness_changes(sessions),
+        "excluded": excluded,  # 未计入的场次（P1-M11：{"behavioral": N}），供空态说明
     }
 
 

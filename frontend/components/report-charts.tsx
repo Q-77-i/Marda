@@ -43,10 +43,16 @@ export function tooltipStyles(tokens: ChartTokens) {
   };
 }
 
-/** 五维能力雷达：单序列，维度名即标签，无需图例。 */
-export function ScoreRadar({ scores }: { scores: Record<string, number> }) {
+/** 能力雷达：单序列，维度名即标签，无需图例。dims 可由 payload 给（P1-M11 行为面另一套五维）。 */
+export function ScoreRadar({
+  scores,
+  dims = DIMENSIONS,
+}: {
+  scores: Record<string, number>;
+  dims?: { key: string; label: string }[];
+}) {
   const { tokens, mounted } = useChartTokens();
-  const data = DIMENSIONS.map((dim) => ({
+  const data = dims.map((dim) => ({
     dimension: dim.label,
     score: scores[dim.key] ?? 0,
   }));

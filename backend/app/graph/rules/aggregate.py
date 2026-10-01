@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from app.domain import COUNTED_QUESTION_TYPES, DOMAIN_WEIGHTS
-from app.graph.state import QuestionRecord, ScoreItem
+from app.domain import COUNTED_QUESTION_TYPES, DOMAIN_WEIGHTS, INTERVIEW_BEHAVIORAL
+from app.graph.state import BehavioralScoreItem, QuestionRecord, ScoreItem
 
 # 五维键与中文标签同源（顺序即报告展示顺序：雷达图顶点、逐题得分列表都按它排）。
 # 前端 constants.DIMENSIONS 是该表的展示副本（P1-M8 起 PDF 直接消费本表）。
@@ -16,27 +16,65 @@ DIMENSION_LABELS = {
 }
 FIVE_DIMS = tuple(DIMENSION_LABELS)
 
+# 行为面五维（P1-M11 FR-22）：PRD「沟通/价值观/稳定性」再补两维——逻辑结构与项目经验。
+# project_experience 与技术面同名同义（刻意对齐，见下），故两类型雷达图可跨类型对照。
+BEHAVIORAL_DIMENSION_LABELS = {
+    "communication": "沟通表达",
+    "logic_structure": "逻辑结构",
+    "project_experience": "项目经验",
+    "values_motivation": "价值观与动机",
+    "career_stability": "职业稳定性",
+}
+BEHAVIORAL_DIMS = tuple(BEHAVIORAL_DIMENSION_LABELS)
 
-def overall_score(scores: dict[str, float]) -> float:
-    """总分 = 五维**等权**均值（不是加权），保留两位。
+_DIMENSION_LABELS_BY_TYPE = {
+    "tech": DIMENSION_LABELS,
+    INTERVIEW_BEHAVIORAL: BEHAVIORAL_DIMENSION_LABELS,
+}
+
+
+def dims_for(interview_type: str) -> dict[str, str]:
+    """会话类型的评分维度表（key → 中文标签，顺序即展示顺序）；未知类型按技术面处理。"""
+    return _DIMENSION_LABELS_BY_TYPE.get(interview_type, DIMENSION_LABELS)
+
+
+def dims_payload(interview_type: str) -> list[dict[str, str]]:
+    """报告 payload 的 `dims` 字段：前端与 PDF 都按它渲染维度（标签单一来源在后端，
+    前端不再硬编维度表——行为面的中文标签否则要复制两份）。"""
+    return [{"key": key, "label": label} for key, label in dims_for(interview_type).items()]
+
+
+def overall_score(scores: dict[str, float], dims: tuple[str, ...] = FIVE_DIMS) -> float:
+    """总分 = 各维**等权**均值（不是加权），保留两位。
 
     全站唯一来源（P1-M10 D1）：报告页展示、PDF 导出、能力档案曲线都取这个数——
     同一场面试在两个页面显示不同的总分，用户会以为系统算错了。缺维按 0 计
-    （历史 payload 可能没有完整五维）；空输入 → 0.0。
+    （历史 payload 可能没有完整维度）；空输入 → 0.0。
+    dims（P1-M11）：行为面传 BEHAVIORAL_DIMS，技术面用默认值。
     """
-    return round(sum(scores.get(dim, 0) for dim in FIVE_DIMS) / len(FIVE_DIMS), 2)
+    return round(sum(scores.get(dim, 0) for dim in dims) / len(dims), 2)
 
 
-def aggregate_scores(questions: list[QuestionRecord]) -> dict:
-    """聚合已答题目：五维等权均值、总分、六大域均分、短板域。
+def aggregate_scores(questions: list[QuestionRecord], *, interview_type: str = "tech") -> dict:
+    """聚合已答题目：五维等权均值、总分、知识域均分、短板。
 
-    场景题 domain="project" 不在 DOMAIN_WEIGHTS，不参与域统计（单列于逐题点评）。
+    技术面：场景题 domain="project" 不在 DOMAIN_WEIGHTS，不参与域统计（单列于逐题点评）。
+    行为面（P1-M11）：整场只有一个域（behavioral），域统计无意义——`domain_scores` 恒为空，
+    短板改为**最弱的评分维度**（能力档案排除行为面场次，故这份 weaknesses 只供报告页展示）。
     """
+    dims = tuple(dims_for(interview_type))
     scored = [q for q in questions if q.score]
     scores: dict[str, float] = {}
-    for dim in FIVE_DIMS:
+    for dim in dims:
         values = [getattr(q.score, dim) for q in scored]
         scores[dim] = round(sum(values) / len(values), 2) if values else 0.0
+    if interview_type == INTERVIEW_BEHAVIORAL:
+        return {
+            "scores": scores,
+            "overall": overall_score(scores, dims),
+            "domain_scores": {},
+            "weaknesses": _weakest(scores),
+        }
     by_domain: dict[str, list[float]] = {}
     for q in scored:
         if q.domain in DOMAIN_WEIGHTS:
@@ -46,19 +84,19 @@ def aggregate_scores(questions: list[QuestionRecord]) -> dict:
     }
     return {
         "scores": scores,
-        "overall": overall_score(scores),
+        "overall": overall_score(scores, dims),
         "domain_scores": domain_scores,
-        "weaknesses": _weak_domains(domain_scores),
+        "weaknesses": _weakest(domain_scores),
     }
 
 
-def _weak_domains(domain_scores: dict[str, float]) -> list[str]:
-    """短板 = 均分最低的 2 个域；第 3 个同分也带上（SPEC §4.6「2-3 个」）。"""
-    if not domain_scores:
+def _weakest(scores: dict[str, float]) -> list[str]:
+    """短板 = 均分最低的 2 项（域或维度，同一规则）；第 3 个同分也带上（SPEC §4.6「2-3 个」）。"""
+    if not scores:
         return []
-    ordered = sorted(domain_scores, key=domain_scores.get)  # 稳定：同分按域名字典序
+    ordered = sorted(scores, key=scores.get)  # 稳定：同分按 key 字典序
     weak = ordered[:2]
-    if len(ordered) > 2 and domain_scores[ordered[2]] == domain_scores[ordered[1]]:
+    if len(ordered) > 2 and scores[ordered[2]] == scores[ordered[1]]:
         # 如果存在并列第二低分，就把并列的也选为弱项。
         weak.append(ordered[2])
     return weak
@@ -102,7 +140,7 @@ def build_per_question_comments(
             "text": q.text,
             "comment": comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
             "candidate_answer": q.answer,
-            "score": _five_dims(q.score),
+            "score": _score_dims(q.score),
             "covered_key_points": list(q.score.covered_key_points) if q.score else [],
             "missed_key_points": list(q.score.missed_key_points) if q.score else [],
             # 题库查不到（已归档/生成题）同样为 None：宁可缺失也不编造参考
@@ -111,12 +149,13 @@ def build_per_question_comments(
     return rows
 
 
-def _five_dims(score: ScoreItem | None) -> dict[str, int] | None:
-    """五维标量 dict（复盘 payload 只带五维）。
+def _score_dims(score: ScoreItem | BehavioralScoreItem | None) -> dict[str, int] | None:
+    """单题评分的标量 dict（复盘 payload；维度表按评分类型取，行为面题给行为面五维）。
 
     显式取标量而非 ``score.model_dump()``：payload 必须可 JSON 序列化，
     Pydantic 对象直接进 payload 会在报告接口序列化时炸（FR-25 复盘口径）。
     """
     if score is None:
         return None
-    return {dim: getattr(score, dim) for dim in FIVE_DIMS}
+    dims = BEHAVIORAL_DIMS if isinstance(score, BehavioralScoreItem) else FIVE_DIMS
+    return {dim: getattr(score, dim) for dim in dims}

@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.domain import INTERVIEW_TECH
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY,
@@ -30,6 +32,7 @@ CREATE TABLE IF NOT EXISTS interviews (
     thread_id TEXT UNIQUE,
     user_id TEXT,
     position TEXT,
+    interview_type TEXT,
     question_count INT,
     phase TEXT,
     difficulty TEXT,
@@ -79,6 +82,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     """轻量迁移（阶段 2 仍 SQLite，PG 迁移推阶段 3）。
 
     - interviews.user_id：阶段 1 老库补归属列（FR-23）
+    - interviews.interview_type：会话类型列（P1-M11 FR-22），老库补列后为 NULL——
+      语义等同 "tech"（历史场次全是技术面），消费方按「非 behavioral 即技术面」处理，
+      不做全表回填（回填会与 reports.payload.interview_type 形成两个可漂移的来源）。
     - questions.user_id：私有题库归属列（P1-M7 FR-13），NULL = 公共题。
 
     questions 表由语料管道建（不是本模块的 DDL），故先探测表是否存在——
@@ -88,6 +94,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(interviews)")}
     if "user_id" not in columns:
         conn.execute("ALTER TABLE interviews ADD COLUMN user_id TEXT")
+    if "interview_type" not in columns:
+        conn.execute("ALTER TABLE interviews ADD COLUMN interview_type TEXT")
     if _table_exists(conn, "questions"):
         question_columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
         if "user_id" not in question_columns:
@@ -146,21 +154,26 @@ def create_interview(
     question_count: int,
     difficulty: str = "L1",
     user_id: str | None = None,
+    interview_type: str = INTERVIEW_TECH,
 ) -> None:
     """`difficulty` 存**创建时选定的难度**（P1-M6 FR-14）："adaptive" 或 L1/L2/L3。
 
     注意与 state.difficulty 的区别：state 里存的是实际选题难度（自适应会随连击升降），
     本列是用户的选择、供列表展示；列表页不展示自适应过程中的中间难度。
+
+    `interview_type`（P1-M11 FR-22）：tech / behavioral，与 position 正交。
     """
     with _connect(db_path) as conn:
         conn.execute(
-            "INSERT INTO interviews (id, thread_id, user_id, position, question_count, phase,"
-            " difficulty, status, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            "INSERT INTO interviews (id, thread_id, user_id, position, interview_type,"
+            " question_count, phase, difficulty, status, started_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
             (
                 interview_id,
                 interview_id,
                 user_id,
                 position,
+                interview_type,
                 question_count,
                 "intro",
                 difficulty,

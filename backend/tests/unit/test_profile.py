@@ -195,3 +195,57 @@ def test_缺字段的老payload不炸():
     assert session["scores"] == dict.fromkeys(DIMS, 0.0)
     assert session["domain_scores"] == {}
     assert session["weaknesses"] == []
+
+
+# ---- 行为面排除（P1-M11 D4）----
+
+
+def _behavioral_row(interview_id: str = "iv-beh", started_at: str = "2026-09-20T10:00:00Z") -> dict:
+    """行为面报告行：payload 带 interview_type，维度是行为面五维、没有知识域。"""
+    payload = {
+        "interview_type": "behavioral",
+        "position": "Agent/AI 工程师",
+        "scores": {
+            "communication": 4.0, "logic_structure": 4.0, "project_experience": 4.0,
+            "values_motivation": 3.0, "career_stability": 5.0,
+        },
+        "domain_scores": {},
+        "weaknesses": ["values_motivation"],
+        "question_count": 5,
+        "answered_count": 5,
+    }
+    return {
+        "interview_id": interview_id, "payload": payload, "position": "Agent/AI 工程师",
+        "difficulty": "adaptive", "started_at": started_at,
+    }
+
+
+def test_行为面场次不进曲线但计入排除计数():
+    rows = [
+        _row("iv-1", started_at="2026-09-01T10:00:00Z", overall=3.0),
+        _behavioral_row(started_at="2026-09-05T10:00:00Z"),
+        _row("iv-2", started_at="2026-09-09T10:00:00Z", overall=4.0),
+    ]
+
+    profile = build_profile(rows)
+
+    assert [s["interview_id"] for s in profile["sessions"]] == ["iv-1", "iv-2"]
+    assert profile["excluded"] == {"behavioral": 1}
+    # 短板变化也不因行为面插入而串场：仍是 iv-1 → iv-2 两两比较
+    assert [c["interview_id"] for c in profile["weakness_changes"]] == ["iv-2"]
+
+
+def test_只有行为面时档案是空的但说得出原因():
+    profile = build_profile([_behavioral_row()])
+
+    assert profile["sessions"] == []
+    assert profile["summary"]["session_count"] == 0
+    assert profile["excluded"] == {"behavioral": 1}
+
+
+def test_老payload没有类型字段按技术面处理():
+    """缺省 = tech：FR-19 之前的报告没有 interview_type，不能被当成行为面排除掉。"""
+    profile = build_profile([_row("iv-1", started_at="2026-09-01T10:00:00Z", overall=3.0)])
+
+    assert len(profile["sessions"]) == 1
+    assert profile["excluded"] == {}

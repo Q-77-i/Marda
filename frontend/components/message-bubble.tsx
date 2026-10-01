@@ -2,7 +2,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 
-import { domainLabel } from "@/lib/constants";
+import { BEHAVIORAL_DOMAIN, domainLabel } from "@/lib/constants";
 
 export type ChatItem = {
   id: string;
@@ -40,7 +40,8 @@ export function MessageBubble({ item }: { item: ChatItem }) {
               第 {item.tag.index} 题
             </span>
             <span>{domainLabel(item.tag.domain)}</span>
-            <span>{item.tag.difficulty}</span>
+            {/* 行为题不显示难度（P1-M11 D3）：难度不参与行为面出题，是死数据 */}
+            {item.tag.domain !== BEHAVIORAL_DOMAIN && <span>{item.tag.difficulty}</span>}
           </div>
         )}
         <p className="whitespace-pre-wrap">

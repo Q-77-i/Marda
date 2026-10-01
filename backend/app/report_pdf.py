@@ -17,8 +17,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from app.domain import DOMAIN_LABELS
-from app.graph.rules.aggregate import DIMENSION_LABELS, FIVE_DIMS, overall_score
+from app.domain import DOMAIN_LABELS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
+from app.graph.rules.aggregate import (
+    BEHAVIORAL_DIMENSION_LABELS,
+    DIMENSION_LABELS,
+    FIVE_DIMS,
+    dims_for,
+    overall_score,
+)
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
 
 
@@ -92,9 +98,9 @@ def _clamp(value: float) -> float:
     return min(max(float(value or 0), 0.0), _MAX_SCORE)
 
 
-def _vertex(cx: float, cy: float, radius: float, index: int, fraction: float) -> tuple[float, float]:
+def _vertex(cx: float, cy: float, radius: float, index: int, fraction: float, sides: int = 5) -> tuple[float, float]:
     """第 index 个轴（0 = 正上方，顺时针）上距圆心 radius×fraction 的点，保留一位小数定死输出。"""
-    angle = math.radians(-90 + 72 * index)
+    angle = math.radians(-90 + (360 / sides) * index)
     return (
         round(cx + radius * fraction * math.cos(angle), 1),
         round(cy + radius * fraction * math.sin(angle), 1),
@@ -105,33 +111,34 @@ def _points_attr(points: list[tuple[float, float]]) -> str:
     return " ".join(f"{x},{y}" for x, y in points)
 
 
-def radar_svg(scores: dict, *, size: int = 260) -> str:
-    """五维雷达图（内联 SVG）。"""
+def radar_svg(scores: dict, *, size: int = 260, dims: tuple[str, ...] = FIVE_DIMS) -> str:
+    """能力雷达图（内联 SVG）。dims 决定顶点数与标签（技术面/行为面各一套，P1-M11）。"""
+    sides = len(dims)
     cx = cy = size / 2
     radius = size * _RADIUS_RATIO
     rings = [
         f'<polygon class="radar-ring" points="'
-        f'{_points_attr([_vertex(cx, cy, radius, i, frac) for i in range(len(FIVE_DIMS))])}" '
+        f'{_points_attr([_vertex(cx, cy, radius, i, frac, sides) for i in range(sides)])}" '
         f'fill="none" stroke="{_RING_COLOR}" stroke-width="1"/>'
         for frac in _RING_FRACTIONS
     ]
     axes = [
         f'<line class="radar-axis" x1="{cx}" y1="{cy}" x2="{x}" y2="{y}" '
         f'stroke="{_RING_COLOR}" stroke-width="1"/>'
-        for x, y in (_vertex(cx, cy, radius, i, 1.0) for i in range(len(FIVE_DIMS)))
+        for x, y in (_vertex(cx, cy, radius, i, 1.0, sides) for i in range(sides))
     ]
     data = _points_attr([
-        _vertex(cx, cy, radius, i, _clamp(scores.get(dim, 0)) / _MAX_SCORE)
-        for i, dim in enumerate(FIVE_DIMS)
+        _vertex(cx, cy, radius, i, _clamp(scores.get(dim, 0)) / _MAX_SCORE, sides)
+        for i, dim in enumerate(dims)
     ])
     labels = []
-    for index, dim in enumerate(FIVE_DIMS):
-        x, y = _vertex(cx, cy, radius, index, _LABEL_RADIUS_RATIO)
+    for index, dim in enumerate(dims):
+        x, y = _vertex(cx, cy, radius, index, _LABEL_RADIUS_RATIO, sides)
         dy = -4 if index == 0 else 4  # 正上方那顶点往上抬，余者压到顶点下方
         labels.append(
             f'<text class="radar-label" x="{x}" y="{round(y + dy, 1)}" text-anchor="middle" '
             f'font-family="{FONT_STACK}" font-size="10" '
-            f'fill="{_LABEL_COLOR}">{DIMENSION_LABELS[dim]}</text>'
+            f'fill="{_LABEL_COLOR}">{dims_label(dim)}</text>'
         )
     return (
         f'<svg class="radar" width="{size}" height="{size}" viewBox="0 0 {size} {size}" '
@@ -141,6 +148,11 @@ def radar_svg(scores: dict, *, size: int = 260) -> str:
         f'stroke="{_DATA_STROKE}" stroke-width="1.6"/>'
         f'{"".join(labels)}</svg>'
     )
+
+
+def dims_label(dim: str) -> str:
+    """维度中文标签（两套表同源 aggregate）：技术面五维 ∪ 行为面五维。"""
+    return DIMENSION_LABELS.get(dim) or BEHAVIORAL_DIMENSION_LABELS.get(dim, dim)
 
 
 def format_created_at(iso: str) -> str:
@@ -181,7 +193,7 @@ def _question_label(item: dict, index: int) -> str:
     return f"第 {index + 1} 题"
 
 
-def _question_context(item: dict, index: int) -> dict:
+def _question_context(item: dict, index: int, dims: tuple[str, ...] = FIVE_DIMS) -> dict:
     score = item.get("score") or {}
     return {
         "label": _question_label(item, index),
@@ -189,7 +201,7 @@ def _question_context(item: dict, index: int) -> dict:
         "text": item.get("text") or "",
         "segments": _split_answer(item.get("candidate_answer")),
         "dimensions": [
-            {"label": DIMENSION_LABELS[dim], "value": score.get(dim)} for dim in FIVE_DIMS
+            {"label": dims_label(dim), "value": score.get(dim)} for dim in dims
         ],
         "has_score": bool(score),
         "covered": item.get("covered_key_points") or [],
@@ -201,6 +213,9 @@ def _question_context(item: dict, index: int) -> dict:
 
 def _build_context(payload: dict, created_at: str) -> dict:
     scores = payload.get("scores") or {}
+    interview_type = payload.get("interview_type") or INTERVIEW_TECH
+    behavioral = interview_type == INTERVIEW_BEHAVIORAL
+    dims = tuple(dims_for(interview_type))
     answered, total = payload.get("answered_count") or 0, payload.get("question_count") or 0
     weaknesses = set(payload.get("weaknesses") or [])
     # 总分走 aggregate.overall_score 单一来源（P1-M10 D1）：新 payload 直接取报告端算好的值，
@@ -209,7 +224,7 @@ def _build_context(payload: dict, created_at: str) -> dict:
     overall = (
         round(_clamp(stored_overall), 2)
         if stored_overall is not None
-        else overall_score({dim: _clamp(scores.get(dim, 0)) for dim in FIVE_DIMS})
+        else overall_score({dim: _clamp(scores.get(dim, 0)) for dim in dims}, dims)
     )
     return {
         "font_stack": FONT_STACK,
@@ -218,12 +233,14 @@ def _build_context(payload: dict, created_at: str) -> dict:
         "answered_count": answered,
         "question_count": total,
         "created_at": format_created_at(created_at),
-        "radar": radar_svg(scores),
+        "radar": radar_svg(scores, dims=dims),
         "dimensions": [
-            {"label": DIMENSION_LABELS[dim], "value": round(_clamp(scores.get(dim, 0)), 2)}
-            for dim in FIVE_DIMS
+            {"label": dims_label(dim), "value": round(_clamp(scores.get(dim, 0)), 2)}
+            for dim in dims
         ],
-        # 域得分按分值降序：短板一眼可见（页面是柱状图，PDF 用同宽的横条）
+        # 域得分按分值降序：短板一眼可见（页面是柱状图，PDF 用同宽的横条）。
+        # 行为面没有知识域（整场一个域）→ domains 为空，模板相应收起右栏（P1-M11）
+        "has_domains": bool(payload.get("domain_scores")),
         "domains": [
             {
                 "label": DOMAIN_LABELS.get(domain, domain),
@@ -235,10 +252,15 @@ def _build_context(payload: dict, created_at: str) -> dict:
                 (payload.get("domain_scores") or {}).items(), key=lambda kv: -float(kv[1] or 0)
             )
         ],
-        "weaknesses": [DOMAIN_LABELS.get(domain, domain) for domain in payload.get("weaknesses") or []],
+        "weaknesses_label": "短板维度" if behavioral else "短板域",
+        "weaknesses": (
+            [dims_label(key) for key in payload.get("weaknesses") or []]
+            if behavioral
+            else [DOMAIN_LABELS.get(domain, domain) for domain in payload.get("weaknesses") or []]
+        ),
         "total_comment": payload.get("total_comment") or "",
         "questions": [
-            _question_context(item, index)
+            _question_context(item, index, dims)
             for index, item in enumerate(payload.get("per_question_comments") or [])
         ],
         "advice": [

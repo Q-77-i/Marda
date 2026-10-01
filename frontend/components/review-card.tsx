@@ -1,18 +1,29 @@
 "use client";
 
-import type { PerQuestionComment, ScoreDimensions } from "@/lib/api";
+import type { Dim, PerQuestionComment } from "@/lib/api";
 import { DIMENSIONS, domainLabel } from "@/lib/constants";
 import { formatScore, splitAnswerSegments } from "@/lib/format";
 
-/** 单题复盘卡（FR-25 / SPEC §4.6 / §9）。 */
-export function ReviewCard({ item, label }: { item: PerQuestionComment; label: string }) {
+/**
+ * 单题复盘卡（FR-25 / SPEC §4.6 / §9）。
+ *
+ * `dims` 不传时退回技术面五维常量（老报告 payload 无 dims 字段，且档案页等旧调用点不变）。
+ */
+export function ReviewCard({
+  item,
+  label,
+  dims = DIMENSIONS,
+}: {
+  item: PerQuestionComment;
+  label: string;
+  dims?: Dim[];
+}) {
   const segments = splitAnswerSegments(item.candidate_answer);
   const covered = item.covered_key_points ?? [];
   const missed = item.missed_key_points ?? [];
   const score = item.score ?? null;
   const mean = score
-    ? DIMENSIONS.reduce((sum, dim) => sum + score[dim.key as keyof ScoreDimensions], 0) /
-      DIMENSIONS.length
+    ? dims.reduce((sum, dim) => sum + (score[dim.key] ?? 0), 0) / dims.length
     : null;
 
   return (
@@ -28,8 +39,7 @@ export function ReviewCard({ item, label }: { item: PerQuestionComment; label: s
           <span className="tabular text-xs text-muted-foreground">
             五维均分 <span className="font-medium text-foreground">{formatScore(mean)}</span>
           </span>
-        )}
-      </div>
+        )}      </div>
 
       {item.text && <p className="text-sm font-medium leading-relaxed">{item.text}</p>}
 
@@ -49,11 +59,11 @@ export function ReviewCard({ item, label }: { item: PerQuestionComment; label: s
 
       {score && (
         <ul className="flex flex-wrap gap-x-4 gap-y-1">
-          {DIMENSIONS.map((dim) => (
+          {dims.map((dim) => (
             <li key={dim.key} className="flex items-baseline gap-1">
               <span className="text-xs text-muted-foreground">{dim.label}</span>
               <span className="tabular text-xs font-medium">
-                {score[dim.key as keyof ScoreDimensions]}
+                {score[dim.key] ?? 0}
               </span>
             </li>
           ))}

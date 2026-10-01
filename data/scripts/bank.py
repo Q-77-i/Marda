@@ -18,7 +18,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Final
 
-from app.domain import DOMAIN_LABELS, ENABLED_DOMAINS
+from app.domain import ASKABLE_DOMAINS, DOMAIN_LABELS, ENABLED_DOMAINS
 from app.tools.question_text import MIN_ANSWER_CHARS, answer_substance  # noqa: F401  # 管道与私有上传承共用
 
 SOURCE_PERSONAL: Final = "个人题库-牛客补充版"
@@ -99,8 +99,11 @@ def finalize_status(question: dict) -> None:
 
     无实质答案 = 源里的占位（`答案：xx`）与空代码块这类空壳：留着题面但按没有答案处理，
     否则它会以 enabled 身份去富化、进向量库，实际给不出任何参考答案。
+
+    入库域 = 可出题域（ASKABLE_DOMAINS，P1-M11 起含行为面）∪ 可上传域（ENABLED_DOMAINS，
+    algorithms 只存不考）——两个集合之外的域（如 cs-fundamentals）解析入库但置 draft。
     """
-    if question["domain"] not in ENABLED_DOMAINS:
+    if question["domain"] not in ASKABLE_DOMAINS | ENABLED_DOMAINS:
         question["status"] = "draft"
     elif answer_substance(question["answer"]) < MIN_ANSWER_CHARS:
         question["status"] = "draft"

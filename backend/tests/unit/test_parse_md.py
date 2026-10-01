@@ -75,10 +75,11 @@ def test_无答案原题置_draft(questions):
     assert q["status"] == "draft"
 
 
-def test_行为面域阶段一置_draft(questions):
+def test_行为面域可出题故置_enabled(questions):
+    """P1-M11 起行为面进 ASKABLE_DOMAINS：有实质答案的行为题照常 enabled（进行为面池子）。"""
     q = questions[4]
     assert q["domain"] == "behavioral"
-    assert q["status"] == "draft"
+    assert q["status"] == "enabled"
     assert q["answer"] == "先做三年技术，再考虑带团队。"
 
 

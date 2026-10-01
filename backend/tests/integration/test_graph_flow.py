@@ -52,7 +52,9 @@ def install_search(monkeypatch):
 
         async def _search(*, domain, difficulty, exclude_ids=None, k=3, user_id=None):
             calls.append((domain, difficulty))
-            return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
+            # difficulty=None = 不限难度（P1-M11 行为面整池检索）
+            return [i for i in items if i["domain"] == domain
+                    and (difficulty is None or i["difficulty"] == difficulty)
                     and i["question_id"] not in (exclude_ids or [])][:k]
 
         async def _reference_answers(question_ids):

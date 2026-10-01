@@ -60,10 +60,10 @@ def test_from_zero_难度归一化与缺省(from_zero):
     assert [q["difficulty"] for q in questions] == ["L2", "L2", "L1", "L2"]  # 基础→L1，缺失→L2
 
 
-def test_from_zero_行为面域置_draft(from_zero):
+def test_from_zero_行为面域可出题故置_enabled(from_zero):
     questions, _ = from_zero
     assert questions[3]["domain"] == "behavioral"
-    assert questions[3]["status"] == "draft"
+    assert questions[3]["status"] == "enabled"  # P1-M11 起行为面进 ASKABLE_DOMAINS
     assert questions[2]["status"] == "enabled"
 
 

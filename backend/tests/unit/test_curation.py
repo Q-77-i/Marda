@@ -15,7 +15,7 @@ import pytest
 from apply_overrides import apply_to_sqlite
 from bank import apply_overrides, load_overrides
 
-from app.domain import DOMAIN_LABELS, ENABLED_DOMAINS
+from app.domain import ASKABLE_DOMAINS, DOMAIN_LABELS, DOMAIN_WEIGHTS
 
 REPO_CURATION = (
     Path(__file__).resolve().parents[3] / "data" / "curation" / "question_overrides.json"
@@ -56,14 +56,29 @@ def test_条目缺理由直接报错(tmp_path):
 
 
 def test_换域后状态跟随重算():
-    """换到未启用域（行为面）→ status 自动转 draft，不需要条目再写一遍。"""
+    """换到未启用域（如计算机基础）→ status 自动转 draft，不需要条目再写一遍。"""
     questions = [_question("q_1")]
 
-    unmatched = apply_overrides(questions, {"q_1": {"domain": "behavioral", "reason": "项目叙事题"}})
+    unmatched = apply_overrides(
+        questions, {"q_1": {"domain": "cs-fundamentals", "reason": "归域错了"}}
+    )
 
-    assert questions[0]["domain"] == "behavioral"
+    assert questions[0]["domain"] == "cs-fundamentals"
     assert questions[0]["status"] == "draft"
     assert unmatched == []
+
+
+def test_换到行为面域状态也是_enabled():
+    """P1-M11 起行为面可出题（ASKABLE_DOMAINS）：改判进该域的题不再自动下架。
+
+    与之相对的是**技术配额**：behavioral 不在 DOMAIN_WEIGHTS，技术面场次永远抽不到它
+    （见 test_仓库改判表把项目叙事题移出技术域）。
+    """
+    questions = [_question("q_1")]
+
+    apply_overrides(questions, {"q_1": {"domain": "behavioral", "reason": "项目叙事题"}})
+
+    assert (questions[0]["domain"], questions[0]["status"]) == ("behavioral", "enabled")
 
 
 def test_显式状态优先于域推导():
@@ -141,13 +156,13 @@ def test_改动落库且明细可读(db):
 
     assert [c["question_id"] for c in changes] == ["q_1", "q_2"]
     assert changes[0]["was"] == "agent-architecture/enabled"
-    assert (changes[0]["domain"], changes[0]["status"]) == ("behavioral", "draft")
+    assert (changes[0]["domain"], changes[0]["status"]) == ("behavioral", "enabled")
     assert changes[0]["question"] == "请介绍你的 Agent 项目"  # 明细带题面，人读得懂
     assert unmatched == ["q_ghost"]
     with sqlite3.connect(db) as conn:
         rows = dict(conn.execute("SELECT id, domain || '/' || status FROM questions"))
     assert rows == {
-        "q_1": "behavioral/draft",
+        "q_1": "behavioral/enabled",
         "q_2": "agent-architecture/draft",
         "q_keep": "planning-reasoning/enabled",  # 未改判的题一字不动
     }
@@ -190,7 +205,12 @@ def test_仓库改判表条目合法():
 
 
 def test_仓库改判表把项目叙事题移出技术域():
-    """M9 的整改口径：技术域只放「不依赖候选人自述经历即可作答」的题。"""
+    """M9 的整改口径（M11 修订）：技术域只放「不依赖候选人自述经历即可作答」的题。
+
+    M11 起行为面可出题（`behavioral ∈ ASKABLE_DOMAINS`），这些题会进**行为面**的池子——
+    那正是它们该待的地方；真正要守的底线是它们**永不被技术面抽到**：behavioral 不在
+    DOMAIN_WEIGHTS，`pick_domain` 只在权重表的域里分配配额。
+    """
     payload = json.loads(REPO_CURATION.read_text(encoding="utf-8"))
 
     for item in payload["overrides"]:
@@ -198,4 +218,5 @@ def test_仓库改判表把项目叙事题移出技术域():
         if target is None:  # 只置 draft 的（追问残片）不算换域
             continue
         assert target == "behavioral", item
-        assert "behavioral" not in ENABLED_DOMAINS, "行为面一旦启用，这些题会重新入池，需重新过一遍"
+        assert "behavioral" not in DOMAIN_WEIGHTS, "行为面进了技术配额，这些叙事题会被技术面抽到"
+        assert "behavioral" in ASKABLE_DOMAINS, "行为面可出题（M11）；不可出题时这些题等于下架"

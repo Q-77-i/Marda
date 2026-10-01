@@ -58,6 +58,7 @@ import httpx
 from app import db, observability
 from app.config import get_settings
 from app.domain import DOMAIN_LABELS, project_count
+from app.graph.rules.aggregate import BEHAVIORAL_DIMS
 from app.graph.rules.transition import domain_label
 from app.tools import question_search
 
@@ -94,6 +95,17 @@ CANDIDATE_ANSWERS = [
     "谢谢，最后问一个：应届生入职后一般怎么成长？",
 ]
 FALLBACK_ANSWER = "好的，我再补充一点：整体上我会优先保证流程能跑通，再逐步加监控和降级……（模拟作答）"
+
+# 行为面作答（P1-M11）：没在验证回答质量，一份像样的叙事 + 通用补充即可
+BEHAVIORAL_ANSWERS = [
+    "我是应届生，计算机专业，做过一个基于 LangGraph 的面试练习项目：先想清楚痛点——"
+    "模拟面试没法反复练；然后做方案：状态机管流程、RAG 管题库；最后结果是同学试用反馈流程清晰。",
+    "那我补充下细节：当时团队三个人，我负责引擎部分，最难的是把追问决策从 LLM 里拿出来改成纯代码规则，"
+    "这样能解释也能回放，后来这块成了整个项目最稳的部分。",
+    "复盘的话，我最大的收获是先跑通再优化——一开始想一步到位，后来改成先让最小闭环能跑，"
+    "每周拿真实数据看短板，再决定下一周优化什么。",
+]
+BEHAVIORAL_FALLBACK = "我再补充一点：这段经历里我主要负责把方案落地，遇到的问题基本都靠拆小、先验证再推进解决。"
 
 
 async def _events(response) -> list[dict]:
@@ -691,6 +703,69 @@ async def main() -> None:
                           "（Settings → Models 按 DeepSeek 官方价目加一条即可）")
             else:
                 print("Langfuse 未配置（.env 缺 LANGFUSE_* key）→ 跳过云端核对")
+
+            # ── 行为面（P1-M11 FR-22）：一场真链路 + 出题池隔离反查 ──────────
+            # 验收两条：① 一场行为面跑通（新维度报告 / PDF / 档案排除 / 推荐为空）；
+            # ② 行为题不混入技术面（上面那场技术面的 ask 事件里一个 behavioral 都不该有）
+            assert all(
+                e["detail"]["domain"] != "behavioral"
+                for e in trace["events"] if e["type"] == "ask"
+            ), "技术面场次抽到了行为题（出题池隔离被打破）"
+            async with client.stream(
+                "POST", f"{BASE}/api/interviews",
+                json={"position": "Agent/AI 工程师", "question_count": 5,
+                      "interview_type": "behavioral"},
+            ) as r:
+                assert r.status_code == 200, f"行为面创建失败: {r.status_code} {r.text}"
+                beh_events = await _events(r)
+            beh_id = beh_events[0][1]["interview_id"]
+            print("=" * 60)
+            print("行为面（P1-M11）：新维度评分 + 出题池隔离")
+            print("=" * 60)
+            beh_turn, beh_done, beh_asked = 0, False, []
+            while not beh_done and beh_turn < 5 * 3 + 6:
+                answer = (
+                    BEHAVIORAL_ANSWERS[beh_turn]
+                    if beh_turn < len(BEHAVIORAL_ANSWERS) else BEHAVIORAL_FALLBACK
+                )
+                async with client.stream(
+                    "POST", f"{BASE}/api/interviews/{beh_id}/messages",
+                    json={"content": answer},
+                ) as r:
+                    assert r.status_code == 200, f"行为面消息失败: {r.status_code}"
+                    for name, data in await _events(r):
+                        if name == "question":
+                            beh_asked.append(data["domain"])
+                        elif name == "done":
+                            beh_done = True
+                beh_turn += 1
+            assert beh_done, f"行为面 {beh_turn} 轮后仍未结束"
+            assert beh_asked and set(beh_asked) == {"behavioral"}, f"行为面混入其他域：{beh_asked}"
+            beh_report = (await client.get(f"{BASE}/api/interviews/{beh_id}/report")).json()["report"]
+            assert beh_report["interview_type"] == "behavioral"
+            assert {d["key"] for d in beh_report["dims"]} == set(BEHAVIORAL_DIMS), "行为面维度表不对"
+            assert set(beh_report["scores"]) == set(BEHAVIORAL_DIMS)
+            assert beh_report["domain_scores"] == {}, "行为面不该有知识域统计"
+            assert set(beh_report["weaknesses"]) <= set(BEHAVIORAL_DIMS), "行为面短板应是维度"
+            assert all(
+                c["domain"] == "behavioral" for c in beh_report["per_question_comments"]
+            ), "行为面复盘卡混入其他域"
+            # PDF（导出按钮照常）：真文本读回命中行为面维度、且没有知识域段
+            r = await client.get(f"{BASE}/api/interviews/{beh_id}/report.pdf")
+            assert r.status_code == 200, f"行为面 PDF 导出失败：{r.status_code}"
+            beh_pdf = _pdf_text(r.content)
+            assert "知识域" not in beh_pdf, "行为面 PDF 不该有知识域段"
+            assert "项目经验" in beh_pdf and "职业稳定性" in beh_pdf, "行为面 PDF 缺维度标签"
+            # 推荐为空（D5）、档案排除（D4）
+            rec = (await client.get(f"{BASE}/api/interviews/{beh_id}/recommendations")).json()
+            assert rec["groups"] == [], "行为面不该产出学习推荐"
+            beh_profile = (await client.get(f"{BASE}/api/profile")).json()
+            assert beh_id not in [s["interview_id"] for s in beh_profile["sessions"]], \
+                "行为面场次混进了能力档案"
+            assert beh_profile["excluded"].get("behavioral", 0) >= 1, "行为面场次未被计入排除计数"
+            print(f"行为面 OK：{beh_turn} 轮跑通，五维 {list(beh_report['scores'].values())}，"
+                  f"短板维度 {beh_report['weaknesses']}；PDF 读回命中行为面维度、无知识域段；"
+                  f"推荐为空、档案排除（excluded={beh_profile['excluded']}）")
 
             # 会话恢复 + 历史列表
             r = await client.get(f"{BASE}/api/interviews/{interview_id}")

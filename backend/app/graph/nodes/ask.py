@@ -1,20 +1,30 @@
 """出题节点（SPEC §4.4）：选域 → 检索 → 放宽难度 → LLM 兜底 → 面试官口吻提问。
 
 降级链（CLAUDE.md）：题库（payload 过滤）→ 难度 ±1 → LLM 生成（from_bank=False 不入库）。
+行为面（P1-M11）：不分域、不分难度，按行为题整池随机 → 池空 LLM 生成兜底。
 """
 
 from __future__ import annotations
 
 from app import llm
 from app.agents.prompts import (
+    ASKED_BEHAVIORAL_EMPTY,
+    ASKED_BEHAVIORAL_HEADER,
     ASKED_PROJECT_EMPTY,
     ASKED_PROJECT_HEADER,
     ASK_BANK_TEMPLATE,
     ASK_GENERATE_TEMPLATE,
     ASK_SCENARIO_TEMPLATE,
+    BEHAVIORAL_ASK_GENERATE_TEMPLATE,
+    persona_for,
 )
 from app.agents.schemas import GeneratedQuestion
-from app.domain import DOMAIN_LABELS
+from app.domain import (
+    BEHAVIORAL_DOMAIN,
+    DOMAIN_LABELS,
+    INTERVIEW_BEHAVIORAL,
+    QUESTION_TYPE_BEHAVIORAL,
+)
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
 from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
@@ -23,7 +33,11 @@ from app.tools import question_search
 
 
 async def ask_node(state: InterviewState) -> dict:
-    if state.phase is Phase.TECH_BASE:
+    if state.interview_type == INTERVIEW_BEHAVIORAL:
+        question, hits = await _pick_behavioral(state)
+        if question is None:
+            question, hits = await _generate_behavioral(state), 0
+    elif state.phase is Phase.TECH_BASE:
         question, hits = await _pick_from_bank(state)
         if question is None:
             question, hits = await _generate_tech(state), 0
@@ -36,6 +50,7 @@ async def ask_node(state: InterviewState) -> dict:
         add_history(state, "assistant", buffer)
     text = await llm.chat(
         [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
+            persona=persona_for(state.interview_type),
             question=question.text,
             profile=state.candidate_profile or "（候选人未提供项目背景）",
         )}]
@@ -60,10 +75,42 @@ async def ask_node(state: InterviewState) -> dict:
         "chat_history": state.chat_history,
         "trace_log": state.trace_log,
     }
-    # 首次出题（WARMUP 之后）：进入项目深挖阶段
-    if state.phase not in (Phase.TECH_BASE, Phase.PROJECT):
-        updates["phase"] = Phase.PROJECT
+    # 首次出题（WARMUP 之后）：进入问答段（行为面单段 / 技术面先项目深挖）
+    if state.phase not in (Phase.TECH_BASE, Phase.PROJECT, Phase.BEHAVIORAL):
+        updates["phase"] = (
+            Phase.BEHAVIORAL
+            if state.interview_type == INTERVIEW_BEHAVIORAL
+            else Phase.PROJECT
+        )
     return updates
+
+
+async def _pick_behavioral(state: InterviewState) -> tuple[QuestionRecord | None, int]:
+    """行为题整池随机（P1-M11）：不分域（只有一个域）、不分难度（L1-L3 是技术语义，D3）。
+
+    私有题不参与：私有库不开放行为面域（D7），`difficulty=None` 的检索在
+    question_search 里本就跳过私有候选。
+    """
+    candidates = await question_search.search_questions(
+        domain=BEHAVIORAL_DOMAIN,
+        difficulty=None,
+        exclude_ids=state.asked_ids,
+        k=3,
+        user_id=state.user_id or None,
+    )
+    if not candidates:
+        return None, 0
+    item = candidates[0]
+    return QuestionRecord(
+        question_id=item["question_id"],
+        text=item["question"],
+        domain=item["domain"],
+        topic=item["topic"],
+        difficulty=item["difficulty"],  # 只作记录（报告不展示、不参与出题，D3）
+        key_points=item["key_points"],
+        follow_ups=item["follow_ups"],
+        question_type=QUESTION_TYPE_BEHAVIORAL,
+    ), len(candidates)
 
 
 async def _pick_from_bank(state: InterviewState) -> tuple[QuestionRecord | None, int]:
@@ -154,4 +201,32 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
         key_points=generated.key_points,
         from_bank=False,
         question_type="scenario",  # 题型标识（COUNTED_QUESTION_TYPES 计入轮次）
+    )
+
+
+def _asked_behavioral_block(state: InterviewState) -> str:
+    """已问过的行为题原文（P1-M11）：与项目题同款——出题官不看见措辞就会换汤不换药。"""
+    texts = [q.text for q in state.answered_questions if q.question_type == QUESTION_TYPE_BEHAVIORAL]
+    if not texts:
+        return ASKED_BEHAVIORAL_EMPTY
+    return ASKED_BEHAVIORAL_HEADER + "\n".join(f"{i}. {t}" for i, t in enumerate(texts, 1))
+
+
+async def _generate_behavioral(state: InterviewState) -> QuestionRecord:
+    """行为题库耗尽 → LLM 按同标准现场生成（P1-M11 D1 兜底，不入正式库）。"""
+    generated = await llm.chat_json(
+        [{"role": "system", "content": BEHAVIORAL_ASK_GENERATE_TEMPLATE.format(
+            profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的行为面题目）",
+            asked=_asked_behavioral_block(state))}],
+        schema=GeneratedQuestion,
+        temperature=0.7,
+    )
+    return QuestionRecord(
+        text=generated.text,
+        domain=BEHAVIORAL_DOMAIN,
+        topic=generated.topic,
+        difficulty=state.difficulty,  # 死数据（D3）：只作记录，不参与出题与展示
+        key_points=generated.key_points,
+        from_bank=False,
+        question_type=QUESTION_TYPE_BEHAVIORAL,
     )

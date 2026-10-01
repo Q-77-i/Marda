@@ -5,9 +5,12 @@ from __future__ import annotations
 from app import llm
 from app.agents.prompts import (
     FOLLOWUP_CLARIFY_TEMPLATE,
+    FOLLOWUP_DEEPEN_BEHAVIORAL_TEMPLATE,
     FOLLOWUP_DEEPEN_TEMPLATE,
     FOLLOWUP_MISSING_TEMPLATE,
+    persona_for,
 )
+from app.domain import QUESTION_TYPE_BEHAVIORAL
 from app.graph.rules.follow_up import (
     Decision,
     explain_decision,
@@ -15,6 +18,11 @@ from app.graph.rules.follow_up import (
     unasked_missed,
 )
 from app.graph.state import InterviewState, TraceEvent, add_history, add_trace
+
+
+def _deepen_only(question) -> bool:
+    """行为面 deepen-only 判据（P1-M11 ①）：按题型而非会话类型——将来若混排也成立。"""
+    return question.question_type == QUESTION_TYPE_BEHAVIORAL
 
 
 async def followup_node(state: InterviewState) -> dict:
@@ -28,10 +36,14 @@ async def followup_node(state: InterviewState) -> dict:
         deepen_used=question.deepen_used,
         remedy_used=remedy_used_total(state),
         asked_key_points=question.asked_key_points,
+        deepen_only=_deepen_only(question),
     )
+    persona = persona_for(state.interview_type)
     if decision is Decision.CLARIFY:
         question.clarify_used += 1
-        prompt = FOLLOWUP_CLARIFY_TEMPLATE.format(question=question.text, answer=question.answer)
+        prompt = FOLLOWUP_CLARIFY_TEMPLATE.format(
+            persona=persona, question=question.text, answer=question.answer
+        )
         text = await llm.chat([{"role": "system", "content": prompt}])
     elif decision is Decision.MISSING:
         question.missing_used += 1
@@ -39,6 +51,7 @@ async def followup_node(state: InterviewState) -> dict:
         unasked = unasked_missed(question.score, question.asked_key_points)
         question.asked_key_points.extend(unasked)
         prompt = FOLLOWUP_MISSING_TEMPLATE.format(
+            persona=persona,
             question=question.text,
             answer=question.answer,
             missed_points="；".join(unasked),
@@ -48,11 +61,17 @@ async def followup_node(state: InterviewState) -> dict:
         question.deepen_used += 1
         # 题库题直接发 follow_ups 元数据（P1-M4.5 拍板：零 LLM 调用，确定性可回放）；
         # 生成题/无元数据 → LLM 从问答上下文现场生成深挖追问
+        # （行为面走行为面口吻模板：不同「底层机制/权衡」，问细节与情境，P1-M11）
         if question.from_bank and question.follow_ups:
             text = question.follow_ups[question.deepen_used - 1]
         else:
-            prompt = FOLLOWUP_DEEPEN_TEMPLATE.format(
-                question=question.text, answer=question.answer
+            template = (
+                FOLLOWUP_DEEPEN_BEHAVIORAL_TEMPLATE
+                if _deepen_only(question)
+                else FOLLOWUP_DEEPEN_TEMPLATE
+            )
+            prompt = template.format(
+                persona=persona, question=question.text, answer=question.answer
             )
             text = await llm.chat([{"role": "system", "content": prompt}])
     question.follow_up_count += 1

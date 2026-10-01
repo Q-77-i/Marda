@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from app import llm
 from app.agents.prompts import ANSWER_CANDIDATE_TEMPLATE, CLOSING_INVITE_TEMPLATE, REFUSE_END_TEMPLATE
+from app.agents.prompts import persona_for
+from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules.advance import end_quota
 from app.graph.state import InterviewState, TraceEvent, add_history, add_trace
 
@@ -11,14 +13,21 @@ CLOSING_QUESTION_LIMIT = 2  # PRD §4.1：候选人提问 1-2 个后收尾
 
 
 async def closing_invite_node(state: InterviewState) -> dict:
-    text = await llm.chat([{"role": "system", "content": CLOSING_INVITE_TEMPLATE}])
+    section = "行为面" if state.interview_type == INTERVIEW_BEHAVIORAL else "技术问答"
+    text = await llm.chat(
+        [{"role": "system", "content": CLOSING_INVITE_TEMPLATE.format(
+            persona=persona_for(state.interview_type), section=section,
+        )}]
+    )
     add_history(state, "assistant", text)
     return {"chat_history": state.chat_history}
 
 
 async def answer_candidate_node(state: InterviewState) -> dict:
     text = await llm.chat(
-        [{"role": "system", "content": ANSWER_CANDIDATE_TEMPLATE.format(content=state.user_input)}]
+        [{"role": "system", "content": ANSWER_CANDIDATE_TEMPLATE.format(
+            persona=persona_for(state.interview_type), content=state.user_input,
+        )}]
     )
     state.closing_question_count += 1
     add_history(state, "user", state.user_input)
@@ -30,7 +39,9 @@ async def refuse_end_node(state: InterviewState) -> dict:
     """主动结束但未达 60% 门槛：礼貌挽留，不暴露门槛数字（PRD §4.5）。"""
     question = state.current_question.text if state.current_question else ""
     text = await llm.chat(
-        [{"role": "system", "content": REFUSE_END_TEMPLATE.format(question=question)}]
+        [{"role": "system", "content": REFUSE_END_TEMPLATE.format(
+            persona=persona_for(state.interview_type), question=question,
+        )}]
     )
     add_history(state, "assistant", text)
     # 回放证据（FR-21）：挽留归当前正在答的轮次，门槛与 meets_end_quota 同源

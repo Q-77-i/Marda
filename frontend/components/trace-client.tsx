@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getTrace, type TraceEvent, type TraceResponse } from "@/lib/api";
+import { getTrace, type Dim, type TraceEvent, type TraceResponse } from "@/lib/api";
 import {
   DIMENSIONS,
   QUESTION_TYPE_LABELS,
@@ -55,6 +55,9 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
       active = false;
     };
   }, [interviewId]);
+
+  // 评分维度表（P1-M11）：后端随响应给；老场次（无该字段）退回技术面五维常量
+  const traceDims: Dim[] = data?.dims?.length ? data.dims : DIMENSIONS;
 
   if (error) {
     return (
@@ -140,10 +143,10 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
           <>
             <ol className="flex flex-col gap-4">
               {rounds.map((item) => (
-                <RoundCard key={item.round} round={item} />
+                <RoundCard key={item.round} round={item} dims={traceDims} />
               ))}
             </ol>
-            {closing.length > 0 && <ClosingCard events={closing} />}
+            {closing.length > 0 && <ClosingCard events={closing} dims={traceDims} />}
           </>
         )}
       </main>
@@ -152,7 +155,7 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
 }
 
 /** 单轮卡片：出题信息进头部，其余事件按发生顺序排在时间线上。 */
-function RoundCard({ round }: { round: TraceRound }) {
+function RoundCard({ round, dims }: { round: TraceRound; dims: Dim[] }) {
   const ask = round.events.find((event) => event.type === "ask");
   const question = ask ? asText(ask.detail.question) : null;
   const domain = ask ? asText(ask.detail.domain) : null;
@@ -187,7 +190,7 @@ function RoundCard({ round }: { round: TraceRound }) {
       {sections.length > 0 && (
         <ol className="flex flex-col gap-4 border-l pl-5">
           {sections.map((event, index) => (
-            <TraceSection key={`${event.type}-${index}`} event={event} />
+            <TraceSection key={`${event.type}-${index}`} event={event} dims={dims} />
           ))}
         </ol>
       )}
@@ -205,10 +208,10 @@ function askSource(ask: TraceEvent): string | null {
   return null;
 }
 
-function TraceSection({ event }: { event: TraceEvent }) {
+function TraceSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
   switch (event.type) {
     case "judge":
-      return <JudgeSection event={event} />;
+      return <JudgeSection event={event} dims={dims} />;
     case "followup":
       return <FollowupSection event={event} />;
     case "advance":
@@ -246,7 +249,7 @@ function Section({
 }
 
 /** 评分：五维得分 + 覆盖率 + 难度调整；回答原文默认折叠（可能很长）。 */
-function JudgeSection({ event }: { event: TraceEvent }) {
+function JudgeSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
   const score = asRecord(event.detail.score);
   const { missedKeyPoints, comment } = judgeEvidence(event.detail.score);
   const coverage = coveragePercent(event.detail.coverage);
@@ -277,7 +280,7 @@ function JudgeSection({ event }: { event: TraceEvent }) {
     >
       {score && (
         <ul className="flex flex-wrap gap-x-4 gap-y-1">
-          {DIMENSIONS.map((dim) => {
+          {dims.map((dim) => {
             const value = asNumber(score[dim.key]);
             if (value === null) return null;
             return (
@@ -402,7 +405,7 @@ function RawSection({ event }: { event: TraceEvent }) {
 }
 
 /** 收尾区：非轮次事件（报告生成）。 */
-function ClosingCard({ events }: { events: TraceEvent[] }) {
+function ClosingCard({ events, dims }: { events: TraceEvent[]; dims: Dim[] }) {
   const report = events.find((event) => event.type === "report");
   const answered = report ? asNumber(report.detail.answered_count) : null;
   const total = report ? asNumber(report.detail.question_count) : null;
@@ -434,7 +437,7 @@ function ClosingCard({ events }: { events: TraceEvent[] }) {
         {others.length > 0 && (
           <ol className="flex flex-col gap-4 border-l pl-5">
             {others.map((event, index) => (
-              <TraceSection key={`${event.type}-${index}`} event={event} />
+              <TraceSection key={`${event.type}-${index}`} event={event} dims={dims} />
             ))}
           </ol>
         )}

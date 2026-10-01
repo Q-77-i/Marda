@@ -1,9 +1,10 @@
 """图集成测试用 FakeLLM：按 prompt 标记路由，注入方式与 test_llm.py 同模式。
 
 路由标记与 agents/prompts.py 的模板文案一一对应（改 prompt 时保持这些标记词）：
-- 「评分官」→ score 工厂 JSON（callable 可编程驱动追问/难度路径）
+- 「评分官」→ score 工厂 JSON（callable 可编程驱动追问/难度路径）；
+  同一标记下再按「行为面」分技术面/行为面两套默认分（P1-M11）
 - 「报告官」→ report JSON
-- 「出题官」→ generated JSON（题库未命中兜底 / 场景题）
+- 「出题官」→ generated JSON（题库未命中兜底 / 场景题 / 行为面生成题）
 - 含「提炼」→ profile JSON（自我介绍提炼）
 - 含「真诚收尾」→ 结束陈词文案（P1-M4.7-D）
 - 其余（开场/出题文案/追问/反问/挽留）→ 固定文案
@@ -27,6 +28,19 @@ DEFAULT_SCORE = {
     "missed_key_points": [],
     "error_flag": False,
     "comment": "整体不错",
+}
+
+# 行为面五维（P1-M11，键与 aggregate.BEHAVIORAL_DIMS 一致）
+DEFAULT_BEHAVIORAL_SCORE = {
+    "communication": 4,
+    "logic_structure": 4,
+    "project_experience": 4,
+    "values_motivation": 3,
+    "career_stability": 5,
+    "covered_key_points": ["k1"],
+    "missed_key_points": [],
+    "error_flag": False,
+    "comment": "讲述清晰",
 }
 DEFAULT_PROFILE = {"summary": "应届生，Agent 方向", "projects": ["做过 RAG 问答系统"], "tech_stack": ["Python"]}
 DEFAULT_GENERATED = {
@@ -53,6 +67,7 @@ class FakeLLMClient:
         self,
         *,
         score: dict | Callable[[], dict] | None = None,
+        behavioral_score: dict | Callable[[], dict] | None = None,
         profile: dict | None = None,
         generated: dict | None = None,
         report: dict | None = None,
@@ -60,6 +75,9 @@ class FakeLLMClient:
         closing: str = DEFAULT_CLOSING,
     ) -> None:
         self._score = score if score is not None else DEFAULT_SCORE
+        self._behavioral_score = (
+            behavioral_score if behavioral_score is not None else DEFAULT_BEHAVIORAL_SCORE
+        )
         self._profile = profile or DEFAULT_PROFILE
         self._generated = generated or DEFAULT_GENERATED
         self._report = report or DEFAULT_REPORT
@@ -81,8 +99,8 @@ class FakeLLMClient:
         system = kwargs["messages"][0]["content"]
         self.calls.append({"system": system})
         if "评分官" in system:
-            score = self._score() if callable(self._score) else self._score
-            content = json.dumps(score, ensure_ascii=False)
+            raw = self._behavioral_score if "行为面" in system else self._score
+            content = json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)
         elif "报告官" in system:
             content = json.dumps(self._report, ensure_ascii=False)
         elif "出题官" in system:

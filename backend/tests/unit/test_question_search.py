@@ -255,3 +255,31 @@ async def test_不传user_id时行为与接入前一致(private_env, install):
 
     assert [r["question_id"] for r in result] == ["q1"]
     assert calls["ids"] == ["q1"]
+
+
+# ---- 不限难度（P1-M11：行为面整池检索） ----
+
+
+async def test_不限难度时过滤条件只有域(install):
+    scroll, _ = install([], [])
+
+    await question_search.search_questions(domain="behavioral", difficulty=None)
+
+    must = scroll.kwargs["scroll_filter"].must
+    assert {c.key: c.match.value for c in must} == {"domain": "behavioral"}
+
+
+async def test_不限难度时不并入私有题(install, monkeypatch):
+    """私有库不开放行为面域（D7）：difficulty=None 路径直接跳过私有候选，也不该被调用。"""
+    calls: list = []
+
+    def fake_private(*args, **kwargs):
+        calls.append(kwargs)
+        return []
+
+    monkeypatch.setattr(question_search.bank_private, "search_candidates", fake_private)
+    install([_payload("q1")], [{"question_id": "q1"}])
+
+    await question_search.search_questions(domain="behavioral", difficulty=None, user_id="u1")
+
+    assert calls == []

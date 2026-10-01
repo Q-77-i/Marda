@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { deleteInterview, listInterviews, type InterviewRow } from "@/lib/api";
-import { difficultyLabel } from "@/lib/constants";
+import { difficultyLabel, interviewTypeLabel, isBehavioral } from "@/lib/constants";
 import { formatDuration, formatTime } from "@/lib/format";
 
 /** 历史面试列表：进行中 → 续面，已完成 → 报告；每条可物理删除（T7a-R1）。 */
@@ -90,6 +90,7 @@ export function InterviewList() {
             {rows.map((row) => {
               const finished = row.status === "finished";
               const duration = formatDuration(row.started_at, row.ended_at);
+              const behavioral = isBehavioral(row.interview_type);
               return (
                 <li key={row.id} className="flex items-center gap-2 py-3">
                   <Link
@@ -97,9 +98,17 @@ export function InterviewList() {
                     className="flex min-w-0 flex-1 items-center justify-between gap-4 transition-colors hover:bg-muted/50 focus-visible:bg-muted/50 focus-visible:outline-none"
                   >
                     <div className="flex min-w-0 flex-col gap-1">
-                      <span className="truncate text-sm font-medium">{row.position}</span>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium">{row.position}</span>
+                        {/* 类型徽标（P1-M11）：两种类型都标——混合列表里一眼能分开 */}
+                        <Badge variant="outline" className="shrink-0 font-normal">
+                          {interviewTypeLabel(row.interview_type)}
+                        </Badge>
+                      </span>
                       <span className="tabular text-xs text-muted-foreground">
-                        {row.question_count} 题 · {difficultyLabel(row.difficulty)}
+                        {row.question_count} 题
+                        {/* 行为面不展示难度（P1-M11 D3）：难度不参与行为面出题，是死数据 */}
+                        {!behavioral && ` · ${difficultyLabel(row.difficulty)}`}
                         {duration ? ` · ${duration}` : ""}
                       </span>
                     </div>

@@ -32,18 +32,20 @@ def _test_env(monkeypatch, tmp_path):
 
 
 def question_bank() -> dict:
-    """两域最小题库（fake 检索按 (domain, difficulty) 查表）。"""
+    """两域最小题库（fake 检索按 (domain, difficulty) 查表；difficulty=None = 整域）。"""
 
-    def _item(qid: str, domain: str) -> dict:
+    def _item(qid: str, domain: str, difficulty: str = "L1") -> dict:
         return {
             "question_id": qid, "question": f"{domain} 方向的题目", "answer": "参考答案",
             "key_points": ["k1"], "follow_ups": [], "domain": domain,
-            "topic": "测试主题", "difficulty": "L1", "company": None, "round": "一面",
+            "topic": "测试主题", "difficulty": difficulty, "company": None, "round": "一面",
         }
 
     return {
         ("agent-architecture", "L1"): [_item("q_arch", "agent-architecture")],
         ("rag", "L1"): [_item("q_rag", "rag")],
+        # 行为面（P1-M11）：整池抽取（difficulty=None）；两道便于验证「越问越少」
+        ("behavioral", "L1"): [_item("q_beh1", "behavioral"), _item("q_beh2", "behavioral", "L2")],
     }
 
 
@@ -53,7 +55,9 @@ def install_search(monkeypatch):
         items = [i for group in (bank or {}).values() for i in group]
 
         async def _search(*, domain, difficulty, exclude_ids=None, k=3, user_id=None):
-            return [i for i in items if i["domain"] == domain and i["difficulty"] == difficulty
+            # difficulty=None = 不限难度（P1-M11 行为面整池检索）
+            return [i for i in items if i["domain"] == domain
+                    and (difficulty is None or i["difficulty"] == difficulty)
                     and i["question_id"] not in (exclude_ids or [])][:k]
 
         async def _reference_answers(question_ids):

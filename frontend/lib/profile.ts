@@ -229,3 +229,22 @@ export function weaknessRows(
     label: labelById.get(change.interview_id) ?? formatTime(change.started_at),
   }));
 }
+
+/**
+ * 未计入场次的说明（P1-M11 D4）：行为面场次不进技术能力档案（维度与知识域体系都不同），
+ * 但用户看得见自己跑过——空档案与混排时都要说清「为什么这里没有那几场」，不静默。
+ *
+ * 返回一行说明文案；没有排除场次时返回 null（页面不渲染）。
+ */
+export function excludedNote(excluded: Record<string, number> | undefined): string | null {
+  const behavioral = excluded?.behavioral ?? 0;
+  if (behavioral <= 0) return null;
+  return `另有 ${behavioral} 场行为面，不计入技术能力档案`;
+}
+
+/** 空档案的成因：区分「一场没跑」与「只跑了行为面」（两者的引导文案不同）。 */
+export function emptyProfileKind(
+  excluded: Record<string, number> | undefined,
+): "none" | "behavioral-only" {
+  return (excluded?.behavioral ?? 0) > 0 ? "behavioral-only" : "none";
+}

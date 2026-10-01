@@ -63,26 +63,28 @@ def fetch_by_ids(db_path: Path, ids: list[str]) -> list[dict[str, Any]]:
 async def search_questions(
     *,
     domain: str,
-    difficulty: str,
+    difficulty: str | None,
     exclude_ids: list[str] | None = None,
     k: int = 3,
     user_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """按 domain/difficulty 过滤题库，排除已问，随机取至多 k 条完整题目。
+    """按 domain（+可选 difficulty）过滤题库，排除已问，随机取至多 k 条完整题目。
+
+    `difficulty=None` = **不限难度**（P1-M11 行为面：行为题的 L1-L3 是技术深度语义，
+    挂行为题上没有意义，整池抽取即可）。此模式下不并入私有候选——私有库不开放
+    行为面域（D7），即便并了也只会是空集。
 
     user_id（P1-M7 FR-13）非空时**并入该用户的私有题**：公共候选走 Qdrant payload 过滤、
     私有候选走 SQL（私有题不进 Qdrant），两者合成一个候选池再随机——这样私有题是按
     「池中占比」自然混入的，不设额外权重或开关。user_id 为空（阶段 1 的历史场次除外，
     阶段 2 起每场都有归属）时行为与接入前完全一致。
     """
+    must = [qm.FieldCondition(key="domain", match=qm.MatchValue(value=domain))]
+    if difficulty is not None:
+        must.append(qm.FieldCondition(key="difficulty", match=qm.MatchValue(value=difficulty)))
     points, _ = await get_qdrant_client().scroll(
         collection_name=COLLECTION,
-        scroll_filter=qm.Filter(
-            must=[
-                qm.FieldCondition(key="domain", match=qm.MatchValue(value=domain)),
-                qm.FieldCondition(key="difficulty", match=qm.MatchValue(value=difficulty)),
-            ]
-        ),
+        scroll_filter=qm.Filter(must=must),
         limit=SCROLL_LIMIT,
         with_payload=True,
         with_vectors=False,
@@ -95,7 +97,7 @@ async def search_questions(
     ]
     db_path = get_settings().db_path
     rows = await asyncio.to_thread(fetch_by_ids, db_path, ids) if ids else []
-    if user_id:
+    if user_id and difficulty is not None:
         rows += await asyncio.to_thread(
             bank_private.search_candidates,
             db_path,

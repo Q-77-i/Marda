@@ -3,13 +3,14 @@
 - 主动结束门槛：已答 ≥ ceil(question_count × 0.6)（PRD §4.5，否则拒绝并继续）；
 - 阶段推进（P1-M4.6-C 顺序，项目深挖前置）：PROJECT 答满 project_count 道
   → TECH_BASE 技术轮答满（question_count）→ 反问。question_count 为全场问答轮次。
+- 行为面（P1-M11）：没有 PROJECT/TECH_BASE 之分，BEHAVIORAL 一段答满 → 反问。
 """
 
 from __future__ import annotations
 
 from math import ceil
 
-from app.domain import project_count
+from app.domain import INTERVIEW_BEHAVIORAL, project_count
 from app.graph.state import Phase
 
 END_QUOTA_RATIO = 0.6 # 结束配额比例
@@ -34,8 +35,17 @@ def meets_end_quota(answered_count: int, question_count: int) -> bool:
     return answered_count >= end_quota(question_count)
 
 
-def phase_after_answer(phase: Phase, answered_count: int, question_count: int) -> Phase:
-    """一道题评分完成后应进入的阶段（项目深挖前置：PROJECT 答满 → TECH_BASE → CLOSING）。"""
+def phase_after_answer(
+    phase: Phase, answered_count: int, question_count: int, *, interview_type: str = "tech"
+) -> Phase:
+    """一道题评分完成后应进入的阶段（项目深挖前置：PROJECT 答满 → TECH_BASE → CLOSING）。
+
+    行为面（P1-M11）：BEHAVIORAL 答满 question_count → CLOSING（无项目/技术分段）。
+    """
+    if interview_type == INTERVIEW_BEHAVIORAL:
+        if phase == Phase.BEHAVIORAL and answered_count >= question_count:
+            return Phase.CLOSING
+        return phase
     if phase == Phase.PROJECT and answered_count >= project_count(question_count):
         return Phase.TECH_BASE
     if phase == Phase.TECH_BASE and answered_count >= question_count:

@@ -6,11 +6,15 @@
  */
 
 import type { InterviewRow, RecommendationGroup } from "@/lib/api";
+import { isBehavioral } from "@/lib/constants";
 import { formatTime } from "@/lib/format";
 
-/** 有报告的已结束场次：推荐读的是报告短板，未结束/无报告的场次给不出推荐。 */
+/**
+ * 有报告的已结束场次：推荐读的是报告短板，未结束/无报告的场次给不出推荐。
+ * **行为面场次排除**（P1-M11 D5）：推荐检索的是六大技术域，行为面没有可推的域。
+ */
 export function finishedSessions(rows: InterviewRow[]): InterviewRow[] {
-  return rows.filter((row) => row.report_ready);
+  return rows.filter((row) => row.report_ready && !isBehavioral(row.interview_type));
 }
 
 /**

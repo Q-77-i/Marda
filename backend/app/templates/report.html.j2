@@ -155,6 +155,8 @@
 </header>
 
 <section class="card">
+  {#- 行为面（P1-M11）没有知识域：右栏整个收起，维度与雷达同栏展示（不留半张空白） -#}
+  {% if has_domains %}
   <table class="cols">
     <tr>
       <td class="col">
@@ -185,13 +187,28 @@
         {% endif %}
         {% if weaknesses %}
         <div class="chips">
-          <span class="points-label">短板域</span>
+          <span class="points-label">{{ weaknesses_label }}</span>
           {% for domain in weaknesses %}<span class="chip">{{ domain }}</span>{% endfor %}
         </div>
         {% endif %}
       </td>
     </tr>
   </table>
+  {% else %}
+  <h2>五维能力</h2>
+  {{ radar | safe }}
+  <ul class="dims">
+    {% for dim in dimensions %}
+    <li><span class="k">{{ dim.label }}</span><span class="v">{{ dim.value }}</span></li>
+    {% endfor %}
+  </ul>
+  {% if weaknesses %}
+  <div class="chips">
+    <span class="points-label">{{ weaknesses_label }}</span>
+    {% for domain in weaknesses %}<span class="chip">{{ domain }}</span>{% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
 </section>
 
 <section class="card">

@@ -59,6 +59,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
   warmup: "自我介绍",
   tech_base: "技术问答",
   project: "项目深挖",
+  behavioral: "行为面问答",
   closing: "反问环节",
   finished: "已结束",
 };
@@ -69,7 +70,38 @@ export const PHASE_LABELS: Record<Phase, string> = {
  */
 export const QUESTION_TYPE_LABELS: Record<string, string> = {
   scenario: "项目深挖",
+  behavioral: "行为面",
 };
+
+/**
+ * 会话类型（P1-M11 FR-22）：与岗位 position 正交——两种类型面向同一岗位。
+ * 老场次（接口无该字段/NULL）视为技术面，不显示类型徽标（见 isBehavioral）。
+ */
+export const INTERVIEW_TYPE_LABELS: Record<string, string> = {
+  tech: "技术面",
+  behavioral: "行为面",
+};
+
+export function isBehavioral(interviewType: string | null | undefined): boolean {
+  return interviewType === "behavioral";
+}
+
+/** 会话类型展示名；缺失（老场次 NULL）按技术面——语义等同，不做「未知」处理。 */
+export function interviewTypeLabel(interviewType: string | null | undefined): string {
+  const key = interviewType ?? "tech";
+  return INTERVIEW_TYPE_LABELS[key] ?? key;
+}
+
+/** 行为面域 id（与 backend domain.BEHAVIORAL_DOMAIN 一致）：行为题的 domain 取值。 */
+export const BEHAVIORAL_DOMAIN = "behavioral";
+
+/** 创建表单的题量可选值（行为面上限 10，P1-M11 D1；技术面维持 5/10/15）。 */
+export function questionCountOptions(interviewType: string): number[] {
+  const all = [...QUESTION_COUNT_OPTIONS];
+  return isBehavioral(interviewType)
+    ? all.filter((count) => count <= BEHAVIORAL_MAX_QUESTIONS)
+    : all;
+}
 
 export function domainLabel(domain: string): string {
   return DOMAIN_LABELS[domain] ?? domain;
@@ -125,6 +157,7 @@ export const REASON_LABELS: Record<string, string> = {
   missing_limit: "遗漏追问已达上限",
   missing_asked: "遗漏点均已追问",
   coverage_ok: "覆盖率达标",
+  deepen_limit: "本题深挖已用过",
 };
 
 export function traceEventLabel(type: string): string {
@@ -141,6 +174,19 @@ export function reasonLabel(reason: string): string {
 
 /** 题量可选项（SPEC §9 仪表盘表单）。 */
 export const QUESTION_COUNT_OPTIONS = [5, 10, 15] as const;
+
+/** 行为面题量上限（与 backend domain.BEHAVIORAL_MAX_QUESTIONS 一致，P1-M11 D1）：
+ * 行为题库只有十来道，15 题场会当场耗尽走 LLM 兜底——表单只给 ≤10 的选项。 */
+export const BEHAVIORAL_MAX_QUESTIONS = 10;
+
+/**
+ * 面试类型选项（P1-M11 FR-22）：与技术岗位正交——两种类型面向同一个岗位。
+ * 行为面用同一套状态机，只换能力模型与题源（评分维度、追问口径、报告维度全不同）。
+ */
+export const INTERVIEW_TYPE_OPTIONS = [
+  { value: "tech", label: "技术面", hint: "项目深挖 + 六大知识域技术题" },
+  { value: "behavioral", label: "行为面 / HR 面", hint: "经历叙事、动机与协作，不考技术细节" },
+] as const;
 
 /** 岗位方向（阶段 1 固定）。 */
 export const POSITION = "Agent/AI 工程师";

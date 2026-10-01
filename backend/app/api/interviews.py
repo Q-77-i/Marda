@@ -12,13 +12,14 @@ import uuid
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 from sse_starlette.sse import ServerSentEvent
 
 from app import db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
+from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
 from app.service import InterviewFinishedError, InterviewNotFoundError
 from app.tools import recommend
 
@@ -35,6 +36,21 @@ class CreateRequest(BaseModel):
     question_count: int = Field(default=10, ge=2, le=20)
     # 难度（P1-M6 FR-14）：adaptive=自适应（默认，从 L1 起升降）；L1/L2/L3=全场锁定该档
     difficulty: Literal["adaptive", "L1", "L2", "L3"] = "adaptive"
+    # 会话类型（P1-M11 FR-22）：与技术岗位正交（position 两种类型同一个值）
+    interview_type: Literal["tech", "behavioral"] = INTERVIEW_TECH
+
+    @model_validator(mode="after")
+    def _behavioral_question_limit(self) -> "CreateRequest":
+        """行为面题量上限（P1-M11 D1）：题库该域只有十来道，15 题场会当场耗尽走 LLM 兜底。
+
+        前端表单对行为面本就只给 5/10（更早一步拦住用户），这里是 API 面的兜底校验。
+        """
+        if (
+            self.interview_type == INTERVIEW_BEHAVIORAL
+            and self.question_count > BEHAVIORAL_MAX_QUESTIONS
+        ):
+            raise ValueError(f"行为面最多 {BEHAVIORAL_MAX_QUESTIONS} 题")
+        return self
 
 
 class MessageRequest(BaseModel):
@@ -55,11 +71,12 @@ async def create_interview(
         question_count=req.question_count,
         difficulty=req.difficulty,
         user_id=user["id"],
+        interview_type=req.interview_type,
     )
     return EventSourceResponse(
         service.start_interview(
             interview_id, req.position, req.question_count, user_id=user["id"],
-            difficulty=req.difficulty,
+            difficulty=req.difficulty, interview_type=req.interview_type,
         ),
         headers=SSE_HEADERS,
         ping=15,
@@ -149,6 +166,9 @@ async def get_interview_recommendations(
 
     与报告端点同一 404 判据（未结束/不存在/越权），因为推荐读的就是报告 payload
     （weaknesses + 逐题漏点）；检索失败不吞——500 透传，前端给错误态 + 重试。
+
+    行为面（P1-M11 D5）：推荐检索的是六大技术域，行为面场次没有可推的域——
+    直接返回空分组，不做无效检索（前端也不渲染推荐卡）。
     """
     service = request.app.state.service
     try:
@@ -158,6 +178,12 @@ async def get_interview_recommendations(
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
     payload = row["payload"]
+    if payload.get("interview_type") == INTERVIEW_BEHAVIORAL:
+        return {
+            "interview_id": interview_id,
+            "position": payload.get("position", ""),
+            "groups": [],
+        }
     groups = await recommend.recommend_for_report(payload)
     return {
         "interview_id": interview_id,
