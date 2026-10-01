@@ -100,6 +100,8 @@ export type ReportPayload = {
   interview_id: string;
   position: string;
   scores: Record<string, number>;
+  /** 总分（五维等权均值，后端单一来源，P1-M10 D1）。FR-19 之前的 payload 没有此字段 → 前端兜底现算。 */
+  overall?: number;
   domain_scores: Record<string, number>;
   weaknesses: string[];
   answered_count: number;
@@ -253,6 +255,52 @@ export type RecommendationsResponse = {
 /** 学习推荐（FR-20）：读该场报告的短板域现检索，未结束/无报告 404。 */
 export function getRecommendations(interviewId: string): Promise<RecommendationsResponse> {
   return getJSON<RecommendationsResponse>(`/api/interviews/${interviewId}/recommendations`);
+}
+
+// ---- 能力档案（FR-19，P1-M10）----
+
+/** 档案里的一场：报告分数 + 场次元信息（曲线上的一个点）。 */
+export type ProfileSession = {
+  interview_id: string;
+  position: string;
+  /** 创建时选的难度档："adaptive" 或 L1/L2/L3（不是自适应过程中的中间档） */
+  difficulty: string;
+  question_count: number;
+  answered_count: number;
+  started_at: string;
+  overall: number;
+  scores: Record<string, number>;
+  /** 该场考过的域才有键——没考的域缺失（曲线断点，不补零，P1-M10 D2） */
+  domain_scores: Record<string, number>;
+  weaknesses: string[];
+};
+
+/** 相邻两场的短板走向（首场不产出条目）。 */
+export type WeaknessChange = {
+  interview_id: string;
+  started_at: string;
+  new: string[];
+  persistent: string[];
+  resolved: string[];
+};
+
+export type ProfileSummary = {
+  session_count: number;
+  average_overall: number;
+  best: { interview_id: string; overall: number } | null;
+  worst: { interview_id: string; overall: number } | null;
+  latest_delta: { from: number; to: number; delta: number } | null;
+};
+
+export type ProfileResponse = {
+  sessions: ProfileSession[];
+  summary: ProfileSummary;
+  weakness_changes: WeaknessChange[];
+};
+
+/** 能力档案（FR-19）：登录用户级，无场次参数；没有场次返回零态结构而非 404。 */
+export function getProfile(): Promise<ProfileResponse> {
+  return getJSON<ProfileResponse>("/api/profile");
 }
 
 /** 报告导出 PDF（FR-18）：二进制响应，不能走 getJSON（它按 JSON 解析）。 */

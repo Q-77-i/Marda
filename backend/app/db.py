@@ -237,6 +237,31 @@ def list_interviews(db_path: Path, *, user_id: str, limit: int = 50) -> list[dic
     return [dict(row) for row in rows]
 
 
+def list_reports(db_path: Path, *, user_id: str, limit: int = 200) -> list[dict]:
+    """用户全部已落库报告 + 场次元信息（FR-19 能力档案），按开始时间**升序**。
+
+    升序是刻意的：档案曲线从左到右 = 时间从早到晚，排序在这里定死，上层不再重排。
+
+    **以 reports 表为准，不按 interviews.status 过滤**（P1-M10 D5）：有报告才算数——
+    status='finished' 但报告落库失败/缺失的边缘场次没有分数可画，混进来只会让曲线多一个空点。
+    代价是这类场次在档案里不可见（用户会疑惑「我明明跑了那场」），列为已知待办。
+    """
+    with _connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT i.id AS interview_id, r.payload, i.position, i.difficulty, i.started_at"
+            " FROM reports r JOIN interviews i ON i.id = r.interview_id"
+            " WHERE i.user_id=?"
+            " ORDER BY i.started_at ASC, i.id ASC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["payload"] = json.loads(item["payload"])
+        out.append(item)
+    return out
+
+
 def get_report(db_path: Path, interview_id: str) -> dict | None:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT * FROM reports WHERE interview_id=?", (interview_id,)).fetchone()

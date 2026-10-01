@@ -86,9 +86,11 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
     }
   }
 
+  // 总分以后端为准（P1-M10 D1：与能力档案曲线同一个数）；FR-19 之前的历史 payload
+  // 没有 overall 字段 → 按同一公式（五维等权均值）现算兜底
   const overall =
-    DIMENSIONS.reduce((sum, dim) => sum + (report.scores[dim.key] ?? 0), 0) /
-    DIMENSIONS.length;
+    report.overall ??
+    DIMENSIONS.reduce((sum, dim) => sum + (report.scores[dim.key] ?? 0), 0) / DIMENSIONS.length;
   const labels = commentLabels(
     report.per_question_comments,
     report.answered_count,

@@ -17,8 +17,18 @@ DIMENSION_LABELS = {
 FIVE_DIMS = tuple(DIMENSION_LABELS)
 
 
+def overall_score(scores: dict[str, float]) -> float:
+    """总分 = 五维**等权**均值（不是加权），保留两位。
+
+    全站唯一来源（P1-M10 D1）：报告页展示、PDF 导出、能力档案曲线都取这个数——
+    同一场面试在两个页面显示不同的总分，用户会以为系统算错了。缺维按 0 计
+    （历史 payload 可能没有完整五维）；空输入 → 0.0。
+    """
+    return round(sum(scores.get(dim, 0) for dim in FIVE_DIMS) / len(FIVE_DIMS), 2)
+
+
 def aggregate_scores(questions: list[QuestionRecord]) -> dict:
-    """聚合已答题目：五维等权均值、六大域均分、短板域。
+    """聚合已答题目：五维等权均值、总分、六大域均分、短板域。
 
     场景题 domain="project" 不在 DOMAIN_WEIGHTS，不参与域统计（单列于逐题点评）。
     """
@@ -34,7 +44,12 @@ def aggregate_scores(questions: list[QuestionRecord]) -> dict:
     domain_scores = {
         domain: round(sum(values) / len(values), 2) for domain, values in sorted(by_domain.items())
     }
-    return {"scores": scores, "domain_scores": domain_scores, "weaknesses": _weak_domains(domain_scores)}
+    return {
+        "scores": scores,
+        "overall": overall_score(scores),
+        "domain_scores": domain_scores,
+        "weaknesses": _weak_domains(domain_scores),
+    }
 
 
 def _weak_domains(domain_scores: dict[str, float]) -> list[str]:

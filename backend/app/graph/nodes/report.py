@@ -36,6 +36,8 @@ async def report_node(state: InterviewState) -> dict:
         "interview_id": state.interview_id,
         "position": state.position,
         "scores": aggregation["scores"],
+        # 总分（P1-M10 D1）：落进 payload 供报告页/PDF/能力档案共用，避免三处各算一遍
+        "overall": aggregation["overall"],
         "domain_scores": aggregation["domain_scores"],
         "weaknesses": aggregation["weaknesses"],
         "answered_count": state.answered_count,

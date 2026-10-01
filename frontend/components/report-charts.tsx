@@ -21,12 +21,15 @@ import { useChartTokens, type ChartTokens } from "@/lib/chart-tokens";
 import { DIMENSIONS } from "@/lib/constants";
 import { formatScore } from "@/lib/format";
 
-/** 图表占位：ResponsiveContainer 需要真实 DOM 尺寸，首帧渲染同高容器避免跳动。 */
-function ChartFrame({ height, children }: { height: number; children: React.ReactNode }) {
+/**
+ * 图表占位：ResponsiveContainer 需要真实 DOM 尺寸，首帧渲染同高容器避免跳动。
+ * 与 tooltipStyles 一起被 profile-charts 复用（同一套图表外观，不复制一遍）。
+ */
+export function ChartFrame({ height, children }: { height: number; children: React.ReactNode }) {
   return <div style={{ width: "100%", height }}>{children}</div>;
 }
 
-function tooltipStyles(tokens: ChartTokens) {
+export function tooltipStyles(tokens: ChartTokens) {
   return {
     contentStyle: {
       background: tokens.surface,

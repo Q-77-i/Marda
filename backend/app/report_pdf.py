@@ -18,7 +18,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from app.domain import DOMAIN_LABELS
-from app.graph.rules.aggregate import DIMENSION_LABELS, FIVE_DIMS
+from app.graph.rules.aggregate import DIMENSION_LABELS, FIVE_DIMS, overall_score
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
 
 
@@ -203,11 +203,18 @@ def _build_context(payload: dict, created_at: str) -> dict:
     scores = payload.get("scores") or {}
     answered, total = payload.get("answered_count") or 0, payload.get("question_count") or 0
     weaknesses = set(payload.get("weaknesses") or [])
-    overall = sum(_clamp(scores.get(dim, 0)) for dim in FIVE_DIMS) / len(FIVE_DIMS)
+    # 总分走 aggregate.overall_score 单一来源（P1-M10 D1）：新 payload 直接取报告端算好的值，
+    # 老 payload 用同一函数现算（_clamp 是对存量脏数据的防御，正常数据上是恒等）
+    stored_overall = payload.get("overall")
+    overall = (
+        round(_clamp(stored_overall), 2)
+        if stored_overall is not None
+        else overall_score({dim: _clamp(scores.get(dim, 0)) for dim in FIVE_DIMS})
+    )
     return {
         "font_stack": FONT_STACK,
         "position": payload.get("position") or "",
-        "overall": round(overall, 2),
+        "overall": overall,
         "answered_count": answered,
         "question_count": total,
         "created_at": format_created_at(created_at),

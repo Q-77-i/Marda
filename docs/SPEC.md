@@ -345,6 +345,21 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **卡片带来源明细**（`bank_query.attach_sources`，主源首位）：复用 M5 的合规四要素。`question_search.fetch_by_ids` 为此多 select 一列 `source`——否则「（答案主源）」会标在按字典序排第一的来源上（**主源标签不能靠猜**）。
 - **展示两处**：报告页「针对性练习推荐」卡（传 `showAdvice=false`——同页已有「学习建议」卡，同一批文案不复述）+ `/learn` 学习页（场次选择器）。从报告页跳转时用 `?interview=<id>` **承接来源场次**，默认选中它不是最近一场——否则用户点「查看全部推荐」会落到另一场的推荐上，路径断裂（判定纯函数在 `frontend/lib/learn.ts`）。
 
+## 4.11 能力档案与曲线（P1-M10 / FR-19）
+
+**数据源 = 已落库的报告 payload**（§4.6），与学习推荐同一口径：`tools/profile.py` 每次请求现读现算，**不重算分数、不落库、零 LLM 调用**——报告与 PDF 因此零回归，档案永远跟着报告走。
+
+- **取数 = `reports ⋈ interviews` 按用户过滤，`started_at` 升序**（`db.list_reports`）。升序是刻意的：曲线从左到右 = 时间从早到晚，定序在 db 层，上层不重排。
+- **以 reports 表为准，不按 `interviews.status` 过滤**（D5）：有报告才算数——`status='finished'` 但报告落库失败的边缘场次没有分数可画，混进来只会让曲线多一个空点。**代价**：这类场次在档案里不可见，用户会疑惑「我明明跑了那场」（列为已知待办，见 CLAUDE.md）。
+- **总分口径单一来源 = `aggregate.overall_score`**（D1）：**五维等权均值**（不是加权）。报告页（`report.overall`）、PDF、档案曲线取同一个数——同一场面试在两个页面显示不同的总分，用户会以为系统算错了。报告 payload 新增 `overall` 字段；**FR-19 之前的 payload 没有它**，前端与 PDF 各自用同一函数现算兜底。
+- **域有洞是常态而非异常**（D2）：一场只考部分域（`tech_quota` 按权重分配题量），没考的域在该场 `domain_scores` 里**根本没有键**。前端据此**断线**（`connectNulls={false}`），**不补零**——补零会凭空造出一个「该场该域得 0 分」的低谷，那是假信号。
+- **短板变化**（`build_profile` 的 `weakness_changes`）= 逐场对**上一场**比，三态分开说：`new` 上场不是本场是 / `persistent` 两场都是 / `resolved` 上场是本场不是。三个列表按字典序（不随 payload 里 `weaknesses` 的排列漂）；**首场不产出条目**（无从比较），故条数恒为「场次数 − 1」。`resolved` 的口径是「本场不再是短板」——可能是真提升，也可能只是这场没考到该域，文案不替用户下结论。
+- **概览** `summary`：场次数、平均总分、最高/最低场（并列取最早）、最近一场相对上一场的变化 `latest_delta`（单场为 `null`）。
+- **响应形状 = `{sessions, summary, weakness_changes}`**，**不含图表序列**——曲线行是 Recharts 专用的展示整形，放前端 `lib/profile.ts`（纯函数 + vitest），后端重复算一遍等于同一批数字有两个来源。
+- **端点 `GET /api/profile` 无场次参数**：档案看的是「我的全部场次」，隔离由 user_id 过滤承担，因此**没有 404/越权面**（对照面试各端点的 owner 校验）；**没有场次时返回零态结构而不是 404**——「还没有数据」是正常状态。
+- **前端三种形态**（判定在 `lib/profile.ts`）：空档案 → 文案 + 「开始第一场面试」CTA（**空态不只是告知，要给出路**）/ 只有一场 → 说明为什么画不出曲线 + 该场雷达等快照 + 「再开始一场」CTA / 多场 → 总分主曲线（点位可点进该场报告）+ 短板变化 + 知识域与五维的**小倍图**。选小倍图而不是多线图：5 条 / 6 条线缠在一张图里，交叉处用户分不清谁是谁，还得配图例与一套分类色板；各自成图则涨跌一眼可见，每张只用一个主色。横轴刻度同一天多场加序号（`MM-DD #2`）——只写日期会看起来是重复的点。
+- **验收口径**：单测覆盖总分口径、域洞、三态、并列取最早、历史残缺 payload；集成测试覆盖零态、与报告 payload 逐字段对账、用户隔离、未结束场次不入选；smoke 在真链路取回档案与报告对账。
+
 ## 5. RAG
 
 ### 5.1 向量层（M3 会话 1 落地）
@@ -418,7 +433,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 ## 7. API 契约
 
-**鉴权（FR-23）**：`/api/interviews/*` 与 `/api/bank/*` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）；题库是公共资产、无归属隔离（私有题库留待 M7 另立维度），故题库端点只有 401 没有 404。
+**鉴权（FR-23）**：`/api/interviews/*`、`/api/bank/*` 与 `/api/profile` 全端点需登录，请求头 `Authorization: Bearer <token>`；未带/失效/过期统一 401。`/api/profile` 是**用户级、无路径参数**的端点（档案 = 我的全部场次），隔离由查询的 user_id 过滤承担，故只有 401 没有 404（同题库端点）。跨用户访问他人场次按「不存在」返回 404（不泄露存在性）；题库是公共资产、无归属隔离（私有题库留待 M7 另立维度），故题库端点只有 401 没有 404。
 
 | 方法/路径 | 请求 | 响应 |
 | --- | --- | --- |
@@ -433,6 +448,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传 |
 | GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
+| GET /api/profile | — | 能力档案（FR-19）：`{sessions, summary, weakness_changes}`（§4.11）。**无路径参数**（用户级），隔离由 user_id 过滤承担；**没有场次时返回零态结构（不是 404）**——`session_count=0` 是正常状态，前端据此渲染空态 + 引导 |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty`（`L1`\|`L2`\|`L3`）/ `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含 `question_id`/题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（来源明细，**主源排首位**） |
 | GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值——扩语料后新厂商/面次自动出现 |
@@ -531,6 +547,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-09-30 P1-M10（能力档案 FR-19）：新增 §4.11（数据源 = 报告 payload、取数 `reports ⋈ interviews` 升序、**以 reports 表为准不按 status 过滤**、总分口径单一来源 `aggregate.overall_score`、域洞断线不补零、短板三态 `new/persistent/resolved` 与首场不产出、响应不含图表序列的理由、端点无场次参数故无 404 面、前端三形态与小倍图选型）与 §7 的 `/api/profile` 契约；§7 鉴权范围加 `/api/profile`。**总分口径收敛（D1）**：报告 payload 新增 `overall`（五维等权均值），报告页 / PDF / 档案共用同一个数——此前报告页与 PDF 各写了一遍同一公式，档案会是第三处。新增 `app/tools/profile.py`（`build_profile` 纯函数）、`app/api/profile.py`、`db.list_reports`、`service.get_profile`；前端 `lib/profile.ts`（刻度 / 断点 / 变化文案纯逻辑，vitest）、`components/profile-charts.tsx`（总分主曲线 + 小倍图）、`components/profile-client.tsx`、`/profile` 页与导航转正（**五项导航全部就绪**）；`report-charts` 的 `ChartFrame`/`tooltipStyles` 改为导出复用（不复制一套图表外观）
 - 2026-09-30 项目叙事题改判 + 入库护栏（M9 实测整改）：§6.6 新增**人工改判表**口径（`data/curation/question_overrides.json`：逐题 `domain`/`status` + 必填 `reason`，key 是题干内容哈希故**未命中必报**，改判在零回归校验之后执行，已落库的库用 `apply_overrides.py` 补齐）；`ingest.py` 的 `DEFAULT_IN` 改指**合并后**的富化产物（原指个人题库单源的旧产物——全量同步语义下裸跑一次会删掉 1229 道开源题），并新增**入库护栏**（题量相差 >50% 直接停，`--force` 越过）。新增 `bank.load_overrides/apply_overrides`、`data/scripts/apply_overrides.py`、`test_curation.py` 与护栏用例
 - 2026-09-30 P1-M9（学习推荐 FR-20）：新增 §4.10（数据源 = 报告 payload、查询 = 域标签 + 漏点、排除已问题且条数取 `k + 已问数`、多域并发保序、`status` 三态不静默隐藏、卡片带来源四要素、两处展示与场次承接）与 §7 的 `/recommendations` 契约。新增 `app/tools/recommend.py`（`build_query_items` 纯函数 + `recommend_for_report` 编排，`searcher`/`db_path` 可注入）；`question_search.fetch_by_ids` 多 select 一列 `source`（答案主源——来源列表的首位标签不能靠字典序猜）。前端 `lib/learn.ts`（默认场次承接/空分组文案纯逻辑）+ `components/recommend-groups.tsx`（报告页与学习页共用，含展开交互）+ `/learn` 页与导航转正；报告页新增「针对性练习推荐」卡并带 `?interview=<id>` 跳学习页
 - 2026-09-30 P1-M8（PDF 导出 FR-18）：新增 §4.9（路线选型与服务端渲染的理由、payload 单一来源、雷达 SVG 两条引擎约束、东八区时间、线程池与不落盘、autoescape、容器与 macOS 宿主的运行环境、验收口径）；§7 补 `/report.pdf` 契约（下载头 RFC 5987、404 同报告端点）；§2 目录树补 `report_pdf.py` 与 `templates/`。新增 `app/report_pdf.py`（`radar_svg` / `render_report_pdf` / `content_disposition`；`_ensure_native_libs` 解 macOS 宿主 pango 搜索路径）与 `app/templates/report.html.j2`；五维中文标签上移到 `aggregate.DIMENSION_LABELS`（`FIVE_DIMS` 由它派生，PDF 与前端展示同源）。前端 `lib/download.ts`（文件名纯逻辑）+ 报告页「导出 PDF」按钮。**顺带修掉一条 M7 遗留**：smoke_api 的三处题库对账按全表计数，M7 起接口只认公共题（`user_id IS NULL`），真库一有私有题就误报「分面计数与题库总数不符」——抽出 `_PUBLIC_ENABLED` 谓词统一带上。**浏览器验收报出字体事故并当日修复**（用户：「PDF 在浏览器打开乱码、WPS 正常」）：字体栈只写在 `body` 上，`@page` 页边距框与 SVG `<text>` 不继承它 → 雷达标签与页眉页脚落到系统字体（macOS 苹方/宋体），而 macOS PDFKit 系渲染不了 weasyprint 嵌的苹方子集 → 整片缺字；Chrome/WPS 回退到系统同名字体故看不出。修法见 §4.9（`FONT_STACK` 单一来源 + 三处声明 + 模板 `| safe`），回归测试 `test_PDF只用随镜像分发的字体_不混进本机字体` 反向验证过。**修复后用户在浏览器复验通过（2026-09-30），P1-M8 验收闭环**

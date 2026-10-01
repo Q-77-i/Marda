@@ -35,6 +35,16 @@ export const ENABLED_DOMAINS = [
   "algorithms",
 ] as const;
 
+/**
+ * 参与出题与域统计的六大知识域（= backend DOMAIN_WEIGHTS 的键，顺序同权重表）。
+ *
+ * 能力档案的域曲线按它列图：algorithms 只存不考、behavioral/cs-fundamentals 是 draft，
+ * 报告聚合都不会写进 domain_scores，列出来只会得到一排「尚未考过」。
+ */
+export const WEIGHTED_DOMAINS = ENABLED_DOMAINS.filter(
+  (domain) => domain !== "algorithms",
+);
+
 /** 五维评分维度（与 backend aggregate.FIVE_DIMS 同序）。 */
 export const DIMENSIONS: { key: string; label: string }[] = [
   { key: "technical_depth", label: "技术深度" },
@@ -155,14 +165,14 @@ export function difficultyLabel(value: string): string {
  * 顶层导航（P1-M6 拍板：顶栏 tab 而非侧边栏）。
  *
  * `ready: false` 的项**渲染成不可点的灰文本**（不是 `<a>`，也没有 href）——
- * 能力档案在 P1-M10 落地，先把信息架构占住；
+ * 这是给后续页面的占位机制（M6 起沿用至今，P1-M10 后五项全部就绪）；
  * 灰度即路线图，但绝不给出会 404 的链接。
  */
 export const NAV_ITEMS = [
   { href: "/", label: "仪表盘", ready: true },
   { href: "/bank", label: "题库", ready: true },
   { href: "/bank/private", label: "我的题库", ready: true },
-  { href: "/profile", label: "能力档案", ready: false },
+  { href: "/profile", label: "能力档案", ready: true },
   { href: "/learn", label: "学习推荐", ready: true },
 ] as const;
 

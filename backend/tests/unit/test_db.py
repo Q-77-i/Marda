@@ -167,3 +167,54 @@ def test_迁移补questions_user_id列(tmp_path):
     with sqlite3.connect(path) as conn:
         assert "user_id" in {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
     db.ensure_schema(path)  # 幂等
+
+
+def _report_row(overall: float) -> dict:
+    return {"scores": {"technical_depth": overall}, "overall": overall, "weaknesses": ["rag"]}
+
+
+def test_能力档案取报告_按开始时间升序且带场次元信息(tmp_path):
+    """FR-19：以 reports 表为准 JOIN 场次元信息；升序 = 曲线从左到右的时间序。"""
+    path = tmp_path / "test.sqlite3"
+    db.ensure_schema(path)
+    for order, (iv, moment) in enumerate(
+        [("iv-late", "2026-09-09T10:00:00+00:00"), ("iv-early", "2026-09-01T10:00:00+00:00")]
+    ):
+        db.create_interview(
+            path, interview_id=iv, position=f"岗位{order}", question_count=10,
+            difficulty="L2", user_id="u1",
+        )
+        db.save_report(path, iv, _report_row(float(order)))
+        with sqlite3.connect(path) as conn:  # 控制开始时间（create_interview 用的是当前时刻）
+            conn.execute("UPDATE interviews SET started_at=? WHERE id=?", (moment, iv))
+
+    rows = db.list_reports(path, user_id="u1")
+
+    assert [r["interview_id"] for r in rows] == ["iv-early", "iv-late"]
+    assert rows[0]["difficulty"] == "L2"
+    assert rows[0]["position"] == "岗位1"
+    assert rows[0]["started_at"] == "2026-09-01T10:00:00+00:00"
+    assert rows[0]["payload"]["overall"] == 1.0  # payload 已解析为 dict，不是 JSON 串
+
+
+def test_能力档案只含本人场次(tmp_path):
+    path = tmp_path / "test.sqlite3"
+    db.ensure_schema(path)
+    for iv, user in [("iv-a", "u1"), ("iv-b", "u2")]:
+        db.create_interview(path, interview_id=iv, position="x", question_count=5, user_id=user)
+        db.save_report(path, iv, _report_row(4.0))
+
+    assert [r["interview_id"] for r in db.list_reports(path, user_id="u1")] == ["iv-a"]
+
+
+def test_能力档案跳过没有报告的场次(tmp_path):
+    """D5：以 reports 表为准——status='finished' 但没有报告的场次没有分数可画，不进曲线。"""
+    path = tmp_path / "test.sqlite3"
+    db.ensure_schema(path)
+    db.create_interview(path, interview_id="iv-noreport", position="x", question_count=5, user_id="u1")
+    db.finish_interview(path, "iv-noreport")
+    db.create_interview(path, interview_id="iv-running", position="x", question_count=5, user_id="u1")
+    db.create_interview(path, interview_id="iv-ok", position="x", question_count=5, user_id="u1")
+    db.save_report(path, "iv-ok", _report_row(3.0))
+
+    assert [r["interview_id"] for r in db.list_reports(path, user_id="u1")] == ["iv-ok"]

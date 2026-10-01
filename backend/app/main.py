@@ -7,6 +7,7 @@ from app.api.auth import router as auth_router
 from app.api.bank import router as bank_router
 from app.api.bank_private import router as bank_private_router
 from app.api.interviews import router as interviews_router
+from app.api.profile import router as profile_router
 from app.config import get_settings
 from app.service import Service
 
@@ -34,6 +35,7 @@ app.include_router(auth_router)
 app.include_router(interviews_router)
 app.include_router(bank_router)
 app.include_router(bank_private_router)
+app.include_router(profile_router)
 
 
 @app.get("/healthz")

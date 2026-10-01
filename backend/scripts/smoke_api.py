@@ -557,6 +557,45 @@ async def main() -> None:
                   f"全部落在短板域内、无本场已问题"
                   + ("" if cards else "（本场短板域在题库里暂时没有新题）"))
 
+            # 能力档案（FR-19）：该用户全部已落库报告 → 曲线与短板变化
+            r = await client.get(f"{BASE}/api/profile")
+            assert r.status_code == 200, f"档案查询失败：{r.status_code}"
+            profile = r.json()
+            sessions = profile["sessions"]
+            assert sessions, "刚跑完一场，档案不该是空的"
+            assert [s["started_at"] for s in sessions] == sorted(s["started_at"] for s in sessions), \
+                "档案未按开始时间升序（曲线会左右颠倒）"
+            mine = [s for s in sessions if s["interview_id"] == interview_id]
+            assert len(mine) == 1, "刚跑完的场次不在档案里"
+            # 与报告 payload 逐字段对账（D1：两个页面显示同一个总分）
+            assert mine[0]["overall"] == report["overall"], \
+                f"档案总分 {mine[0]['overall']} ≠ 报告 {report['overall']}"
+            assert mine[0]["scores"] == report["scores"]
+            assert mine[0]["domain_scores"] == report["domain_scores"]
+            assert mine[0]["weaknesses"] == report["weaknesses"]
+            assert profile["summary"]["session_count"] == len(sessions)
+            assert len(profile["weakness_changes"]) == max(len(sessions) - 1, 0), \
+                "短板变化条数应等于「场次数 − 1」（首场无从比较）"
+            if len(sessions) > 1:
+                assert profile["weakness_changes"][-1]["interview_id"] == interview_id, \
+                    "最后一条短板变化应对应最近一场"
+            print("=" * 60)
+            print("能力档案（FR-19）：多场曲线 → 短板变化")
+            print("=" * 60)
+            print(f"  共 {len(sessions)} 场，平均总分 {profile['summary']['average_overall']}，"
+                  f"最高 {profile['summary']['best']['overall']}（{profile['summary']['best']['interview_id'][:8]}…）")
+            for session_row in sessions[-4:]:
+                print(f"  {session_row['started_at'][:16]}  {session_row['position'][:12]:<12}"
+                      f" {session_row['difficulty']:<8} 总分 {session_row['overall']}"
+                      f"  短板 {[domain_label(d) for d in session_row['weaknesses']]}")
+            for change in profile["weakness_changes"][-3:]:
+                print(f"  变化 @{change['started_at'][:16]}："
+                      f"新出现 {[domain_label(d) for d in change['new']] or '—'} / "
+                      f"持续 {[domain_label(d) for d in change['persistent']] or '—'} / "
+                      f"改善 {[domain_label(d) for d in change['resolved']] or '—'}")
+            print(f"档案 OK：{len(sessions)} 场有序，本场总分与报告一致，"
+                  f"短板变化 {len(profile['weakness_changes'])} 条")
+
             # 决策回放（FR-21）：整场事件流一次取回，逐轮证据自包含
             r = await client.get(f"{BASE}/api/interviews/{interview_id}/trace")
             assert r.status_code == 200, f"回放查询失败: {r.status_code}"

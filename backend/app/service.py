@@ -25,6 +25,7 @@ from app.graph.graph import build_graph, make_serde, run_config
 from app.graph.rules.capacity import ADAPTIVE, base_difficulty
 from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
+from app.tools import profile
 
 
 class InterviewNotFoundError(Exception):
@@ -327,6 +328,15 @@ class Service:
             "question_count": values.get("question_count", 0),
             "events": values.get("trace_log", []),
         }
+
+    async def get_profile(self, user_id: str) -> dict:
+        """能力档案（FR-19）：该用户全部已落库报告 → 曲线与短板变化。
+
+        只读、无场次参数——隔离由 user_id 过滤承担，故不存在 404/越权面；
+        数据源是报告 payload 本身（同学习推荐口径），题库/评分口径变更零回归。
+        """
+        rows = await asyncio.to_thread(db.list_reports, self._settings.db_path, user_id=user_id)
+        return profile.build_profile(rows)
 
     async def list_interviews(self, user_id: str, limit: int = 50) -> list[dict]:
         rows = await asyncio.to_thread(
