@@ -389,6 +389,40 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **出题池隔离（验收②）**：行为面进 `ASKABLE_DOMAINS`（**可出题但不属于技术配额**——集合内域都能出题，但只有 `DOMAIN_WEIGHTS` 的键参与配额分配）；`pick_domain` 只在权重表分配，技术面永远抽不到 behavioral（单测 + 集成反查双保险）。
 - **不做**：混合模式（两类型各自验证完再议）、行为面私有题、行为面学习推荐与档案（均按 D4/D5 排除）。
 
+## 4.13 离线评估体系（P1-M12）
+
+**定位**：`backend/evals/` 是离线评测包（**只被 `scripts/` 下的入口 import，`app` 永不 import**）。
+评测**不进 pytest 常规套件**——它要真 Qdrant + 嵌入容器 + DeepSeek/SiliconFlow，而常规用例必须保持无密钥可跑（`uv run pytest` 仍是一条命令）。门禁是显式命令。会话 1 交付**检索评估**（RAGAS 离线），会话 2 交付**评分一致性**（DeepEval 门禁）。
+
+### 检索基线（`scripts/eval_retrieval_run.py`）
+
+读 `data/eval/golden/retrieval_queries.json` → 逐条**实时重算**四变体排名（不读快照——读了就测不出「改动之后」）→ 出指标 → 写 `data/eval/results/retrieval-<时间戳>[-标签].{json,md}`。
+
+- **四变体**：`dense`（单路稠密）/ `sparse`（单路稀疏）/ `rrf`（双路融合，prefetch 深度取生产的 `RRF_CANDIDATES`）/ `hybrid`（= **生产函数** `hybrid_search`，融合 + rerank）。`rrf` 与 `hybrid` 只差 rerank 一步，两者的差值就是 **rerank 的净贡献**；`hybrid` 走生产函数而不是重写一遍管线，指标才对生产有意义（其余三路复用生产的嵌入与 payload 过滤，差异只在检索策略本身）。
+- **池内口径**：候选池 = `union(dense@50, sparse@50, rrf@30, hybrid@30)`（按该 query 自己的 filters 取），**池外题目一律视作不相关**。池必须比生产返回的 30 条深——否则「相关但没被检索到」在池口径下不可见、Recall 虚高。代价写在报告头：指标**跨版本可比**（同一份 golden、同一个池策略），**不能当绝对召回率读**。
+- **分级 0/1/2**（不相关 / 相邻知识点 / 直接命中），NDCG 增益取 `2^g − 1`——比线性增益更贴「用户要的是能补上这个漏点的那道题」。**二值相关集 = grade ≥ 1**（Recall / Precision 用）。用 **Precision@k 而不是 MRR**：本库同题多（一条查询常有几十条相关候选），rank-1 几乎恒相关 → MRR 恒为 1.0，是死指标。
+- **场景两类**：`bank_search`（题库页搜索形态，无 filter）与 `missed_point`（学习推荐的漏点查询，带 domain filter，查询文本与线上逐字一致——由**生产函数 `build_query_items`** 派生）。**没有「纯域名回退」这一档**：域名标签查询除了 filter 不含信息，域内每题同等相关，分级标注无从谈起（那一路由 RAGAS 衡量，见下）。
+- **噪声地板**：同 golden 连跑两次，`dense`/`sparse` **逐位一致**（本地嵌入 + Qdrant 是确定的），`rrf` ±0.003、`hybrid` ±0.005（rerank 是远程 API，分数非确定）。**小于 0.005 的差值不要当结论读**。
+- **golden 的构建与复核**（`scripts/eval_build_golden.py`）：候选池 → LLM 批式判级（温度 0）→ 出 `review.md` 供**人工抽检** → 改 json → 重跑。复核文件只摊开「每条 query 的 top-5 判定」+「最该看的行」（**只收「✗0 却排进前 5」**——判定与排名在同一段区间里方向相反，必有一边错；把「✓2 排第 6」或「✓2 沉到十名开外」也算进来会一屏几百条噪声，后者更是**检索漏检**，属指标报告的读者该看的）。构建时**抽样重判一遍**并把「标注自一致率」写进复核文件头：golden 自身的噪声会原样传给指标，先量出来。
+
+### 推荐链路内容相关性（`scripts/eval_ragas_context.py`）
+
+对每份真库技术面报告跑**生产推荐函数** `recommend_for_report`，打分单元是**一条漏点**：`user_input` = 某个短板域漏掉的一个知识点，`retrieved_contexts` = 该域推荐出的卡片（**doc 文本 = 题干 + 关键点**，与检索时嵌入的文本同源）。分数 = 推荐内容里与该漏点相关的陈述占比。
+
+- **按单条漏点、不按拼好的整条 query**：整条 query 是「域名 + 最多 6 个漏点」，拿它打分会被**查询宽窄**带偏——越宽泛的 query，检索内容越「看起来都相关」（实测纯域名查询恒得 1.0）。单条漏点是具体知识点，分数才有分辨力。
+- **无漏点的组不参与**（查询退化为纯域名）：没有「要补的知识点」，这个指标**无从打分**——不是 0 分也不是 1 分，是「不适用」，单列计数。
+- **总体 = 组间等权**（每组先按组内漏点取均值）：否则漏点多的域会顶掉漏点少的域。
+- **ragas 接线三条**：指标名是 `ContextRelevance`（0.3 起由 `ContextRelevancy` 改名）；`llm_factory` 内部建 `ChatOpenAI`、**只认 `OPENAI_API_KEY` 这个变量名**（脚本内从 settings 直接赋值——用 `setdefault` 会静默沿用开发机 shell 里的别的键，表现为每个样本 401 且**被 ragas 吞成 nan 分数**，故脚本对 nan 直接 `SystemExit`）；DeepSeek 的 `json_schema` 坑位（§11.1）没有触发——ragas 走 prompt 内注入 schema，不是 `response_format`。
+
+### 依赖（dev 组）
+
+`ragas>=0.3,<0.4`，**同时钉 `langchain-community<0.4` 与 `openai>=3.14`**，两条都是被解析逼出来的：
+
+- 不钉 `langchain-community` → 解析到 0.4.x，而 `ragas.llms.base` 导入的 `langchain_community.chat_models.vertexai` 已被移除，`import ragas` 当场炸；
+- 不钉 `openai` → ragas 0.4.x 与 `openai>=3.14` 冲突，uv 会**把 openai 从 3.14 降到 3.3**（为评测降生产依赖不可接受）；钉住后解析到 ragas 0.3.1，**无任何降级**。
+
+容器 `uv sync --no-dev`，故 dev 组这 33 个包（pandas/scipy/pyarrow 等）**不进镜像**。
+
 
 ## 5. RAG
 
@@ -565,6 +599,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 7 | test_observability.py | Langfuse 接线（注入 InMemorySpanExporter 离线跑）：一次面试一个 trace（多轮 resume 同 trace_id、不同场次不同）、generation 挂在轮次 span 下、无 key 时零开销（不构造客户端 + LLM 走原生 SDK） |
 | 8 | test_capacity / test_bank_query / test_bank_api（P1-M6） | 容量：配额 vs 直供的差集、自适应基准 = L1、`ok` 与不足明细互斥；浏览：分页稳定（同序不重不漏）、分面只计 enabled、来源按主源排序；接口：四筛选 + 关键词双模式（browse 有 total / search 无）、页码越界、`counts` 解析（夹紧去重升序）、未登录 401 |
 | 9 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
+| 10 | test_retrieval_metrics / test_golden / test_retrieve_pool / test_label_review（P1-M12） | 指标口径（分级增益 `2^g−1`、二值相关 `≥1`、退化输入返回 0 而不抛错）；golden 校验（id 重复 / scene 白名单 / filters 未知维度 / grade 越界 / **没有任何相关项的 query**）；池构建（按上限截断、并集保序去重、池比单变体深）；复核产物（「最该看的行」只收「✗0 排进前 5」）。**真栈基线不进 pytest**（要真 Qdrant/嵌入/rerank），由 `scripts/eval_retrieval_run.py` 显式跑 |
 
 ## 11. 风险注意点（实现时强制）
 
@@ -575,11 +610,13 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 5. 个人题库与解析产物不进 git（红线见 CLAUDE.md）
 6. `chat_history` 只增不截（回放与 SSE 差分共用，见 §4.6）——别在 `add_history` 里做上限
 7. 回放事件（§4.7）：`detail` 必须纯标量（进 checkpoint 序列化）；**决策与原因必须同源**（`explain_decision`），禁止在别处另算一份「换题原因」——两份实现迟早漂移，而回放的价值就在于它忠实
+8. 检索指标（§4.13）是**池内口径**（池外视作不相关）：跨版本可比，**不能当绝对召回率读**；改池策略 = 换基准——两份结果文件的 golden `sha256` 不同就只能各自读，别直接比数字。差值小于噪声地板（`hybrid` ±0.005）时不要下结论
 
 ---
 
 ## 12. Changelog
 
+- 2026-10-01 P1-M12 会话 1（评估体系 · 检索评估）：新增 §4.13（离线评测包的定位与边界、四变体与**池内口径**、分级标注 `2^g−1` 与 Precision 取代 MRR 的理由、噪声地板、golden 构建与人工复核口径、RAGAS 按**单条漏点**打分的理由、dev 组三条依赖钉法）+ §10 测试行 + §11 风险点 8（池内口径与哈希不同不可比）。新增 `backend/evals/`（`retrieval_metrics` 指标纯函数 / `golden` 校验 / `retrieve` 四变体 / `label_relevance` 判级与复核产物 / `corpus` 真库报告只读）+ `scripts/eval_build_golden.py`、`scripts/eval_retrieval_run.py`、`scripts/eval_ragas_context.py`；`recommend.build_query_items` 返回值补 `missed` 字段（拼进 query 的漏点原文——离线评测按单条漏点打分要用，切字符串不可靠：187 条漏点里有 4 条自身含「；」）。**真栈基线**（31 条 query / 1972 条标注 / golden sha256 `1e40a8d6e84a`）：dense NDCG@5 0.787 · sparse 0.749 · **rrf 0.783** · hybrid（生产）0.746；**rerank 净贡献按场景分叉**——bank_search（短查询，18 条）**+0.045**、missed_point（长查询：域名标签 + 多个漏点拼接，13 条）**−0.152**；域维度上 tool-use（0.634）与 agent-architecture（0.676）是 rerank 伤得最重的两处。**RAGAS ContextRelevance（按单条漏点，13 组 / 67 条漏点）**：总体 0.504，tool-use 0.217 与 agent-architecture 0.208 垫底——与 NDCG 的域排序**互相印证**（两条独立指标指向同一处短板）。噪声地板：同 golden 连跑两次 dense/sparse 逐位一致、rrf ±0.003、hybrid ±0.005。测试 510 → 552 passed
 - 2026-10-01 P1-M11（行为面 / HR 面 FR-22）：新增 §4.12（会话类型与 position 正交、单 BEHAVIORAL 段流程、行为题整池检索（不限难度）、题量上限 10、行为面五维与第 3 维对齐、**deepen-only 追问**（key_points 是讲述结构不是知识点）、聚合（域为空、短板改维度）、报告/PDF/推荐/档案的四处分派、`ASKABLE_DOMAINS`「可出题但不属于技术配额」、`enable_behavioral.py` 的 Qdrant 逐点核对验收、不做清单）；§4.1 补 `Phase.BEHAVIORAL` / `BaseScore`+`BehavioralScoreItem` / `interview_type`；§4.3 补 `explain_decision(deepen_only=)` 与 `Reason.DEEPEN_LIMIT`；§4.11 补**行为面排除（过滤字段 = 报告 payload 的 `interview_type`）**与响应新增 `excluded`；§7 创建接口补 `interview_type`（行为面 >10 题 422）、推荐与档案契约同步；§8 interviews 补 `interview_type` 列（老库补列 NULL ≡ tech，不回填）。新增 `data/scripts/enable_behavioral.py`（幂等：`finalize_status` 同源判定 + ingest 同源点构造 + **写后从 Qdrant 读回逐点核对**；真库已执行：behavioral enabled 14 题 / Qdrant 1099 点）。测试 470 → 506 passed
 - 2026-09-30 P1-M10（能力档案 FR-19）：新增 §4.11（数据源 = 报告 payload、取数 `reports ⋈ interviews` 升序、**以 reports 表为准不按 status 过滤**、总分口径单一来源 `aggregate.overall_score`、域洞断线不补零、短板三态 `new/persistent/resolved` 与首场不产出、响应不含图表序列的理由、端点无场次参数故无 404 面、前端三形态与小倍图选型）与 §7 的 `/api/profile` 契约；§7 鉴权范围加 `/api/profile`。**总分口径收敛（D1）**：报告 payload 新增 `overall`（五维等权均值），报告页 / PDF / 档案共用同一个数——此前报告页与 PDF 各写了一遍同一公式，档案会是第三处。新增 `app/tools/profile.py`（`build_profile` 纯函数）、`app/api/profile.py`、`db.list_reports`、`service.get_profile`；前端 `lib/profile.ts`（刻度 / 断点 / 变化文案纯逻辑，vitest）、`components/profile-charts.tsx`（总分主曲线 + 小倍图）、`components/profile-client.tsx`、`/profile` 页与导航转正（**五项导航全部就绪**）；`report-charts` 的 `ChartFrame`/`tooltipStyles` 改为导出复用（不复制一套图表外观）
 - 2026-09-30 项目叙事题改判 + 入库护栏（M9 实测整改）：§6.6 新增**人工改判表**口径（`data/curation/question_overrides.json`：逐题 `domain`/`status` + 必填 `reason`，key 是题干内容哈希故**未命中必报**，改判在零回归校验之后执行，已落库的库用 `apply_overrides.py` 补齐）；`ingest.py` 的 `DEFAULT_IN` 改指**合并后**的富化产物（原指个人题库单源的旧产物——全量同步语义下裸跑一次会删掉 1229 道开源题），并新增**入库护栏**（题量相差 >50% 直接停，`--force` 越过）。新增 `bank.load_overrides/apply_overrides`、`data/scripts/apply_overrides.py`、`test_curation.py` 与护栏用例

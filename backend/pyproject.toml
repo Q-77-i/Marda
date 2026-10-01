@@ -26,8 +26,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "langchain-community<0.4",
+    "openai>=3.14",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ragas>=0.3,<0.4",
 ]
 
 [tool.pytest.ini_options]

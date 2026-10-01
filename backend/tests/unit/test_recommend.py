@@ -48,6 +48,8 @@ def test_查询拼域名与漏点():
 
     assert item["domain"] == "rag"
     assert item["query"] == "RAG；切片粒度怎么定；rerank 模型怎么选"
+    # missed 与 query 同源（离线评测按单条漏点打分用，切字符串不可靠：漏点自身可能含「；」）
+    assert item["missed"] == ["切片粒度怎么定", "rerank 模型怎么选"]
 
 
 def test_漏点去重且保序():

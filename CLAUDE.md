@@ -49,6 +49,7 @@
 - 开源语料白名单：JavaGuide（Apache-2.0）、doocs 系列（CC-BY-SA-4.0）、haizlin/fe-interview（MIT）、tech-interview-handbook（MIT）、InterviewGuide（Apache-2.0）、WenQu（MIT）
 - **禁用**：CS-Notes（NC）、小林 coding（无 license）、面试鸭题库（不在仓库）、labuladong 等无许可仓库；不爬站
 - **个人题库（docs/题库/）仅本地使用，默认不进 git**（如要提交先向用户确认）；每条语料带 source/license/url 元数据
+- **红线覆盖派生文本，不只看原始文件**（2026-10-01 升级）：个人题库的**题干/答案/关键点原文**经任何加工后（评测 golden、复核产物、人读报告、导出样例、日志摘录……）同样不进 git——原始文件被 gitignore 不等于它的内容安全。**判据不是「有没有 id」，是「文本里会不会出现题库原文或其片段」**：M12 实测踩过——以为「只提交 id 版产物」就安全，而检索 golden 的查询文本是报告漏点原文、漏点又正是题库关键点的片段（13 条漏点查询与个人题库关键点重合 94 处）。**提交前拿产物文本去库里反查一遍**（`select ... where key_points like '%<片段>%'`），查得出来就不入库
 
 ## 开发纪律
 

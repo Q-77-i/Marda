@@ -33,8 +33,13 @@ MAX_QUERY_POINTS = 6  # 查询里最多拼几个漏点关键词（再多会稀�
 def build_query_items(payload: dict) -> list[dict]:
     """报告 payload → 逐短板域的检索项（纯函数，可单测）。
 
-    返回 `[{domain, query, advice, asked_ids}]`，顺序同 payload 的 `weaknesses`
+    返回 `[{domain, query, advice, asked_ids, missed}]`，顺序同 payload 的 `weaknesses`
     （= 报告里短板域的展示顺序）。`weaknesses` 为空（旧 payload / 全程无技术题）→ `[]`。
+
+    `missed` 是拼进 `query` 的那几个漏点原文（去重后截到 `MAX_QUERY_POINTS`）——检索只看
+    拼好的 `query`，但**离线评测**要按单条漏点打分（一条 query 里塞六个漏点时，「推荐内容
+    覆盖了几个漏点」比「整条 query 的相关性」更接近用户要的答案），切字符串不可靠（漏点
+    自身含「；」），故在这里把列表一并带出，选择逻辑只有一份。
     """
     weaknesses = [domain for domain in (payload.get("weaknesses") or []) if domain]
     if not weaknesses:
@@ -61,6 +66,7 @@ def build_query_items(payload: dict) -> list[dict]:
             "query": "；".join([label, *missed[:MAX_QUERY_POINTS]]),
             "advice": advice.get(domain),
             "asked_ids": asked_ids,
+            "missed": missed[:MAX_QUERY_POINTS],
         })
     return items
 
