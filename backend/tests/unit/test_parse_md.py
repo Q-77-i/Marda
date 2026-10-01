@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+import parse_md  # 模块本体：白名单要用 monkeypatch 换掉（条目是 id，测试不依赖真实题库）
 from parse_md import (
     SOURCE_NAME,
     finalize_status,
@@ -236,59 +237,67 @@ def test_未知_topic_报错不静默():
         parse_text(bad)
 
 
-def test_白名单合并近似重复():
-    """同题异写（题干细微差异 → 不同 question_id）按 APPROVED_MERGE_PAIRS 合并，择优保留。"""
+def test_白名单合并近似重复(monkeypatch):
+    """同题异写（题干细微差异 → 不同 question_id）按白名单合并，择优保留。
+
+    白名单条目是 **question_id**（题干原文不进 git，见语料红线），故这里用**合成题目**
+    造两对、把白名单 monkeypatch 成它们的 id——测的是合并机制本身，不依赖真实题库内容。
+    """
     text = """# 二面
 
 ## 字节跳动
 
 ### 工程化与可观测
 
-#### LLM 推理优化做了哪些？用过 Continuous Batching、KV Cache、vLLM 吗？线上高峰吞吐量多少？
+#### 工单系统批量导入接口响应慢，怎么定位？
 
 > 【轮次：明确】
 
-Continuous Batching：请求级动态组批，不等整个 batch 跑完就插入新请求。
+先看导入批次大小与锁竞争，再用火焰图看序列化开销。
 
-#### LLM 推理优化做过哪些工作？用过 continuous batching、KV Cache、vLLM 吗？线上高峰吞吐量多少？
-
-> 【轮次：明确】
-
-（同上一题，原帖为同一场面试的重复记录）
-
-答题框架：显存 → 计算 → 调度。
-
-#### Prompt 调优遇到「修好一类、坏了另一类」怎么解决？
+#### 工单系统的批量导入接口响应慢怎么定位？
 
 > 【轮次：明确】
 
-本质是评测集不够正交——在用一组纠缠的样本做单点修补。
+先看导入批次大小与锁竞争，再用火焰图看序列化开销；另外要查数据库批量写入是否被逐条提交拖慢，以及消息队列有没有积压。
 
-#### Prompt 调优 “修好一类、坏了另一类” 怎么解决？
+#### 线上告警噪音太多，怎么治理？
+
+> 【轮次：明确】
+
+按服务分级定阈值，先压制没有行动项的告警。
+
+#### 线上告警噪音特别多该怎么治理？
 
 > 【原题保留，未收录答案】
 """
     questions = parse_text(text)
     assert len(questions) == 4
 
+    # 前两条一对、后两条一对（parse_text 保序）；白名单用它们的 id，与真实条目同形
+    monkeypatch.setattr(parse_md, "APPROVED_MERGE_PAIRS", [
+        (questions[0]["question_id"], questions[1]["question_id"]),
+        (questions[2]["question_id"], questions[3]["question_id"]),
+    ])
+
     merged, report = merge_approved_pairs(questions)
     assert len(merged) == 2
     assert len(report) == 2
-    # 对一：两题都 enabled，保留答案更长的"做了哪些"（答案不是占位引用）
-    llm = next(q for q in merged if "推理优化" in q["question"])
-    assert llm["question"].startswith("LLM 推理优化做了哪些")
-    assert llm["round_confidence"] == "明确"
-    # 对二：enabled 优先于无答案 draft，保留有答案的「遇到」
-    prompt = next(q for q in merged if "调优" in q["question"])
-    assert prompt["question"].startswith("Prompt 调优遇到")
-    assert prompt["status"] == "enabled"
+    # 对一：两题都有实质答案，保留答案更长的那条
+    ticket = next(q for q in merged if "工单" in q["question"])
+    assert ticket["question"].startswith("工单系统的批量导入")
+    assert ticket["round_confidence"] == "明确"
+    # 对二：有答案的 enabled 优先于占位答案的 draft
+    alert = next(q for q in merged if "告警" in q["question"])
+    assert alert["question"].startswith("线上告警噪音太多")
+    assert alert["status"] == "enabled"
     # company/round 聚合去重（两对同公司同轮次，聚合结果不变）
-    assert llm["company"] == prompt["company"] == "字节跳动"
+    assert ticket["company"] == alert["company"] == "字节跳动"
     assert "字节跳动/" in report[0]["dropped"][0]  # 报告行含来源前缀，见 bank.describe
 
 
 def test_白名单题干不存在则报错():
-    """题库改动后白名单前缀匹配不到题时，宁可报错也不能静默跳过。"""
+    """题库改动后白名单条目匹配不到题时，宁可报错也不能静默跳过。"""
     with pytest.raises(ValueError, match="白名单"):
         merge_approved_pairs([])
 

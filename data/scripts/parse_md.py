@@ -187,42 +187,36 @@ def parse_file(path: Path) -> list[dict]:
 
 
 # 人工确认的近似重复对（find_duplicates ≥0.9 的同题异写，题干不同 → 不同 question_id）。
-# 每对是两个题干的前缀；匹配不到或多于一条时报错，防止题库改动后白名单静默失效。
+# **用 question_id 而不是题干前缀**：题干原文不进 git（语料红线，`data/scripts/check_redline.py`
+# 会拦）——id 是题干的内容哈希，定位同样精确且不泄露原文。要查某个 id 是哪道题，在本地库
+# `SELECT question FROM questions WHERE id = '…'`（id 在解析产物与库里一致）。
+# 匹配不到就报错，防止题库改动后白名单静默失效（与题干预缀口径同一护栏）。
 APPROVED_MERGE_PAIRS: Final[list[tuple[str, str]]] = [
-    (
-        "LLM 推理优化做过哪些工作？用过 continuous batching、KV Cache、vLLM 吗",
-        "LLM 推理优化做了哪些？用过 Continuous Batching、KV Cache、vLLM 吗",
-    ),
-    (
-        "Prompt 调优 “修好一类、坏了另一类” 怎么解决",
-        "Prompt 调优遇到「修好一类、坏了另一类」怎么解决",
-    ),
+    ("q_5ff677b4583d", "q_1b4c1d6fceee"),
+    ("q_1252b407c0f3", "q_9242f4919953"),
 ]
 
 
 def merge_approved_pairs(questions: list[dict]) -> tuple[list[dict], list[dict]]:
-    """按 APPROVED_MERGE_PAIRS 合并人工确认的近似重复题。
+    """按 APPROVED_MERGE_PAIRS（question_id 对）合并人工确认的近似重复题。
 
     择优逻辑与 merge_exact_duplicates 相同（_rank：enabled > 答案长 > 轮次可信）。
-    只处理题干异写产生的重复（question_id 不同）——同 id 的重复在前面已合并。
+    只处理题干异写产生的重复（question_id 不同）——同 id 的重复在前面已合并；
+    id 唯一，故不存在「一条匹配到多题」的情形，只有匹配不到（题干改字 → 哈希变）。
     """
-    by_prefix: dict[str, dict] = {}
-    for question in questions:
-        for prefix in (p for pair in APPROVED_MERGE_PAIRS for p in pair):
-            if question["question"].startswith(prefix):
-                if prefix in by_prefix:
-                    raise ValueError(f"白名单前缀「{prefix}」匹配到多条题目，请核对：{question['question']}")
-                by_prefix[prefix] = question
-
-    missing = [prefix for pair in APPROVED_MERGE_PAIRS for prefix in pair if prefix not in by_prefix]
+    by_id = {question["question_id"]: question for question in questions}
+    missing = [qid for pair in APPROVED_MERGE_PAIRS for qid in pair if qid not in by_id]
     if missing:
-        raise ValueError(f"白名单前缀在题库中匹配不到：{missing}")
+        raise ValueError(
+            f"白名单条目在题目里匹配不到（题干改过字？）：{missing}——"
+            "请核对本地库里的题干并更新 question_id"
+        )
 
     drop_ids: set[str] = set()
     replaced: dict[str, dict] = {}
     report: list[dict] = []
-    for prefix_a, prefix_b in APPROVED_MERGE_PAIRS:
-        group = [by_prefix[prefix_a], by_prefix[prefix_b]]
+    for id_a, id_b in APPROVED_MERGE_PAIRS:
+        group = [by_id[id_a], by_id[id_b]]
         best = min(group, key=_rank)
         dropped = [q for q in group if q is not best]
         drop_ids.update(q["question_id"] for q in dropped)

@@ -113,6 +113,19 @@ LLM 模型层理论的页落在未启用的 `cs-fundamentals` 域、以 draft �
 `questions.source` 只存**答案主源**（主源裁决规则见 [docs/SPEC.md](docs/SPEC.md) §8.1）。
 清单见 [data/licenses/语料来源清单.md](data/licenses/语料来源清单.md)。
 
+**提交前检查（语料红线机械反查）**：
+
+```bash
+backend/.venv/bin/python data/scripts/check_redline.py          # 查「现在提交会进仓库的改动」
+backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查（发布前）
+```
+
+判据：产物文本（文档、代码注释、测试夹具、changelog……）里**不得出现题库原文或其片段**——
+个人题库与私有上传只本地使用。检查方式是把两侧都归一成「只留中文字」的骨架再滑 12 字窗口
+（数字/标点/英文不会切碎片段，技术词也不会误报），命中即非零退出并打印位置。
+**规则靠记忆执行不了**：明知规矩也要跑一遍——这条检查立起来的第一件事，就是在已入库的
+三个文件里查出 15 处遗留违规（均已改为抽象描述）。
+
 ## 面试状态机（LangGraph）
 
 [backend/app/graph/](backend/app/graph/) 是面试引擎核心，五阶段（开场 → 自我介绍 → 项目深挖 → 技术问答 → 反问）全部由状态机驱动：
