@@ -6,9 +6,11 @@
 
 ## 1. 范围与目标
 
-实现 PRD §7 的 MVP：Agent/AI 工程师方向、单用户、文本面试全链路（五阶段状态机 + 追问决策 + 断线续面 + 报告），题库 ≥100 题结构化入库（个人题库 md/xmind 两格式解析，PDF 因合规否决），前端三个页面（仪表盘/面试/报告）。**全部 8 条验收标准（PRD §7）通过才算完成**（第 8 条 P95 首 token 在开发环境经 nginx 实测；部署环境实测随阶段 3 验收）。
+**本文档 = 系统的技术规格（现行口径）**：状态机 schema、规则、API 契约、数据库、前端设计、测试口径、风险纪律。阶段 1（demo 闭环，T1–T7b）与阶段 2（P1-M1~M12）均已完成并全量验证——[README](../README.md) 是门面与快速开始，[CLAUDE.md](../CLAUDE.md) 是工程规约与全量 changelog，本文档负责「现在是什么样、为什么」。
 
-阶段 1 明确不做：账号体系、混合检索（sparse/RRF）、reranker、私有题库、PDF 导出、Trace 回放、行为面、Langfuse 接入（预留接口）、MCP server、**服务器部署**（阶段 1 的部署形态 = Docker Compose 编排 + 本地一键起，部署方案随阶段 3 再定，与 PRD §8 里程碑一致）。
+**读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
+
+**下一步（阶段 3 → 二期）**：服务器部署与稳定性（限流/重试/熔断/降级链）、PG 迁移（业务库 + checkpointer 同步）、语音面试（引擎与模态解耦）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -217,12 +219,7 @@ def update_difficulty(state) -> None:
 
 **项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
 
-**同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮都是**独立调用**、只拿得到轮次号，不喂前情时「换个切入点」等于掷骰子——三道题套同一个开头（真链路实测：题干原文已带「你在 Marda 码达面试引擎里做了一套……」这类背景复述，口吻层再改写也抹不掉）。修法两条同时在位：
-
-1. **喂回已问题目原文**：`_asked_project_block(state)` 取 `answered_questions` 里的项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽——出题官只有看见措辞才谈得上换开头句式；一道都还没问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型自行脑补前情；
-2. **两层模板同禁复述背景**：场景题模板写死「不复述候选人的项目背景（『你提到…』『你在…里做了…』一律不写）」——题前的衔接语（§4.8 人味层）已经交代过「结合你的项目」，题目再铺一句简历复述就是模板脸；口吻层模板同步加这条，避免改写阶段又把背景捡回来。
-
-措辞是否真的不再雷同属生成质量，靠真链路 smoke 人眼验收；单测只钉**接线**（第二道起 prompt 必须带上第一道原文，见 `test_第二道项目题带前情_出题prompt含已问题目原文`）。
+**同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮是**独立调用**、只拿得到轮次号——不喂前情时「换个切入点」等于掷骰子（真链路实测三道题套同一个开头）。两条修法同时在位：① **喂回已问题目原文**——`_asked_project_block(state)` 把已问项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽，一道未问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型脑补前情；② **两层模板同禁复述背景**（场景题 + 口吻层）——题前衔接语（§4.8）已交代「结合你的项目」，题目再铺一句简历复述就是模板脸。措辞是否真不雷同属生成质量、靠真链路验收；单测只钉**接线**（第二道起 prompt 必带第一道原文）。
 
 **出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
 
@@ -338,20 +335,16 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 ## 4.9 报告导出 PDF（P1-M8 / FR-18）
 
-**路线：服务端 HTML+CSS 渲染**（`app/report_pdf.py` + `app/templates/report.html.j2`，jinja2 + weasyprint）。选它的理由是**验收可判**：产出的是真文本 PDF（可选中、可检索），「中文无乱码」于是能用 pypdf 读回断言（无 U+FFFD + 关键串逐条命中），而浏览器截图再拼 PDF 的路线文字不可选、长卡被拦腰切断、且无任何可断言的产物。代价是后端镜像要装 pango 与中文字体（见下）。
+**路线：服务端 HTML+CSS 渲染**（`app/report_pdf.py` + `app/templates/report.html.j2`，jinja2 + weasyprint）。理由是**验收可判**：产出的是真文本 PDF（可选中、可检索），「中文无乱码」于是能用 pypdf 读回断言（无 U+FFFD + 关键串逐条命中）；浏览器截图再拼 PDF 的路线文字不可选、长卡被拦腰切断、且无任何可断言的产物。代价是镜像要装 pango 与中文字体。
 
-- **数据来源是报告 payload 本身**（§4.6），导出不重算任何分数：页面显示什么，PDF 就显示什么。旧 payload 缺字段（FR-25 之前）按缺失略过，不报错。
-- **五维键与中文标签单一来源 = `graph/rules/aggregate.DIMENSION_LABELS`**（`FIVE_DIMS` 由它派生）；前端 `constants.DIMENSIONS` 是展示副本。雷达图顶点顺序即该表顺序。
-- **语义色与主蓝与前端令牌同源**（P1 收尾专项会话 1）：成功 / 警告 / 主蓝三处取 `globals.css` 令牌的 sRGB 值并在模板注明出处（PDF 是独立渲染管线，拿不到 CSS 变量，只能对值）；浅色底与描边属版式自身的灰阶，不随令牌走。
-- **雷达图 = 内联 SVG 手绘**（五轴五点，0–5 线性映射，越界截断）。两条打印引擎的硬约束，都踩过：
-  1. **样式写 SVG 呈现属性，不写 CSS** —— `fill-opacity` 走 CSS 会被忽略（数据多边形糊成实心黑）；
-  2. **画布与坐标系 1:1** —— 引擎对 `<text>` **不套用 viewBox 变换**（五边形按 viewBox 缩放、文字按原始坐标摆），靠 viewBox 留白给标签腾位置会被裁掉半截字；改为收紧半径把标签收进框内。
-- **时间**：`created_at` 落库是 UTC，PDF 是给人看的文档，按**东八区**渲染（`format_created_at`），与页面的本地时间一致；解析不了就不显示时间，不影响导出。
-- **渲染是纯 CPU 的确定性转换**，走 `asyncio.to_thread` 不阻塞事件循环；报告不可变故不落盘缓存（LLM 那份 60s 预算属于报告生成，不在这一步）。
+- **数据来源是报告 payload 本身**（§4.6），导出不重算任何分数：页面显示什么，PDF 就显示什么。旧 payload 缺字段按缺失略过，不报错。
+- **五维键与中文标签单一来源 = `graph/rules/aggregate.DIMENSION_LABELS`**（`FIVE_DIMS` 由它派生；前端 `constants.DIMENSIONS` 是展示副本）。雷达图顶点顺序即该表顺序。**语义色与主蓝与前端令牌同源**：成功 / 警告 / 主蓝三处取 `globals.css` 令牌的 sRGB 值并在模板注明出处（PDF 是独立渲染管线，拿不到 CSS 变量，只能对值）；浅色底与描边属版式自身的灰阶，不随令牌走。
+- **雷达图 = 内联 SVG 手绘**（五轴五点，0–5 线性映射，越界截断）。两条打印引擎的硬约束（都渲染出来才看见）：① **样式写成 SVG 呈现属性**——走 CSS 的 `fill-opacity` 被忽略（数据多边形糊成实心黑）；② **画布与坐标系 1:1**——引擎对 `<text>` **不套用 viewBox 变换**，靠 viewBox 留白给标签腾位置会被裁掉半截字。
+- **字体必须钉在每一个渲染上下文上**（`report_pdf.FONT_STACK` 单一来源）：`@page`（页边距框**不继承 body**）与 SVG `<text>` 各声明一次 `font-family`；模板里用 `| safe`——autoescape 会把字体名引号转成 `&#39;`，而 CSS 不认 HTML 实体，整份文档静默退化成宋体。**踩过的坑**：漏声明时那些文字落到系统默认字体（macOS 上是苹方 / 宋体），而 **macOS 的 PDFKit 系（Safari / 预览 / Quick Look）渲染不了 weasyprint 嵌的苹方子集** → 整片缺字；Chrome 与 WPS 会回退到系统同名字体，**在开发机上完全看不出来**。回归由 `test_PDF只用随镜像分发的字体_不混进本机字体` 钉死——只有断言「PDF 里实际用到的字体名」拦得住（读文本、看渲染图、验子集是否嵌入，全都拦不住）。
+- **时间**：`created_at` 落库是 UTC，PDF 是给人看的文档、按**东八区**渲染，与页面本地时间一致；解析不了就不显示，不影响导出。**渲染是纯 CPU 的确定性转换**，走 `asyncio.to_thread` 不阻塞事件循环；报告不可变故不落盘缓存。
 - **模板 autoescape=True**：候选人回答与 LLM 文案都是不可信自由文本，直出 HTML 等于开了注入面；雷达 SVG 是自己拼的，模板里 `|safe` 放行。
-- **字体必须钉死，不能落到本机字体**（`report_pdf.FONT_STACK` 是单一来源）：字体栈要在 `@page`（页边距框**不继承 body**）与 SVG `<text>` 上**各声明一次**，模板里用 `| safe`（autoescape 会把字体名引号转成 `&#39;`，CSS 不认 HTML 实体 → 静默退化到宋体）。**踩过的坑**：漏声明时那些文字会落到系统默认字体（macOS 上是苹方/宋体），而 **macOS 的 PDFKit 系（Safari / 预览 / Quick Look）渲染不了 weasyprint 嵌的苹方子集** → 整片缺字；Chrome 与 WPS 会回退到系统同名字体，**在开发机上完全看不出来**。回归由 `test_PDF只用随镜像分发的字体_不混进本机字体` 钉死——只有断言「PDF 里实际用到的字体名」拦得住，读文本、看渲染图、验嵌入与否都拦不住。
-- **运行环境**：容器装 `libpango-1.0-0 / libpangoft2-1.0-0 / libharfbuzz-subset0 + fonts-noto-cjk`（缺字体就是一整页豆腐块）；macOS 宿主机需 `brew install pango` **和 `brew install --cask font-noto-sans-cjk-sc`**（后者缺失时字体栈会退到系统字体，导出物在 Safari/预览里缺字），且 Homebrew 的 glib 不在 dyld 默认搜索路径里——`report_pdf._ensure_native_libs()` 在 import weasyprint 之前补一条 `DYLD_FALLBACK_LIBRARY_PATH`（ctypes 的 macholib 每次 dlopen 现读 `os.environ`，所以运行时补也来得及）。
-- **验收口径**：单测断言雷达几何 + PDF 读回（中文/参考答案/旧 payload 容缺/东八区时间）；集成测试断言内容类型、下载头、越权 404、内容与报告接口同源；smoke 在真链路取回 PDF 再读回核对。
+- **运行环境**：容器装 `libpango-1.0-0 / libpangoft2-1.0-0 / libharfbuzz-subset0 + fonts-noto-cjk`（缺字体就是一整页豆腐块）；macOS 宿主需 `brew install pango` **和** `brew install --cask font-noto-sans-cjk-sc`（缺任一，导出物在 Safari/预览里缺字），且 Homebrew 的 glib 不在 dyld 默认搜索路径——`report_pdf._ensure_native_libs()` 在 import weasyprint 之前补一条 `DYLD_FALLBACK_LIBRARY_PATH`（ctypes 每次 dlopen 现读 `os.environ`，运行时补也来得及）。
+- **验收口径**：单测断言雷达几何 + PDF 读回（中文 / 参考答案 / 旧 payload 容缺 / 东八区时间 / **只用随镜像分发的字体**）；集成测试断言内容类型、下载头（RFC 5987 中文名）、越权 404、内容与报告接口同源；smoke 在真链路取回 PDF 再读回核对。
 
 ## 4.10 学习推荐（P1-M9 / FR-20）
 
@@ -404,59 +397,50 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 ## 4.13 离线评估体系（P1-M12）
 
-**定位**：`backend/evals/` 是离线评测包（**只被 `scripts/` 下的入口 import，`app` 永不 import**）。
-评测**不进 pytest 常规套件**——它要真 Qdrant + 嵌入容器 + DeepSeek/SiliconFlow，而常规用例必须保持无密钥可跑（`uv run pytest` 仍是一条命令）。门禁是显式命令。会话 1 交付**检索评估**（RAGAS 离线），会话 2 交付**评分一致性**（门禁为**自研** harness：DeepEval 没有现成的一致性/准确性 metric，引包只买到 TestCase/assert 骨架——选型修正与理由）。
+**定位**：`backend/evals/` 是离线评测包（**只被 `scripts/` 下的入口 import，`app` 永不 import**）。评测要真 Qdrant + 嵌入容器 + DeepSeek/SiliconFlow，故**不进 pytest 常规套件**（常规用例必须保持无密钥可跑，`uv run pytest` 仍是一条命令），门禁是显式命令。会话 1 = 检索评估，会话 2 = 评分一致性 + 门禁（**自研** harness：DeepEval 没有现成的一致性/准确性 metric，引包只买到 TestCase/assert 骨架）。
 
 ### 检索基线（`scripts/eval_retrieval_run.py`）
 
-读 `data/eval/golden/retrieval_queries.json` → 逐条**实时重算**四变体排名（不读快照——读了就测不出「改动之后」）→ 出指标 → 写 `data/eval/results/retrieval-<时间戳>[-标签].{json,md}`。
+读 `data/eval/golden/retrieval_queries.json` → 逐条**实时重算**四变体排名（不读快照——读了就测不出「改动之后」）→ 出指标 → 写 `data/eval/results/`。
 
-- **四变体**：`dense`（单路稠密）/ `sparse`（单路稀疏）/ `rrf`（双路融合，prefetch 深度取生产的 `RRF_CANDIDATES`）/ `hybrid`（= **生产函数** `hybrid_search`，融合 + rerank）。`rrf` 与 `hybrid` 只差 rerank 一步，两者的差值就是 **rerank 的净贡献**；`hybrid` 走生产函数而不是重写一遍管线，指标才对生产有意义（其余三路复用生产的嵌入与 payload 过滤，差异只在检索策略本身）。
-- **池内口径**：候选池 = `union(dense@50, sparse@50, rrf@30, hybrid@30)`（按该 query 自己的 filters 取），**池外题目一律视作不相关**。池必须比生产返回的 30 条深——否则「相关但没被检索到」在池口径下不可见、Recall 虚高。代价写在报告头：指标**跨版本可比**（同一份 golden、同一个池策略），**不能当绝对召回率读**。
-- **分级 0/1/2**（不相关 / 相邻知识点 / 直接命中），NDCG 增益取 `2^g − 1`——比线性增益更贴「用户要的是能补上这个漏点的那道题」。**二值相关集 = grade ≥ 1**（Recall / Precision 用）。用 **Precision@k 而不是 MRR**：本库同题多（一条查询常有几十条相关候选），rank-1 几乎恒相关 → MRR 恒为 1.0，是死指标。
-- **场景两类**：`bank_search`（题库页搜索形态，无 filter）与 `missed_point`（学习推荐的漏点查询，带 domain filter，查询文本与线上逐字一致——由**生产函数 `build_query_items`** 派生）。**没有「纯域名回退」这一档**：域名标签查询除了 filter 不含信息，域内每题同等相关，分级标注无从谈起（那一路由 RAGAS 衡量，见下）。
-- **噪声地板**：同 golden 连跑两次，`dense`/`sparse` **逐位一致**（本地嵌入 + Qdrant 是确定的），`rrf` ±0.003、`hybrid` ±0.005（rerank 是远程 API，分数非确定）。**小于 0.005 的差值不要当结论读**。
-- **golden 的构建与复核**（`scripts/eval_build_golden.py`）：候选池 → LLM 批式判级（温度 0）→ 出 `review.md` 供**人工抽检** → 改 json → 重跑。复核文件只摊开「每条 query 的 top-5 判定」+「最该看的行」（**只收「✗0 却排进前 5」**——判定与排名在同一段区间里方向相反，必有一边错；把「✓2 排第 6」或「✓2 沉到十名开外」也算进来会一屏几百条噪声，后者更是**检索漏检**，属指标报告的读者该看的）。构建时**抽样重判一遍**并把「标注自一致率」写进复核文件头：golden 自身的噪声会原样传给指标，先量出来。
+- **四变体**：`dense` / `sparse` / `rrf`（生产同款 prefetch 深度 + 融合）/ `hybrid`（= **生产函数** `hybrid_search`，融合 + rerank）。`rrf` 与 `hybrid` 只差 rerank 一步 → 差值即 **rerank 净贡献**；其余三路复用生产的嵌入与 payload 过滤，差异只在检索策略本身。
+- **池内口径**：候选池 = 各变体并集（单路 @50，须比生产返回的 30 条深——否则「相关但没被检索到」在池口径下不可见、Recall 虚高），**池外一律视作不相关**。跨版本可比（同 golden、同池策略），**不能当绝对召回率读**；结果文件带 golden `sha256`，哈希不同不直接比数字。
+- **分级 0/1/2**（不相关 / 相邻知识点 / 直接命中），NDCG 增益 `2^g − 1`；二值相关集 = grade ≥ 1。用 **Precision@k 不用 MRR**：本库同题多，rank-1 几乎恒相关，MRR 恒 1.0 是死指标。
+- **场景两类**：`bank_search`（题库搜索形态）与 `missed_point`（推荐漏点查询，文本与线上逐字一致，由生产函数 `build_query_items` 派生）。**没有「纯域名回退」档**——域内每题同等相关，分级标注无从谈起（那一路由 RAGAS 量，见下）。
+- **噪声地板**：同 golden 连跑两次，`dense`/`sparse` **逐位一致**（本地嵌入 + Qdrant 是确定的），`rrf` ±0.003、`hybrid` ±0.005（rerank 是远程 API）。**小于 0.005 的差值不当结论读**。
+- **golden 构建与复核**（`eval_build_golden.py`）：候选池 → LLM 批式判级（温度 0）→ `review.md` 供**人工抽检** → 改 json → 重跑。复核文件只摊开每条 query 的 top-5 判定 + **「最该看的行」= 只收「✗0 却排进前 5」**（判定与排名方向相反，必有一边错；「✓2 排第 6」是常态、「✓2 沉到十名开外」是检索漏检、属报告读者），并附**标注自一致率**（抽样重判）——golden 自身的噪声会原样传给指标。
 
 ### 推荐链路内容相关性（`scripts/eval_ragas_context.py`）
 
-对每份真库技术面报告跑**生产推荐函数** `recommend_for_report`，打分单元是**一条漏点**：`user_input` = 某个短板域漏掉的一个知识点，`retrieved_contexts` = 该域推荐出的卡片（**doc 文本 = 题干 + 关键点**，与检索时嵌入的文本同源）。分数 = 推荐内容里与该漏点相关的陈述占比。
+对每份真库技术面报告跑**生产推荐函数**，打分单元是**一条漏点**：`user_input` = 某短板域漏掉的一个知识点，`retrieved_contexts` = 该域推荐卡片（doc 文本 = 题干 + 关键点，与检索时嵌入的文本同源）。分数 = 推荐内容里与该漏点相关的陈述占比。
 
-- **按单条漏点、不按拼好的整条 query**：整条 query 是「域名 + 最多 6 个漏点」，拿它打分会被**查询宽窄**带偏——越宽泛的 query，检索内容越「看起来都相关」（实测纯域名查询恒得 1.0）。单条漏点是具体知识点，分数才有分辨力。
-- **无漏点的组不参与**（查询退化为纯域名）：没有「要补的知识点」，这个指标**无从打分**——不是 0 分也不是 1 分，是「不适用」，单列计数。
-- **总体 = 组间等权**（每组先按组内漏点取均值）：否则漏点多的域会顶掉漏点少的域。
-- **ragas 接线三条**：指标名是 `ContextRelevance`（0.3 起由 `ContextRelevancy` 改名）；`llm_factory` 内部建 `ChatOpenAI`、**只认 `OPENAI_API_KEY` 这个变量名**（脚本内从 settings 直接赋值——用 `setdefault` 会静默沿用开发机 shell 里的别的键，表现为每个样本 401 且**被 ragas 吞成 nan 分数**，故脚本对 nan 直接 `SystemExit`）；DeepSeek 的 `json_schema` 坑位（§11.1）没有触发——ragas 走 prompt 内注入 schema，不是 `response_format`。
+- **按单条漏点、不按拼好的整条 query**：越宽泛的 query 越「看起来都相关」（实测纯域名查询恒得 1.0），单条漏点才有分辨力。**无漏点的组不参与**（没有要补的知识点 = 不适用，不是 0 也不是 1，单列计数）；**总体 = 组间等权**。
+- **ragas 三条接线**：指标名 `ContextRelevance`（0.3 起由 `ContextRelevancy` 改名）；`llm_factory` 内部建 `ChatOpenAI`、**只认 `OPENAI_API_KEY` 这个变量名**（用 `setdefault` 会静默沿用开发机 shell 里的别的键 → 每个样本 401 → **被 ragas 吞成 nan**，故脚本对 nan 显式 `SystemExit`）；context 必须用 doc 文本、纯问句会被判 0。
 
-### 评分一致性（`scripts/eval_judge_run.py`，会话 2）
+### 评分一致性（`scripts/eval_judge_run.py`）
 
-三条线：**一致性**（同一道题、同一份回答重复评 K 次，分数自己晃多少——**噪声地板**）、**准确性**（vs 人审期望分）、**区分度**（同一道题的弱/中/强三档是否单调）。
+三条线：**一致性**（同题同答重复评 K 次，分数自己晃多少 = 噪声地板 σ̄）、**准确性**（vs 人审期望分）、**区分度**（同题弱/中/强三档是否单调）。
 
-- **测的就是生产 prompt**：消息由 `judge.judge_messages(...)` 构造（judge 节点同一入口）、schema 走 `score_schema_for`、生产温度走 `judge.JUDGE_TEMPERATURE`（0.3）。评测若自己拼一遍 prompt，模板一改就静默失配——由单测钉死「评测消息与生产节点逐字一致」。
-- **golden 三臂**（`judge_items.json`，37 条 / sha256 `8d9afad7`）：`real` 20 条（真库技术面历史回答，按总分**分层抽**：1-2/2-3/3-4/4-5 四档各 5）；`behavioral` 8 条（行为面，四场各 2）；`persona` 9 条（**同一道题**的弱/中/强三答，`group` 相同——不同题的弱中强不构成单调性证据，由 golden 校验拦下）。真库样本取**最终记录**（首答+追问补充的合并回答）。
-- **期望分 = 独立标注，不是「当时实得」**：`deepseek-v4-pro` 温度 0 按独立 rubric 预判（与评分官 flash 异模型，避免同源偏差互相抵消）→ `judge_review.md` 人工复核。**拿实得分当基准 = 评分官自己给自己打分**，实得只作对照。复核人记为 Claude（AI 复核，不冒充人工）；`expected` 里同时记 `covered_indexes`（期望覆盖的关键点序号）。
-- **指标**：一致性 = σ̄（逐题总分的样本标准差取均值）· 完全一致率 · 覆盖率集合 Jaccard · 覆盖率比例标准差 · error_flag 翻转率；准确性 = 总分/各维 MAE + **偏置**（正 = 评分官偏高；只看 MAE 分不出放水与苛刻）· 维度命中率（|多次运行均值 − 期望| ≤ 0.5）· 覆盖率 F1 **与**覆盖率比例误差；区分度 = 每题各档取中位数后逐组判严格递增。
-- **覆盖率为什么两个口径**：集合口径（F1）按关键点**原文精确匹配**，而评分官偶尔截断/改写长要点（实测 7/185 与 3/185 次运行：把带从句的长要点只回前半句，或换成自己的说法）——这类点对不上会让集合口径**低估**；比例口径只比「答到了几成」，不受改写影响，且它正是 70% 追问阈值的输入。两个都读：严格的那个给诊断（`unmatched_key_points` 计数不静默），稳的那个给判据。
-- **温度对照是实验，不改生产**：`--no-control` 可关。实测温度 0 的 σ̄ 约为 0.3 的一半（0.063 vs 0.126，该对照与主基线跑自**不同的两轮**——同一 golden，生产臂两轮的 σ̄ 分别是 0.126 与 0.113，这个差就是上文「指标自身波动」）、完全一致率 0.595 vs 0.378，准确性持平（MAE 0.218 vs 0.227）。**要不要改生产温度是独立决策**（影响评分/报告/PDF/能力曲线，需单独回归），本脚本不改任何生产常量。
-- **基线**（2026-10-01，K=5，生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3** 组。**读法**：MAE 与 σ̄ 同量级（0.225 vs 0.113），即评分官的误差约为它自身晃动幅度的 2 倍——**低于 σ̄ 的 MAE 变化不构成结论**。
-- **局限（如实记进报告）**：行为面样本集中低-中分段（真库单题均值 1.6–3.8，无 ≥4 分），高分段的评分一致性未覆盖；5/8 条行为题**无关键点**（真库 14 道启用行为题里有 6 道 `key_points` 为空，覆盖率对它们不适用、引擎里恒为 1.0）——**M11 遗留、非评测侧问题，归属 P2 补题库时处理**；评测输入统一为「单轮回答」（`followup_log` 恒「无」），追问过程中的评分不在覆盖范围。
+- **测的就是生产 prompt**：消息由 `judge.judge_messages` 构造（judge 节点同一入口）、生产温度 `JUDGE_TEMPERATURE`（0.3）；单测钉死「评测消息与生产节点逐字一致」——评测若自己拼一遍 prompt，模板一改就静默失配。
+- **golden 三臂**（37 条 / sha256 `8d9afad7`）：`real` 20（真库技术面按总分**分层抽**：1-2 / 2-3 / 3-4 / 4-5 四档各 5）、`behavioral` 8、`persona` 9（**同一道题**的弱/中/强，`group` 相同——不同题的弱中强不构成单调性证据，由 golden 校验拦下）。真库样本取**最终记录**（首答 + 追问补充的合并回答）。
+- **期望分 = 独立标注**：`deepseek-v4-pro` 温度 0 按独立 rubric 预判（与评分官 flash 异模型，避免同源偏差）+ `judge_review.md` 人工复核；**不用「当时实得」**（那是评分官自己的输出，等于自己给自己打分），实得只作对照。复核人记 Claude（AI 复核，不冒充人工）。
+- **指标**：一致性 = σ̄ / 完全一致率 / 覆盖率集合 Jaccard / 覆盖率比例标准差；准确性 = 总分与各维 MAE + **偏置**（正 = 偏高；只看 MAE 分不出放水与苛刻）+ 维度命中率 + 覆盖率 **F1 与比例误差**；区分度 = 每题各档取中位数后逐组判严格递增。
+- **覆盖率两个口径**：集合口径（F1）按原文精确匹配，评分官偶尔截断/改写长要点（实测 7/185 与 3/185 次）会对不上、**系统性低估**；比例口径只比「答到了几成」，不受改写影响，且它正是 70% 追问阈值的输入。严格的那个给诊断（`unmatched_key_points` 计数不静默），稳的那个给判据。
+- **基线**（K=5，生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3**。**读法**：MAE ≈ 2×σ̄，误差大于晃动、信号成立；**低于 σ̄ 的 MAE 变化不构成结论**。
+- **温度对照是实验、不改生产**（`--no-control` 可关）：温度 0 的 σ̄ 约为 0.3 的一半（0.063 vs 0.126），准确性持平。**要不要改生产温度是独立决策**（影响评分/报告/PDF/能力曲线，需单独回归），脚本不碰任何生产常量。
+- **局限（如实记进报告）**：行为面样本集中低-中分段（真库单题均值 1.6–3.8，无 ≥4 分）；真库 6 道启用行为题 `key_points` 为空（**M11 遗留、归属 P2 补题库**），覆盖率对它们不适用、引擎里恒 1.0；评测输入统一为「单轮回答」（`followup_log` 恒「无」），**追问过程中的评分不在覆盖范围**。
 
 ### 门禁（`scripts/eval_judge_gate.py`）
 
 `uv run python scripts/eval_judge_gate.py`（跑生产臂 K=5 再判；`--result <file>` 判已有结果、不重新调用）。**失败非零退出**，逐项列出哪里没过。改评分 prompt / 维度表 / 评分模型 / 温度之后必须跑。
 
-- **阈值 = 基线 + 余量**，余量取自「同一 golden 连跑多轮生产臂」的指标**自身波动**（三轮实证：σ̄ 0.126/0.113/0.095 · MAE 0.227/0.225/0.209 · 偏置 +0.039/+0.017/+0.031 · 维度命中率 ±0.016），取 2–4 倍作安全边际。检查项：σ̄、总分 MAE、偏置绝对值、覆盖率比例误差、三档单调组数、无掉出样本、调用零失败。**门禁自身也在这三轮上复验过**（第三轮即以门禁默认路径跑出，全过）。
-- **完全一致率不进门禁**：37 条样本上的二值统计量，单次抽样噪声 ≈0.077（`sqrt(0.32·0.68/37)`），比「值得叫停的退化」还大——拿它设阈值只会误报。它照常进报告，读时带上噪声量级。
-- **golden `sha256` 不一致 → 拒绝比较**（换 golden = 换基准）：提示重跑基线并更新门禁常量，与检索侧的哈希纪律同源。
+- **阈值 = 基线 + 余量**：余量取自「同一 golden 连跑多轮生产臂」的指标**自身波动**（三轮实证：σ̄ 0.126/0.113/0.095 · MAE 0.227/0.225/0.209 · 偏置 +0.039/+0.017/+0.031），取 2–4 倍。检查项：σ̄、总分 MAE、偏置绝对值、覆盖率比例误差、三档单调组数、无掉出样本、调用零失败。
+- **完全一致率不进门禁**：37 条样本上的二值统计量，单次抽样噪声 ≈0.077（比「值得叫停的退化」还大），照常进报告、不判死。
+- **golden `sha256` 不一致 → 拒绝比较**（换 golden = 换基准），提示重跑基线并更新门禁常量。
 
 ### 依赖（dev 组）
 
-`ragas>=0.3,<0.4`，**同时钉 `langchain-community<0.4` 与 `openai>=3.14`**，两条都是被解析逼出来的：
-
-- 不钉 `langchain-community` → 解析到 0.4.x，而 `ragas.llms.base` 导入的 `langchain_community.chat_models.vertexai` 已被移除，`import ragas` 当场炸；
-- 不钉 `openai` → ragas 0.4.x 与 `openai>=3.14` 冲突，uv 会**把 openai 从 3.14 降到 3.3**（为评测降生产依赖不可接受）；钉住后解析到 ragas 0.3.1，**无任何降级**。
-
-容器 `uv sync --no-dev`，故 dev 组这 33 个包（pandas/scipy/pyarrow 等）**不进镜像**。
-
+`ragas>=0.3,<0.4`，同时钉 `langchain-community<0.4`（0.4.x 移除了 ragas 0.3 导入的 `vertexai` 模块，`import ragas` 当场炸）与 `openai>=3.14`（否则解析会把 openai 从 3.14 **降到 3.3**——为评测降生产依赖不可接受）。容器 `uv sync --no-dev`，dev 组 33 个包不进镜像。
 
 ## 5. RAG
 
@@ -631,21 +615,22 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 - **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：只读时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
 - **设计（P1 收尾专项会话 1 归一）**：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。设计令牌是明暗双套 OKLCH（`globals.css`，含 P1 补的 `--success`）+ 中文回退字体栈（Geist 不含 CJK）+ 全局 `prefers-reduced-motion` 兜底；**状态态各有唯一档位**（空态 / 加载态两档 / 错误态三档规则：可重试 = inline + 按钮、表单级 = 一行红字、全页 = 中性色 + 返回首页），卡片材质两档（卡片 = `rounded-xl + ring-1`，内嵌面板 = `rounded-lg border + bg-muted/30`，无阴影），共享件 `PageShell` / `PageHeader` / `EmptyState` / `ErrorState` / `StatusBanner` / `InlinePanel`。主题只跟随系统 `prefers-color-scheme`（不做切换）；移动端布局按响应式写但**未实测**（窄屏顶栏导航竖排是已知问题，移动端整体暂缓）。
 
-## 10. 测试与验收（TDD 顺序）
+## 10. 测试与验收
 
-| # | 测试 | 断言要点 |
-| --- | --- | --- |
-| 1 | test_parse_md.py | 层级解析/编号清洗/映射表/字段完整（fixtures） |
-| 2 | test_follow_up_decision.py | PRD §4.2 全部转移分支 + 各类计数上限 |
-| 3 | test_difficulty.py | 升降档/清零/封顶保底 |
-| 4 | test_quota.py | 配额分配（largest remainder） |
-| 5 | test_graph_flow.py | FakeLLM 注入：五阶段顺序、追问路径、结束指令（<60% 拒绝）、**checkpoint 续面**（resume 后状态一致）、**决策回放事件流**（逐轮 ask/judge/followup/advance 齐全、轮次号正确、换题原因留痕） |
-| 6 | test_api.py | httpx：创建/消息 SSE 事件序/报告/历史/**回放接口**（未结束可查、他人场次 404、未登录 401） |
-| 7 | test_observability.py | Langfuse 接线（注入 InMemorySpanExporter 离线跑）：一次面试一个 trace（多轮 resume 同 trace_id、不同场次不同）、generation 挂在轮次 span 下、无 key 时零开销（不构造客户端 + LLM 走原生 SDK） |
-| 8 | test_capacity / test_bank_query / test_bank_api（P1-M6） | 容量：配额 vs 直供的差集、自适应基准 = L1、`ok` 与不足明细互斥；浏览：分页稳定（同序不重不漏）、分面只计 enabled、来源按主源排序；接口：四筛选 + 关键词双模式（browse 有 total / search 无）、页码越界、`counts` 解析（夹紧去重升序）、未登录 401 |
-| 9 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）+ 阶段 3 部署环境复测；FR-21 的「按场次可查 trace」为**云端人工核对**（跑 smoke 抄 trace_id 查控制台） |
-| 10 | test_retrieval_metrics / test_golden / test_retrieve_pool / test_label_review（P1-M12） | 指标口径（分级增益 `2^g−1`、二值相关 `≥1`、退化输入返回 0 而不抛错）；golden 校验（id 重复 / scene 白名单 / filters 未知维度 / grade 越界 / **没有任何相关项的 query**）；池构建（按上限截断、并集保序去重、池比单变体深）；复核产物（「最该看的行」只收「✗0 排进前 5」）。**真栈基线不进 pytest**（要真 Qdrant/嵌入/rerank），由 `scripts/eval_retrieval_run.py` 显式跑 |
-| 11 | test_judge_metrics / test_judge_golden / test_judge_messages / test_judge_run / test_personas / test_corpus_samples（P1-M12 会话 2） | 指标口径（样本标准差、Jaccard 空集取 1、无关键点时空值而非 0、三档取中位数）；golden 校验（臂与类型绑定、维度键必须与类型维度表一致、**同组题干必须一致**、档位重复/缺档）；**评测消息与生产节点逐字一致**（`judge_messages` 单一来源 + 生产温度常量）；运行层（`bool` 不混进维度表、重试一次、失败记 failure 不静默、有效运行不足的样本被排除并亮出来）；persona（不喂关键点、未知档位报错）；真库取样（关键点优先题库原表、生成题退回并集、按类型过滤、老场次 NULL ≡ tech）。**真栈基线不进 pytest**，由 `scripts/eval_judge_run.py` 显式跑 |
+**分层**：`tests/unit/`（纯逻辑 + FakeLLM 注入跑整图，无密钥无网络）→ `tests/integration/`（httpx ASGITransport + 临时库）→ 三个 smoke（真链路，手动跑）→ `evals/`（离线评测，显式命令，**不进 pytest**，见 §4.13）。
+
+| 层 | 断言要点 |
+| --- | --- |
+| 规则（TDD 主战场） | `test_follow_up_decision`：全部转移分支 + 各类上限 + 补救池；`test_difficulty`：升降档 / 清零 / 封顶保底；`test_quota`：largest remainder；`test_capacity`：配额 vs 直供差集、自适应基准 = L1；`test_curation`：改判表未命中条目不静默 |
+| 图与状态 | `test_graph_flow`（FakeLLM）：阶段顺序、追问路径、结束门槛（<60% 拒绝）、**checkpoint 续面**、回放事件流逐轮齐全；state 序列化边界（`json.dumps(payload)` 钉死标量降级） |
+| API | `test_api`（httpx）：SSE 事件序、报告、历史、回放（未结束可查 / 他人场次 404 / 未登录 401）、**重发不重复计分**（图停在失败节点，resume = 重跑该节点） |
+| 可观测 | `test_observability`（注入 InMemorySpanExporter 离线跑）：一场一 trace（多轮 resume 同 trace_id）、generation 归父、无 key 零开销 |
+| 数据与语料 | `test_parse_md` / `test_parse_open` / `test_ingest_sqlite`：老库迁移幂等、多源明细、全量同步删除、**私有题不被管道重跑删除** |
+| 前端（vitest） | 只覆盖 lib 纯逻辑：SSE 分帧、打字机 FIFO、恢复两路决策、题库筛选分页与容量判据、档案整形（刻度 / 窗口 / 洞察）、文件名与展示格式化 |
+| 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
+| 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
+
+**跑法**：`cd backend && uv run pytest -q`（606 个，不需要任何密钥）· `cd frontend && pnpm test`（169 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 ## 11. 风险注意点（实现时强制）
 
@@ -664,28 +649,30 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
-- 2026-10-02 P1 收尾专项 · 会话 2（README 门面重写 + 文档系统性核对）：README 瘦身为门面（定位 / 架构图 / 核心亮点 / 快速开始 / 技术栈 / 精简目录 / 验证命令 / 进度表），**机制移本节、操作留 README**。本节同步：§2 目录树与依赖行对齐实际（`evals/`、`scripts/eval_*`、`templates/`、`report_pdf.py`、`security.py`、六表、`data/eval`、`data/raw`；前端依赖补 `tw-animate-css` / `lucide-react` 等）；**§9 由 8 条 bullet 扩写为前端规格的完整家**——页面清单（九页）、登录与路由守卫（FR-23）、面试类型切换（M11）、私有题库页（M7）、面试页子口径（SSE 走 POST / 打字机在前端 / 刷新恢复与错误路径 / 输入体验）、报告页三入口（回放 / PDF / 推荐卡）与逐题复盘卡、学习推荐页、能力档案页、设计令牌归一（收尾会话 1：`--success`、中文回退字体栈、reduced-motion 兜底、状态态与卡片材质唯一档位、六个共享件）；§4.9 补「语义色与主蓝与前端令牌同源」；§4.11 前端形态更新为 M10.5 口径（见下条）。文档核对同时修掉：README 测试计数（vitest 166 → 169）、API 端点前缀统一带 `/api`、密钥清单补 `LANGFUSE_*`、`frontend/README.md` 的 create-next-app 样板残留改为指向根 README、PRD §5 页面表补登录页与学习推荐页、PRD §8.1 的收尾专项口径由「报告页视觉升级」改为实际三件事
-- 2026-10-01 P1-M10.5（能力档案前端三条改版）：§4.11 前端形态重写——知识域由「每域一张迷你曲线」改**热力图**（X 轴刻度不对齐、无法横向比较的问题由此消失；CSS grid 实现、缺场灰格「未考」、色阶固定锚定 1–5 与文色翻转死区）、五维由 5 张小图改**场均 / 最近对照表**（真数据上同涨同跌、差异只在水平）、总分曲线横轴改「一天一个标签」（按日期组抽稀）；补卡片顺序（认知路径）、**三视图三种窗口策略**（曲线全量 / 热力图最近 7 场 / 短板变化最近 5 场，含列头取全量标签、升序切尾部再倒序两个坑）与洞察一行的口径。后端零改动
-- 2026-10-01 P1-M12 会话 2（评估体系 · 评分一致性 + 门禁）：§4.13 新增「评分一致性」「门禁」两节（三条线、生产 prompt 单一来源、golden 三臂与分层抽样、期望分=独立标注非实得、覆盖率两口径的理由、温度对照的边界、基线数字与局限、门禁阈值来自两次基线的自身波动、完全一致率不进门的理由、哈希纪律）+ §10 测试行 11 + §11 风险点 9/10（门禁阈值纪律、单轮回答形态的局限）。**选型修正**：原定 DeepEval 改**自研 harness**——它没有现成的一致性/准确性 metric，本会话要测的三样都得自研，引包只买到 TestCase/assert 骨架 + 重依赖树（PRD §8.1 有专节，规划报告按历史记录保留原文 + 顶部修订注）。新增 `app/graph/nodes/judge.py::judge_messages` + `JUDGE_TEMPERATURE`（**评测与生产共用同一入口**，单测钉死逐字一致）、`evals/judge_metrics.py`（一致性/准确性/单调性纯函数）、`evals/judge_golden.py`（校验：臂与类型绑定、维度键、**同组题干必须一致**）、`evals/judge_run.py`（生产 prompt 跑 K 次 + 失败不静默 + 原始运行落盘可复算）、`evals/personas.py`（三档 persona，从 /tmp 脚本归档，硬约束=不喂关键点）、`evals/corpus.py::answer_samples`（真库取样，关键点优先题库原表）；`scripts/eval_judge_golden.py` / `eval_judge_run.py` / `eval_judge_gate.py`。**基线**（37 条 golden / K=5 / 生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3**；**温度对照**（实验，未改生产）：温度 0 的 σ̄ 0.063（≈0.3 的一半）、准确性持平；**指标自身的重复性**（两次基线）：σ̄ ±0.013 · MAE ±0.002 · 偏置 ±0.022。**实测发现**：评分官会截断/改写长的关键点（7/185 与 3/185 次），故覆盖率补「比例误差」口径（集合口径会被改写低估）；真库 6 道启用行为题 `key_points` 为空（M11 遗留）。测试 552 → 606 passed
-- 2026-10-01 P1-M12 会话 1（评估体系 · 检索评估）：新增 §4.13（离线评测包的定位与边界、四变体与**池内口径**、分级标注 `2^g−1` 与 Precision 取代 MRR 的理由、噪声地板、golden 构建与人工复核口径、RAGAS 按**单条漏点**打分的理由、dev 组三条依赖钉法）+ §10 测试行 + §11 风险点 8（池内口径与哈希不同不可比）。新增 `backend/evals/`（`retrieval_metrics` 指标纯函数 / `golden` 校验 / `retrieve` 四变体 / `label_relevance` 判级与复核产物 / `corpus` 真库报告只读）+ `scripts/eval_build_golden.py`、`scripts/eval_retrieval_run.py`、`scripts/eval_ragas_context.py`；`recommend.build_query_items` 返回值补 `missed` 字段（拼进 query 的漏点原文——离线评测按单条漏点打分要用，切字符串不可靠：187 条漏点里有 4 条自身含「；」）。**真栈基线**（31 条 query / 1972 条标注 / golden sha256 `1e40a8d6e84a`）：dense NDCG@5 0.787 · sparse 0.749 · **rrf 0.783** · hybrid（生产）0.746；**rerank 净贡献按场景分叉**——bank_search（短查询，18 条）**+0.045**、missed_point（长查询：域名标签 + 多个漏点拼接，13 条）**−0.152**；域维度上 tool-use（0.634）与 agent-architecture（0.676）是 rerank 伤得最重的两处。**RAGAS ContextRelevance（按单条漏点，13 组 / 67 条漏点）**：总体 0.504，tool-use 0.217 与 agent-architecture 0.208 垫底——与 NDCG 的域排序**互相印证**（两条独立指标指向同一处短板）。噪声地板：同 golden 连跑两次 dense/sparse 逐位一致、rrf ±0.003、hybrid ±0.005。测试 510 → 552 passed
-- 2026-10-01 P1-M11（行为面 / HR 面 FR-22）：新增 §4.12（会话类型与 position 正交、单 BEHAVIORAL 段流程、行为题整池检索（不限难度）、题量上限 10、行为面五维与第 3 维对齐、**deepen-only 追问**（key_points 是讲述结构不是知识点）、聚合（域为空、短板改维度）、报告/PDF/推荐/档案的四处分派、`ASKABLE_DOMAINS`「可出题但不属于技术配额」、`enable_behavioral.py` 的 Qdrant 逐点核对验收、不做清单）；§4.1 补 `Phase.BEHAVIORAL` / `BaseScore`+`BehavioralScoreItem` / `interview_type`；§4.3 补 `explain_decision(deepen_only=)` 与 `Reason.DEEPEN_LIMIT`；§4.11 补**行为面排除（过滤字段 = 报告 payload 的 `interview_type`）**与响应新增 `excluded`；§7 创建接口补 `interview_type`（行为面 >10 题 422）、推荐与档案契约同步；§8 interviews 补 `interview_type` 列（老库补列 NULL ≡ tech，不回填）。新增 `data/scripts/enable_behavioral.py`（幂等：`finalize_status` 同源判定 + ingest 同源点构造 + **写后从 Qdrant 读回逐点核对**；真库已执行：behavioral enabled 14 题 / Qdrant 1099 点）。测试 470 → 506 passed
-- 2026-09-30 P1-M10（能力档案 FR-19）：新增 §4.11（数据源 = 报告 payload、取数 `reports ⋈ interviews` 升序、**以 reports 表为准不按 status 过滤**、总分口径单一来源 `aggregate.overall_score`、域洞断线不补零、短板三态 `new/persistent/resolved` 与首场不产出、响应不含图表序列的理由、端点无场次参数故无 404 面、前端三形态与小倍图选型）与 §7 的 `/api/profile` 契约；§7 鉴权范围加 `/api/profile`。**总分口径收敛（D1）**：报告 payload 新增 `overall`（五维等权均值），报告页 / PDF / 档案共用同一个数——此前报告页与 PDF 各写了一遍同一公式，档案会是第三处。新增 `app/tools/profile.py`（`build_profile` 纯函数）、`app/api/profile.py`、`db.list_reports`、`service.get_profile`；前端 `lib/profile.ts`（刻度 / 断点 / 变化文案纯逻辑，vitest）、`components/profile-charts.tsx`（总分主曲线 + 小倍图）、`components/profile-client.tsx`、`/profile` 页与导航转正（**五项导航全部就绪**）；`report-charts` 的 `ChartFrame`/`tooltipStyles` 改为导出复用（不复制一套图表外观）
-- 2026-09-30 项目叙事题改判 + 入库护栏（M9 实测整改）：§6.6 新增**人工改判表**口径（`data/curation/question_overrides.json`：逐题 `domain`/`status` + 必填 `reason`，key 是题干内容哈希故**未命中必报**，改判在零回归校验之后执行，已落库的库用 `apply_overrides.py` 补齐）；`ingest.py` 的 `DEFAULT_IN` 改指**合并后**的富化产物（原指个人题库单源的旧产物——全量同步语义下裸跑一次会删掉 1229 道开源题），并新增**入库护栏**（题量相差 >50% 直接停，`--force` 越过）。新增 `bank.load_overrides/apply_overrides`、`data/scripts/apply_overrides.py`、`test_curation.py` 与护栏用例
-- 2026-09-30 P1-M9（学习推荐 FR-20）：新增 §4.10（数据源 = 报告 payload、查询 = 域标签 + 漏点、排除已问题且条数取 `k + 已问数`、多域并发保序、`status` 三态不静默隐藏、卡片带来源四要素、两处展示与场次承接）与 §7 的 `/recommendations` 契约。新增 `app/tools/recommend.py`（`build_query_items` 纯函数 + `recommend_for_report` 编排，`searcher`/`db_path` 可注入）；`question_search.fetch_by_ids` 多 select 一列 `source`（答案主源——来源列表的首位标签不能靠字典序猜）。前端 `lib/learn.ts`（默认场次承接/空分组文案纯逻辑）+ `components/recommend-groups.tsx`（报告页与学习页共用，含展开交互）+ `/learn` 页与导航转正；报告页新增「针对性练习推荐」卡并带 `?interview=<id>` 跳学习页
-- 2026-09-30 P1-M8（PDF 导出 FR-18）：新增 §4.9（路线选型与服务端渲染的理由、payload 单一来源、雷达 SVG 两条引擎约束、东八区时间、线程池与不落盘、autoescape、容器与 macOS 宿主的运行环境、验收口径）；§7 补 `/report.pdf` 契约（下载头 RFC 5987、404 同报告端点）；§2 目录树补 `report_pdf.py` 与 `templates/`。新增 `app/report_pdf.py`（`radar_svg` / `render_report_pdf` / `content_disposition`；`_ensure_native_libs` 解 macOS 宿主 pango 搜索路径）与 `app/templates/report.html.j2`；五维中文标签上移到 `aggregate.DIMENSION_LABELS`（`FIVE_DIMS` 由它派生，PDF 与前端展示同源）。前端 `lib/download.ts`（文件名纯逻辑）+ 报告页「导出 PDF」按钮。**顺带修掉一条 M7 遗留**：smoke_api 的三处题库对账按全表计数，M7 起接口只认公共题（`user_id IS NULL`），真库一有私有题就误报「分面计数与题库总数不符」——抽出 `_PUBLIC_ENABLED` 谓词统一带上。**浏览器验收报出字体事故并当日修复**（用户：「PDF 在浏览器打开乱码、WPS 正常」）：字体栈只写在 `body` 上，`@page` 页边距框与 SVG `<text>` 不继承它 → 雷达标签与页眉页脚落到系统字体（macOS 苹方/宋体），而 macOS PDFKit 系渲染不了 weasyprint 嵌的苹方子集 → 整片缺字；Chrome/WPS 回退到系统同名字体故看不出。修法见 §4.9（`FONT_STACK` 单一来源 + 三处声明 + 模板 `| safe`），回归测试 `test_PDF只用随镜像分发的字体_不混进本机字体` 反向验证过。**修复后用户在浏览器复验通过（2026-09-30），P1-M8 验收闭环**
-- 2026-09-29 P1-M6（题库页 FR-12 + 容量校验 FR-14）：新增 `tools/bank_query.py`（浏览查询层：SQL 分页 + 四维分面计数 + 来源明细挂载 + 供给统计）与 `api/bank.py`（三端点：`/questions` 双模式、`/facets`、`/capacity`）；§4.3 新增 capacity.py 口径 + `difficulty_locked` 分工（**落库 `interviews.difficulty` 存用户的选择、`state.difficulty` 存当前档位**）；§5.2 补筛选下推两路 prefetch 与 `query_filter` 参数名；§7 补三端点契约 + 创建接口的 `difficulty` 入参 + 题库端点的 401/404 分工；§9 补导航 IA（**顶栏 tab 定调**、未做页面占位不发出 404 链接）、题库页与容量禁用口径（不足要写明缺在哪、拉取失败一律不禁用）；§10 补 M6 测试行。前端 `lib/bank.ts`（筛选/分页/容量纯逻辑 15 例）+ `/bank` 页 + `MainNav`。**验收反馈两处**（2026-09-29 用户）：① 下拉与 chips **不带计数**（数字塞进选项显脏，条数只在结果区给总数）；② 难度分面**按档位 L1→L3 排**而非计数序（有序维度，L2 计数最多也不该顶到 L1 前）。**真库事实**（只读核对）：enabled 1095 题（L1 154 / L2 873 / L3 68），12 个「难度 × 题量」组合里**只有 L3 × 15 直供不足**（规划与推理范式 需 2 有 1，L3 × 10 需 1 有 1 恰好通过）——禁用态在真库上真实可见，smoke 用真实题库断言这一点并逐条复核不足明细。322 → 350 passed；前端 vitest 89 → 104；smoke_api 补题库三端点与 L3 锁定场次（对账直查 SQL：分面计数、浏览总数、分页不重不漏、主源排首位、license 齐、不足明细）
-- 2026-09-29 P1-M5 会话 2（开源语料扩充，四源接入）：新增 §6.5（`parse_open.py` 四源 adapter——形态/题量/解析要点、未采项逐项进报告、占位答案判据）与 §6.6（`combine.py` 合并 + 个人题库零回归校验 + 近似重复只报不并）；§1 目录树补 `bank`/`parse_open`/`combine`。四源 license 逐仓核对（均仓库自带 MIT）：ai-agents-from-zero 89 / FAQ_Of_LLM_Interview 71 / ai-agent-interview-guide 261 / llm-interview-guide 809 = 1230 条来源明细；题库 342 → 1571 题（enabled 1095），`question_sources` 1572 行，Qdrant 重建 1095 点（dense+sparse）。新增 `test_parse_open.py` 与 `bank` 共享层用例（实质答案判据、聚合缺省不为空串、括号答案标记），302 → 322 passed；smoke_graph + smoke_api 零回归
-- 2026-09-28 P1-M5 会话 1（`question_sources` 拆表）：§8 的 questions 表去掉 license/url、新增 `question_sources`（PK `(question_id, source)`）；§8.1 由「接入新源时怎么扩」改写为已落地口径（`source_rank`/`_rank` 主源裁决、`merge_sources` 每源留最优、列探测迁移、来源表整表重建、对上层透明）；§6.1 解析产物补 `sources` 明细与主源字段语义。新增 `backend/tests/unit/test_ingest_sqlite.py`（老库迁移与幂等、多源明细、全量同步删除），`test_parse_md.py` 补主源裁决与同源多记录用例（302 passed）。老库迁移在副本上逐字段对账后落真库：342 题零回归，`source_detail`（261 条）为老 schema 从未落库、本次顺带补回
-- 2026-09-27 三条小修（P1-M4.7 后续，均为真链路暴露）：① §4.4 项目深挖题措辞去重（喂回已问题目原文 + 两层模板同禁复述背景）；② §7 会话响应新增 `stalled` 与前端两路处置（重发 / 只重建列表），`error` 事件补「不能靠前端猜死活」的口径与 `engine_stalled` 的两态判据；③ 成本回读口径与 Langfuse 模型价目核对（代码无改动，见踩坑记录）
-- 2026-09-27 错误路径小修（P1-M4.7 后续）：§7 的 `error` 事件补口语义——流内错误时 HTTP 仍是 200、场次仍有效、**图停在失败节点上**，故客户端「重试」= 重发同一文本从断点续跑（已入账的回答不重复计分）；前端此前只 `setError` 不记 `failedInput` → 横幅没有重试出口、用户只能手动重打发一条重复消息。新增集成测试钉死「重发不重复计分」这一承重语义
-- 2026-09-27 P1-M4.7-D（面试官人味层 + 技术题同域成块）：新增 §4.8（六类黏合点分两路生成——高频短衔接走 `rules/transition.py` 模板零 LLM，低频长文开场白/结束陈词走 LLM 每场 2 次；衔接语与新题同条消息、**答错缓冲独立成条**（回应上一题，prepend 会时序错位）；域标签插值按中文排版补空格；结束陈词模板无输入 + 四条红线含**禁止虚构后续流程**（真链路实测踩到「后续会有同事联系你」）、陈词调用失败降级跳过**不连坐报告**；重连语走 `?reconnect=true` 只附响应不落库）；§4.3 quota 补同域成块粘性（`pick_domain` 当前域配额未尽即续问，计数取**已答题**——`remaining_quota` 为当前题 +1 会提前切域；`allocate_quota` 未动，块序与域分布对同一 N 确定 → 跨场次可比性不受影响）；§4.4 补出题顺序；§7 补 reconnect 参数；smoke 加 `SMOKE_QUESTION_COUNT`、重连核对、同域成块断言 + 块内难度曲线打印、结束陈词红线自查，并**补印此前被静默忽略的 SSE error 事件**（实测有一轮因此「答了没反应」看不出来）
-- 2026-09-26 P1-M4.6（C 阶段重排，项目深挖前置）：§4.3 advance 重写——PROJECT 答满 `project_count(question_count)`（min(3, max(2, ceil(N/3)), N−1)，保底 1 道技术题）→ TECH_BASE，答满 question_count → CLOSING；quota 技术轮数改 `question_count − project_count`；§4.1/§4.4 补项目深挖前置口径（首题与 PROJECT 阶段走 `_generate_scenario`：按轮出题、难度随 `state.difficulty`、domain="project" 不参与域统计保留）；展示标签「场景题」→「项目深挖」（question_type 值 scenario 不变，phase 枚举不变）；图边一条不动
-- 2026-09-26 P1-M4.5-R1（追问密度修复，实测 3 题 10 次追问）：§4.3 规则重写——优先级 澄清（不占池）→ 深挖（达标，不占池）→ 遗漏（占池）→ 换题；`asked_key_points` 同一漏点只问一次（覆盖率跳变不重复追问）；全场补救池 `remedy_budget(N)=max(3, ceil(N×0.7))`（5 题 4 / 10 题 7 / 15 题 11），`remedy_used_total` 从已答题计数派生，澄清/深挖豁免、skipped 自然不计；新 reason `remedy_limit` / `missing_asked`，`TOTAL_LIMIT` 退役仅留旧事件映射；§4.4 补遗漏追问去重口径；§4.5 judge 输入改累计回答（先合并再评分，覆盖率允许下降不锁单调）
-- 2026-09-26 P1-M4.5（A 出题接上下文 + B 深挖追问）：§4.3 `follow_up` 新增 DEEPEN 分支（`Decision.DEEPEN` / `Reason.DEEPEN_OK` / `deepen_limit=1`；优先级 澄清→遗漏→深挖；深挖要求无 error_flag，达标但深挖用尽仍报 `COVERAGE_OK`——旧原因值语义不漂移）；§4.4 出题接上下文（profile 进口吻层与生成模板 + 三条防漂移约束：question_id 不变 / 评分用原 key_points / prompt 禁改考察点）与深挖文案两路来源（题库元数据直发零 LLM / LLM 现场生成）；§4.1 `QuestionRecord` 补 `follow_ups`/`deepen_used`；§4.2 图注追问节点文案来源
-- 2026-09-26 P1-M4 会话 2（FR-21 前端决策回放页）：§9 补决策回放页（`/trace/[id]` 逐轮时间线、只映射不重算、旧场次空态、入口仅报告页）与报告页入口；前端 `lib/trace.ts` 分组与取值守卫、`constants` 三类文案映射（事件/决策/原因，**原因标签不含阈值数字**，阈值只在后端 rules）。会话 2 收尾：评分小节补漏掉的关键点与评分官点评（`judgeEvidence` 守卫），`coverage_ok` 文案改「覆盖率达标」（原「关键点覆盖完整」与 70–100% 达标区间不符）；`lib/http.ts` 错误文案 CJK 守卫（框架英文兜底不端给用户）
-- 2026-09-25 P1-M4 会话 1（FR-21 后端 + Langfuse 接入）：新增 §4.7（`trace_log` 事件模型 / `/trace` 接口 / Langfuse 接入口径与验证口径）；§4.1 补 `trace_log` 字段；§4.3 `follow_up` 改 `explain_decision` 决策与原因同源、`advance` 补 `end_quota` 门槛单一来源；§7 补回放接口；§2 补 `observability.py` 与 langfuse 依赖；§10/§11 补回放与可观测的测试与风险点
-- 2026-09-24 P1-M3 会话 2（hybrid_search RRF + SiliconFlow rerank）：§5.1 补嵌入服务契约（请求/响应 schema、sparse 格式、批量上限、失败返回）；新增 §5.2 混合检索契约
-- 2026-09-23 T8-R1（与 P1-M1 同批）：`chat_history` 取消 24 条截断（§4.1 字段语义 + §4.6 口径 + §11 风险点 6）——截断会让 SSE 长度差分失效、回放丢开场；补单测（state / sse）与整场 API 回归用例
-- 2026-09-23 P1-M1（FR-25 复盘与回放）落地：§4.6 补实现口径（追问拼接标记、score 转标量、参考答案查询、报告走 v4-pro）、§4.1 answer 字段语义注释；前端复盘卡与只读回放（报告页 ↔ 面试页互链），历史 payload 兜底
-- 2026-09-23 文档减负：§2 目录树对齐实际代码结构；PDF 解析因两份 PDF 合规否决、未实现（原 §6.3 已删）；实施顺序随 T1–T7b 全部完成而删除（原 §11 移除，风险注意点顺延为 §11）
-- 2026-09-23 新增 FR-25 面试复盘与回放（阶段 2）：§4.6 复盘扩展口径、§9 复盘卡与只读回放
+> **本表只作索引**：一行一次会话，记「哪次改动动了本文档哪些节」。决策理由、实测数据与踩坑过程在 [CLAUDE.md](../CLAUDE.md) 的 changelog（全量、最详细）；正文节内的 `P1-Mx` 标记可与此表对上。
+
+| 日期 | 会话 | 本文档改动 |
+| --- | --- | --- |
+| 2026-10-02 | **文档减负**（为阶段 3 / 二期准备） | §12 由逐条详述改**一行一条索引**（11.7k → 2k 字符）· §1 由「阶段 1 范围」改为「现状 + 读法 + 下一步」· §4.9 / §4.13 / §10 与 §4.4 的叙事压成结论 · **全文 6.9 万 → 5.7 万字符**（章节号一律未动——代码注释引用 60+ 处） |
+| 2026-10-02 | 收尾专项 ②③ | §2 树与依赖行对齐实际 · §9 扩写为前端规格完整家 · §4.11 更新为 M10.5 口径 · §4.9 补配色同源 |
+| 2026-10-02 | 收尾专项 ①（视觉大扫除） | §9 设计令牌段（`--success` / 中文回退字体栈 / 状态态档位 / 共享件） |
+| 2026-10-01 | P1-M10.5 | §4.11 前端三形态与视图口径重写（热力图 / 对照表 / 窗口策略 / 洞察） |
+| 2026-10-01 | P1-M12 会话 2 | §4.13 补「评分一致性」「门禁」「依赖」 · §10 测试行 · §11 风险 9/10 |
+| 2026-10-01 | P1-M12 会话 1 | 新增 §4.13（离线评估：四变体 / 池内口径 / 噪声地板 / RAGAS） · §11 风险 8 |
+| 2026-10-01 | P1-M11 | 新增 §4.12（行为面） · §4.1 补 `interview_type` / `BehavioralScoreItem` · §4.3 补 `deepen_only` · §4.11 补排除口径 · §7/§8 同步 |
+| 2026-09-30 | P1-M10 | 新增 §4.11 · §7 补 `/api/profile` · §4.6 补总分口径 |
+| 2026-09-30 | 项目叙事题改判 + 入库护栏 | §6.6 补人工改判表与入库护栏口径 |
+| 2026-09-30 | P1-M9 | 新增 §4.10 · §7 补 `/recommendations` |
+| 2026-09-30 | P1-M8 | 新增 §4.9 · §7 补 `/report.pdf` · §2 补 `report_pdf.py` 与 `templates/` |
+| 2026-09-29 | P1-M6 | §4.3 补 capacity.py 与 `difficulty_locked` · §5.2 补 filters 下推（`query_filter`） · §7 补题库三端点 · §9 补导航 IA 与容量口径 |
+| 2026-09-29 | P1-M5 会话 2 | 新增 §6.5（四源适配）/ §6.6（合并与零回归校验） · §1 补 `bank` 等 |
+| 2026-09-28 | P1-M5 会话 1 | §8 拆出 `question_sources` · §8.1 改写为已落地口径 · §6.1 补 `sources` 字段 |
+| 2026-09-27 | M4.7 三条小修 | §4.4 项目题措辞去重 · §7 补 `stalled` 与 error 事件语义 |
+| 2026-09-27 | P1-M4.7-D | 新增 §4.8（人味层） · §4.3 补 quota 同域成块 · §7 补 reconnect |
+| 2026-09-26 | P1-M4.6-C | §4.3 advance 重写（项目深挖前置 + `project_count`） · §4.1/§4.4 同步 |
+| 2026-09-26 | P1-M4.5-R1 | §4.3 追问规则重写（补救池 / 漏点去重） · §4.5 评分改累计回答 |
+| 2026-09-26 | P1-M4.5 | §4.3 补 DEEPEN 分支 · §4.4 出题接上下文（三条防漂移）与深挖文案两路 |
+| 2026-09-26 | P1-M4 会话 2 | §9 补决策回放页 |
+| 2026-09-25 | P1-M4 会话 1 | 新增 §4.7（回放事件流 / Langfuse） · §4.1 补 `trace_log` · §4.3 补 `explain_decision` |
+| 2026-09-24 | P1-M3 会话 2 | §5.1 补嵌入服务契约 · 新增 §5.2（混合检索） |
+| 2026-09-23 及更早 | T1–T7b / P1-M1 / T8-R1 / 文档减负 | §2 树对齐实际 · §4.6 复盘口径 · §11 顺延重编号 · §6.3 PDF 解析删除（合规否决）等，详见 CLAUDE.md |
