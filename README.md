@@ -20,6 +20,9 @@
 **技术问答**（同域成块、难度自适应、覆盖率不足追问 / 答错澄清）→ **反问** → **报告**（五维雷达 + 逐题复盘 + 短板域 + 导出 PDF + 决策回放）
 → **学习推荐**（对着短板推题）与**能力档案**（多场曲线 / 热力图 / 短板变化）。
 
+全程可切**语音通道**：开「语音模式」后面试官消息自动播报（edge-tts），点「语音作答」说话即以
+豆包流式识别实时转写、**改完再发送**——引擎与模态解耦，文字/语音随时切换（语音不可用自动降级回文字）。
+
 本仓库暂无截图与录屏；拿到代码 3 分钟可自己跑出来（见「快速开始」）。
 
 **架构**
@@ -35,6 +38,9 @@ flowchart LR
   A -.->|"出题 / 评分 / 报告"| DS["DeepSeek"]
   A -.->|"rerank"| SF["SiliconFlow"]
   A -.->|"trace 与成本"| LF["Langfuse"]
+  B -.->|"录音 PCM（WS 中继）"| A
+  A <-.->|"流式 ASR"| VC["豆包流式语音识别"]
+  A -.->|"TTS 播报"| ET["edge-tts"]
 ```
 
 ## 核心亮点
@@ -49,6 +55,10 @@ flowchart LR
   总分口径后端单一来源，报告页、PDF、档案显示的是同一个数。→ [SPEC §4.10](docs/SPEC.md) / [§4.11](docs/SPEC.md)
 - **质量是量出来的，不是感觉出来的**：检索侧四变体离线基线（NDCG / RAGAS，噪声地板先量后用）；
   评分侧自研一致性 harness + **门禁**（σ̄ / MAE 阈值，超限非零退出）。→ [SPEC §4.13](docs/SPEC.md)
+- **语音只是加了一条通道，不是改了一个系统**：录音 → 流式 ASR → 同一引擎 → TTS 播报，
+  图 / 状态机 / 落库 / SSE 事件表**一条未动**；音频不落盘不落库（内存转发即弃），
+  转写文本**发送前可编辑**（ASR 错字不让评分官背锅）；ASR / TTS 任一不可用都降级回文字。
+  → [SPEC §7 语音通道](docs/SPEC.md)
 - **语料合规是红线**：开源语料白名单 + 每条带 `source/license/url`；个人题库与私有上传只本地使用，
   **派生文本同样不入 git**（提交前跑 `check_redline.py` 机械反查，见「语料管道与合规」）。
 
@@ -57,7 +67,8 @@ flowchart LR
 ### 一键起（演示 / 验收，Docker）
 
 ```bash
-cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / JWT_SECRET（Langfuse 可选）
+cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / JWT_SECRET（Langfuse 与语音 key 可选：
+                              #   不填 VOLCANO_SPEECH_API_KEY = 语音通道整体降级为文字，其余功能零影响）
 docker compose up -d --build  # → http://localhost:8080
 ```
 
@@ -96,6 +107,7 @@ LANGFUSE_SECRET_KEY=
 | 后端 | FastAPI + uvicorn + sse-starlette | Python 生态 + SSE 原生支持 |
 | 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | App Router + AI 生态组件最全 |
 | 可观测 | **Langfuse**（云形态） | 一次面试一个 trace：LLM 调用/成本按场次可查，面试过程可解释 |
+| 语音 | **豆包流式识别**（ASR）+ **edge-tts**（TTS） | 交互命门用付费流式（低延迟部分转写），播报用免费够用的；都只在一条独立通道上，挂了降级回文字 |
 | 业务库 | SQLite（阶段 1）→ PostgreSQL | checkpointer 同步升级 |
 
 **设计原则**：确定性逻辑（阶段推进、轮数上限、追问决策、配额）全部用代码写死——可解释、可单测、UI 可回放；
@@ -161,15 +173,16 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 
 ```bash
 cd backend
-uv run pytest -q                              # 670 个测试（不需要任何密钥）
+uv run pytest -q                              # 696 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
 SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块、难度曲线与结束陈词
+uv run python scripts/smoke_voice.py          # 语音通道：TTS 合成 → 喂回 ASR → 转写与原文对齐（需语音 key）
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 194 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 209 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -218,6 +231,7 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 | P2-M2 | 检索与推荐修复（长查询按形态跳过 rerank，missed_point NDCG@5 0.660 → 0.813；学习建议域结构化） |
 | P2-M3 | 前端小修包（窄屏顶栏换行；能力档案补「报告缺失场次」说明与空态第三态） |
 | P2-M4 | 模态层 + 真 token 流（SSE 新增 `delta_start`/`delta_chunk`，`delta` 语义不变；`chat()` 单一实现改流式聚合） |
+| P2-M5 | 语音面试（FR-24）：`WS /api/asr` 中继豆包流式识别 + `POST /api/tts`（edge-tts）；转写可编辑、语音/文字双通道随时切 |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 

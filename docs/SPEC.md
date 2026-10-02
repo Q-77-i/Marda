@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步（阶段 3 → 二期）**：服务器部署与稳定性（限流/重试/熔断/降级链）、PG 迁移（业务库 + checkpointer 同步）、语音面试（引擎与模态解耦）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步（阶段 3 → 二期）**：视觉通道（FR-26，代码截图先行）、摄像头 UI 模拟（FR-27）、服务器部署与稳定性（限流/重试/熔断/降级链）、PG 迁移（业务库 + checkpointer 同步）。**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -26,22 +26,23 @@ marda/
 │   │   ├── llm.py                # DeepSeek 统一封装（openai SDK + base_url）
 │   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级，P1-M4）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
-│   │   ├── api/                  # interviews / auth / bank / bank_private / profile（SSE 流在 interviews）
+│   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice（SSE 在 interviews，WS 在 voice）
 │   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接）
 │   │   ├── agents/               # prompts.py / schemas.py（出题与评分的提示词模板与结构化输出 schema）
-│   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）
+│   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）/ asr（火山 v3 二进制协议）/ tts（edge-tts，P2-M5）
 │   │   ├── templates/            # report.html.j2（PDF 模板）
 │   │   ├── report_pdf.py         # 报告 PDF 渲染（jinja2 + weasyprint + 手绘雷达 SVG，P1-M8）
 │   │   ├── security.py           # 密码哈希（scrypt）与 JWT（P1-M2）
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
 │   │   └── db.py                 # 业务库六表（questions / question_sources / users / interviews / answers / reports）
 │   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import，P1-M12）
-│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api + eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate
+│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice + eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
 │   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
 │   ├── components/               # 页面客户端组件 + 共享件（PageShell / PageHeader / EmptyState / ErrorState / StatusBanner / InlinePanel）+ ui/
-│   └── lib/                      # sse / typewriter / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens
+│   ├── public/asr-worklet.js     # 录音采集 worklet（AudioWorklet 只能加载独立文件，P2-M5）
+│   └── lib/                      # sse / typewriter / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice（音频数学与落框）/ asr-client / tts
 ├── data/
 │   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest / apply_overrides / enable_behavioral / check_redline
 │   ├── curation/                 # 人工改判表（question_overrides.json）
@@ -54,7 +55,7 @@ marda/
 └── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、pyjwt（P1-M2）、python-multipart（P1-M7 上传）、weasyprint + jinja2（P1-M8 PDF）、langfuse==4.9.1（可观测，P1-M4）、sqlite3（内置）；评测依赖（ragas 等）在 dev 组，容器 `uv sync --no-dev` 不进镜像（§4.13）
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、pyjwt（P1-M2）、python-multipart（P1-M7 上传）、weasyprint + jinja2（P1-M8 PDF）、langfuse==4.9.1（可观测，P1-M4）、edge-tts + websockets（语音，P2-M5）、sqlite3（内置）；评测依赖（ragas 等）在 dev 组，容器 `uv sync --no-dev` 不进镜像（§4.13）
 - 前端依赖：next@15、react 19、tailwindcss v4、shadcn/ui（@base-ui/react）、framer-motion、recharts、tw-animate-css、lucide-react
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：**本地 BGE-M3 独立容器**（M3 起，`backend/embedding_service/`，torch 不进 api 镜像）；SiliconFlow 只留 rerank
@@ -546,6 +547,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty`（`L1`\|`L2`\|`L3`）/ `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含 `question_id`/题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（来源明细，**主源排首位**） |
 | GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值——扩语料后新厂商/面次自动出现 |
 | GET /api/bank/capacity | `counts`（逗号分隔，默认 `5,10,15`；越界夹紧 2–20、去重升序） | `{options: [{difficulty, base, question_count, ok, shortfalls}]}`（FR-14；`shortfalls = [{domain, required, available}]`，基准档见 §4.3 capacity.py） |
+| POST /api/tts | `{text}`（1–4000 字，超长截断到 1000） | `audio/mpeg` 流（edge-tts 分片透传，P2-M5）；首块先取出来做错误映射 → 失败 502 + 中文文案；空白文本 422；未登录 401 |
+| WS /api/asr | 上行：二进制 = PCM 片段；文本 = `{"type":"stop"}` | 下行 JSON：`{type: partial\|final\|error, text, message?}`。**浏览器 WS 不能带请求头 → token 走 query**；失效一律 `close(4401)`。详见下「语音通道」 |
 
 **SSE 事件**（`sse-starlette` EventSourceResponse；POST 由前端 fetch 流解析）：
 
@@ -558,7 +561,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | question | `{index, question_id, domain, difficulty}` | 新题提示（只在新题时发一次：追问/评分重传同题不发；生成题无 question_id 不发） |
 | done | `{interview_id, report_ready}` | 面试结束 |
 | error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限）：**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义）。**流式下多一条口径**：错误时未收敛到终稿的气泡按「从未落 checkpoint」丢弃（节点抛错则状态不提交），重试会重新流一遍 |
-| asr_partial / tts_chunk | —（M5 实现） | **预留**（P2-M4 登记，M5 语音用）：名字先占好，前端分发层对未注册事件名静默丢弃（`lib/api.test.ts` 钉死），M5 加 handler 即接上 |
+| ~~asr_partial / tts_chunk~~ | — | **未采用**（P2-M4 预留、P2-M5 决定不用）：ASR 需要双向（SSE 是单向的）、TTS 需要独立于面试流的生命周期 → M5 改走 `WS /api/asr` 与 `POST /api/tts`。名字留在表里做记录；前端分发层「未注册事件名静默丢弃」的机制本身不变（`lib/api.test.ts` 钉死） |
 
 **`stalled`（P1-M4.7 后续）**：`true` = 图卡在失败节点上（`next` 指向该节点且无中断载荷），区别于正常停在 `pause` 中断点（`next == ("pause",)` 且 tasks 带 interrupts）；已结束（`next` 为空）恒为 `false`。它是**服务端给的**判据，不是让前端从「末条消息是不是 assistant」这类外部特征反推——报告节点失败恰恰也表现为「末条是 assistant」，猜错就是面试永久卡死。
 
@@ -567,6 +570,16 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 工程要求：`stream_mode=["updates", "custom"]`（P2-M4：节点内 `get_stream_writer()` 逐块外送，走 custom 流——**状态机与图结构一条不动**，service 只把 custom 块映射成 SSE 事件名；节点在图外跑时 `get_stream_writer` 抛 `RuntimeError`，`graph/rules/stream.py` 统一吞掉退化为空操作）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
 
 **流式不变量（测试钉死）**：发出的分片拼接 == 节点落 `chat_history` 的那条消息（节点侧只经 `stream.speak()/begin()` 出口，构造上不会漂）；集成测试与 smoke 各断言一次「每条 delta_start 恰好收敛一条 delta、分片 > 1 片、拼接逐字一致」。**已知边界**：报告生成期间（报告官走 `chat_json`，v4-pro）无输出——结构化不流式，等待体验由报告页承接。
+
+### 语音通道（P2-M5 FR-24，引擎与模态解耦）
+
+音频只是另一条**与面试引擎完全无关**的通道：录音 → 转写 → 文本照常走 `POST /interviews/{id}/messages`；面试官消息 → 播报。图 / 状态机 / 落库 / SSE 事件表**一条未动**（PRD FR-24「文字/语音双通道可切换」的结构性保证）。
+
+- **ASR**：`WS /api/asr` 中继到火山豆包流式识别 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`（**v3 二进制协议**：4 字节头 + gzip JSON / gzip PCM，末帧负序号；实现 `app/tools/asr.py`，帧格式已在真服务端验证）。鉴权 `X-Api-Key` = **豆包语音控制台**签发的 key（`VOLCANO_SPEECH_API_KEY`）——**与方舟 Ark key 不通用**，探针实测过三种失败形态（401 Invalid X-Api-Key / 403 requested resource not granted / plan 路径 `acquire failed ... call ark 401`），错误文案按状态码给「该去哪解决」。音频 PCM 16k/16bit/单声道、每 100ms 一片；`partial` 是**累计文本**（前端按替换落框，不叠加）。
+- **TTS**：`POST /api/tts` → edge-tts（免费）；三档降级 = edge-tts → 浏览器 `speechSynthesis` → 纯文字。播报失败只提示一次，**不打断面试**；开麦即停播（轻量打断）。
+- **前端**：`lib/voice.ts`（降采样/Int16/WS 地址/落框规则，纯逻辑 vitest）+ `lib/asr-client.ts`（getUserMedia + AudioWorklet 采集）+ `public/asr-worklet.js`（攒 2048 帧再送主线程）+ `lib/tts.ts`（blob 播放）。**转写进输入框、发送前可编辑**（ASR 错字不能让评分官背锅）；开录时已有的草稿是底稿，转写整体替换其后那段。
+- **红线**：音频**不落盘、不落库、不写日志**，内存转发即弃；转写文本与手打文字同等对待（沿用既有 answers 落库路径）。
+- **dev 与生产的连接口径**：容器/生产走同源（nginx 加 `Upgrade`/`Connection` 头转发）；`next dev` 的 rewrites **不代理 WS upgrade**（已查实）→ 3000 端口一律直连后端 8000（`lib/voice.ts::asrUrl` 纯函数钉死，vitest 覆盖）。
 
 ## 8. 数据库（SQLite，阶段 2 仍 SQLite，PG 迁移推阶段 3）
 
@@ -623,6 +636,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
   - **流式与打字机并存（P2-M4）**：纯逻辑在 `lib/stream-render.ts`（`StreamBuffer`，vitest 覆盖）——`delta_start` 开气泡、`delta_chunk` 追加给最近一条未结算消息、`delta` 按序 FIFO 结算（**用终稿替换累积文本**：服务端会 strip 两侧空白，分片拼接可能与终稿差几个不可见字符，以终稿为准、前端不二次拼接）。**旧打字机只剩两条路**：① 没有分片的消息（旧后端 / 未来的非流式节点）走 `TypewriterQueue` 逐字吐——PRD「旧打字机兼容」的落点；② 未注册事件名静默丢弃，旧前端遇到新事件照常渲染。**未结算气泡在错误/流结束时收走**（没终稿 = 从未落 checkpoint，留着就是「看得见、刷新就没」的假消息）。创建表单的开场预览按分片累加、终稿只在无分片时追加（防同一段写两遍）。
   - **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表；网络失败、HTTP 4xx 与流内 `error` 事件（LLM 抖动等）都转中文文案 + 重试按钮，**判据由服务端 `stalled` 给**（§7），`lib/recovery.ts` 纯函数分两路处置；重试不重复插入消息。
   - **输入体验**：Enter 发送、Shift+Enter 换行（输入法「上屏回车」不误发送）；输入框随内容长高，约 40% 视口高封顶后框内滚动。
+  - **语音作答（P2-M5 FR-24）**：输入区「语音作答」= 点击开始、再点结束（120s 上限由录音时长自然约束）；录音期间**禁用发送与结束面试**（半截话不该发出去）、开麦即停播。转写实时落输入框、**不自动发送**（发送前可编辑）；一个字都没转出来给「没有听清」提示，不静默。
+  - **语音模式（顶栏开关，默认关、localStorage 记忆）**：开启后面试官消息终稿自动播报（含开场白与结束陈词），开启那一刻先播当前这道题；播报失败只提示一次并继续用文字。**麦克风权限被拒 / 服务不可用一律降级回文字**，不弹死胡同（`micErrorMessage` 按 DOMException 类型分流文案）。
 - **报告页**：Recharts 雷达图（五维）+ 知识域横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意；配色经调色板校验器明暗双模式检查）、逐题点评卡片、短板高亮、总评；**逐题复盘卡**（阶段 2 FR-25：我的回答按「【追问补充】」标记分成「首答 / 追问补充 N」不混成一大段、五维得分、关键点覆盖对比 ✓/✗、题库题参考答案折叠展示——项目深挖题无权威答案只给关键点对比；历史报告缺字段时退化为「题干 + 点评」）。三处入口：页头「决策回放」（P1-M4）、「导出 PDF」（P1-M8，文件名纯逻辑在 `lib/download.ts`）、「针对性练习推荐」卡（P1-M9，`?interview=<id>` 跳学习页承接来源场次，`showAdvice=false` 避免与学习建议卡复述；行为面不渲染）。
 - **学习推荐页**（`/learn`，P1-M9 FR-20）：场次选择器（只列技术面）+ 按短板域分组的资料卡；与报告页共用 `recommend-groups.tsx`（行内展开同题库页交互，不引新原语），默认场次判定在 `lib/learn.ts`。
 - **能力档案页**（`/profile`，P1-M10 / M10.5 FR-19）：四张卡按认知路径排（五维对照 → 总分曲线 → 知识域热力图 → 短板变化）+ 一行洞察；窗口、色阶与空态口径见 §4.11。
@@ -646,7 +661,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（670 个，不需要任何密钥）· `cd frontend && pnpm test`（194 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（696 个，不需要任何密钥）· `cd frontend && pnpm test`（209 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 ## 11. 风险注意点（实现时强制）
 
@@ -661,6 +676,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 9. 评分门禁（§4.13 会话 2）的阈值 = **基线 + 余量**，余量按「同一基线连跑两次的指标自身波动」定：**MAE 低于评分官的 σ̄ 时不构成结论**（分不出「偏了」还是「本来就晃」）；golden `sha256` 变了 = 换了基准，门禁**拒绝比较**并提示先重跑基线。改 `judge_messages`/维度表/评分模型后必须跑一次门禁
 10. 评分评测的输入统一是「单轮回答」（`followup_log` 恒「无」）：带追问的真实样本取**合并后的最终答案**，中间轮次的评分任务不入 golden——重建其输入需要 trace，代价不值。这点的后果是「追问过程中的评分」不在覆盖范围内，如实写进报告局限
 11. 流式（§3/§7）：**首块之后不重试**（已吐字重发 = 同一段说两遍）；展示类文案只走 `llm.chat` 一条路径（另起一套非流式实现会在关 thinking / 空输出重试 / 错误映射三处漂移）；**分片拼接 == 落 `chat_history` 的那条消息**——节点侧只经 `stream.speak()/begin()` 出口，别在节点里自己拼前缀（拼错 = 前端收终稿时文字跳变）；`include_usage` 不能摘（摘了 Langfuse 成本读回恒 0）
+12. 语音（§7 语音通道）：**音频不落盘、不落库、不写日志**（只在内存里过一遍）；ASR 的 token 走 query（浏览器 WS 不能带请求头）——会进 nginx access log，demo 接受、上线前要换一次性票据；**两把火山 key 不通用**（方舟 Bearer / 豆包语音 X-Api-Key），失败文案按状态码给出路（401 = key 拿错产品线、403 = 服务没开通）；edge-tts 是外部免费服务（微软端点），403 多为版本旧 → 升级 `edge-tts`，真不可用走三档降级；上游协议是**二进制帧**，改版本/换端点前先跑探针（`handshake_error_text` 已把三种握手失败形态分开报）
 
 ---
 
@@ -670,6 +686,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-02 | P2-M5 语音面试（FR-24） | §2 补 voice/asr/tts 与 `public/asr-worklet.js` · §7 新增「语音通道」（WS 契约 / 两把火山 key 不通用 / 三档降级 / dev 直连口径）+ 端点表两行 + `asr_partial`/`tts_chunk` 标为未采用 · §9 面试页语音作答与语音模式 · §10 计数 · §11 风险 12 |
 | 2026-10-02 | P2-M4 模态层 + 真 token 流 | §3 `chat` 改流式（重试只覆盖建连段 / 单一实现纪律） · §7 事件表补 `delta_start`/`delta_chunk` 与语音事件预留 + 工程要求改写（custom 流）+ 流式不变量 · §9 流式与打字机并存 · §10 计数 · §11 风险 11 |
 | 2026-10-02 | P2-M3 前端小修包 | §9 补窄屏顶栏口径 · §4.11 `excluded.no_report` 与空态三态 · §4.12 D7 复核（私有题不开放行为面域，接口层断言） |
 | 2026-10-02 | P2-M2 检索与推荐修复 | §4.6 建议域枚举口径 · §4.10 长查询不 rerank 判据 · §4.13 噪声地板 0.005 → 0.013（四次同路径复跑修正）· §5.2 同步 |
