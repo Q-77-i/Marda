@@ -16,7 +16,7 @@ import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
-import { DIMENSIONS, domainLabel, isBehavioral } from "@/lib/constants";
+import { DIMENSIONS, domainLabel, isBehavioral, reportLabel } from "@/lib/constants";
 import { downloadBlob, reportFileName } from "@/lib/download";
 import { commentLabels, completedCount, formatScore, formatTime } from "@/lib/format";
 
@@ -286,7 +286,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
               {report.study_advice.map((item, index) => (
                 <li key={`${item.domain}-${index}`} className="flex flex-col gap-2">
                   <div className="flex items-center gap-2">
-                    <Badge variant="secondary">{domainLabel(item.domain)}</Badge>
+                    <Badge variant="secondary">{reportLabel(item.domain, dims)}</Badge>
                   </div>
                   <p className="text-sm leading-relaxed text-foreground/90">
                     {item.advice}

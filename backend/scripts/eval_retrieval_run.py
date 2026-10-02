@@ -29,7 +29,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.config import get_settings
 from app.tools.question_search import fetch_by_ids
-from evals import golden as golden_mod
+from app.tools.recommend import build_query_items
+from evals import corpus, golden as golden_mod
 from evals import retrieval_metrics, retrieve
 
 REPO = Path(__file__).resolve().parents[2]
@@ -40,9 +41,36 @@ CONCURRENCY = 4
 BOTTOM_N = 5  # 人读报告里列最差的几条 query
 
 
-async def _one(item: dict, sem: asyncio.Semaphore) -> dict[str, Any]:
+def long_query_ids(doc: dict, db_path) -> set[str]:
+    """missed_point 条目 → 该走「不 rerank」的 id 集合（P2-M2 生产口径）。
+
+    判据与线上一致：**该查询在当前真库报告里派生出非空漏点列表**（= 多漏点长查询）→
+    跳过 rerank。现场从真库报告经**生产函数** `build_query_items` 派生（golden 文件不动 →
+    哈希不变 → 与旧结果严格可比）；**查不到即非零退出**——静默按默认口径跑会测不出修复。
+    """
+    with_missed = {
+        item["query"]
+        for row in corpus.tech_report_payloads(db_path)
+        for item in build_query_items(row["payload"])
+        if item["missed"]
+    }
+    out: set[str] = set()
+    for item in doc["queries"]:
+        if item["scene"] != "missed_point":
+            continue
+        if item["query"] not in with_missed:
+            raise SystemExit(
+                f"golden {item['id']} 的查询在真库报告里找不到漏点（报告被改过？）——拒绝静默降级"
+            )
+        out.add(item["id"])
+    return out
+
+
+async def _one(item: dict, sem: asyncio.Semaphore, no_rerank: set[str]) -> dict[str, Any]:
     async with sem:
-        variants = await retrieve.rank_variants(item["query"], filters=item.get("filters"))
+        variants = await retrieve.rank_variants(
+            item["query"], filters=item.get("filters"), rerank=item["id"] not in no_rerank,
+        )
     return {
         "id": item["id"],
         "scene": item["scene"],
@@ -160,8 +188,10 @@ async def main() -> None:
 
     doc = golden_mod.load(GOLDEN_PATH)
     digest = hashlib.sha256(GOLDEN_PATH.read_bytes()).hexdigest()
+    no_rerank = await asyncio.to_thread(long_query_ids, doc, get_settings().db_path)
+    print(f"长查询口径：{len(no_rerank)} 条 missed_point 查询跳过 rerank（真库报告派生，与线上同判据）")
     sem = asyncio.Semaphore(CONCURRENCY)
-    rows = list(await asyncio.gather(*[_one(item, sem) for item in doc["queries"]]))
+    rows = list(await asyncio.gather(*[_one(item, sem, no_rerank) for item in doc["queries"]]))
 
     texts = await asyncio.to_thread(
         fetch_by_ids, get_settings().db_path, [qid for row in rows for qid in row["top3"]]

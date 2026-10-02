@@ -110,6 +110,10 @@ async def _recommend_one(
         item["query"],
         k=k + len(asked),  # 最多 len(asked) 条会被滤掉 → 滤后仍 ≥ k
         filters={"domain": item["domain"]},
+        # 长查询修复（P2-M2）：多漏点拼接的查询走 RRF 融合序、不 rerank——离线实测该场景
+        # 下 rerank 三种形态净贡献全为负（−0.152 / 剥标签后 −0.042 / 逐漏点融合 −0.114），
+        # 短查询才有正贡献（+0.055）；无漏点回退的纯域名查询仍走 rerank
+        rerank=not item["missed"],
         db_path=db_path,
     )
     fresh = [row for row in hits if row["question_id"] not in asked][:k]

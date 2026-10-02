@@ -364,9 +364,9 @@ def install_hybrid(monkeypatch):
     def _install(hits: dict[str, list[dict]]):
         calls: list[dict] = []
 
-        async def _search(query, *, k=5, filters=None, db_path=None):
+        async def _search(query, *, k=5, filters=None, rerank=True, db_path=None):
             domain = (filters or {}).get("domain")
-            calls.append({"query": query, "k": k, "domain": domain})
+            calls.append({"query": query, "k": k, "domain": domain, "rerank": rerank})
             return [dict(row) for row in hits.get(domain, [])][:k]
 
         monkeypatch.setattr(hybrid_search, "hybrid_search", _search)

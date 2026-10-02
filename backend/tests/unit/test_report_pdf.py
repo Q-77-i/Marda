@@ -289,3 +289,14 @@ def test_行为面PDF只用随镜像分发的字体():
                 fonts.add(str(descendant.get_object().get("/BaseFont", "")))
     assert fonts, "PDF 里没有字体信息"
     assert all("Noto" in name or "SourceHan" in name for name in fonts), fonts
+
+
+def test_学习建议域key渲染成中文标签():
+    """P2-M2：报告节点把建议域归一成 key（values_motivation）→ PDF 标签优先查维度表。"""
+    payload = _behavioral_payload()
+    payload["study_advice"] = [{"domain": "values_motivation", "advice": "把动机和岗位方向对上。"}]
+
+    text = _pdf_text(render_report_pdf(payload, "2026-10-01T10:00:00+00:00"))
+
+    assert "价值观与动机" in text
+    assert "values_motivation" not in text

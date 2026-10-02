@@ -223,7 +223,7 @@ REPORT_TEMPLATE = (
     "1. total_comment 总评（3-5 句话）：整体水平、最突出优劣势、与岗位的匹配度；\n"
     "2. per_question_comments 逐题点评：每题一句话，点评具体（引用回答或追问中的细节），不空泛；\n"
     "3. study_advice 学习建议：按{axis}给出可执行的 2-4 条建议"
-    "（study_advice.domain 填{axis}名称）。\n"
+    "（study_advice.domain 必须从下列取值中选一个填 **key**：{domain_options}）。\n"
     + GUARD
     + "\n【面试记录】\n{records}"
 )

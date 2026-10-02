@@ -8,6 +8,7 @@ import {
   interviewTypeLabel,
   isBehavioral,
   questionCountOptions,
+  reportLabel,
 } from "@/lib/constants";
 
 describe("会话类型（P1-M11）", () => {
@@ -36,5 +37,25 @@ describe("会话类型（P1-M11）", () => {
     expect(PHASE_LABELS.behavioral).toBe("行为面问答");
     expect(QUESTION_TYPE_LABELS.behavioral).toBe("行为面");
     expect(REASON_LABELS.deepen_limit).toBeTruthy();
+  });
+});
+
+describe("报告内域/维度标签（P2-M2）", () => {
+  const dims = [
+    { key: "communication", label: "沟通表达" },
+    { key: "logic_structure", label: "逻辑结构" },
+  ];
+
+  it("维度 key 优先查维度表（行为面建议域是维度 key）", () => {
+    expect(reportLabel("communication", dims)).toBe("沟通表达");
+  });
+
+  it("知识域 id 走域表；两边都没有则原值（老 payload 的散文建议域）", () => {
+    expect(reportLabel("rag", dims)).toBe("RAG");
+    expect(reportLabel("状态机与回放架构", dims)).toBe("状态机与回放架构");
+  });
+
+  it("空 dims（老报告）不崩，退回域表", () => {
+    expect(reportLabel("memory", [])).toBe("Memory");
   });
 });

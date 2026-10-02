@@ -146,8 +146,8 @@ class FakeSearcher:
         self._hits = hits or {}
         self.calls: list[dict] = []
 
-    async def __call__(self, query, *, k, filters, db_path):
-        self.calls.append({"query": query, "k": k, "filters": filters})
+    async def __call__(self, query, *, k, filters, rerank=True, db_path):
+        self.calls.append({"query": query, "k": k, "filters": filters, "rerank": rerank})
         return [dict(row) for row in self._hits.get(filters["domain"], [])][:k]
 
 
@@ -176,6 +176,17 @@ async def test_逐域检索_过滤条件与条数含已问数(attach):
     assert searcher.calls[0]["k"] == 3 + 2  # 生成题不计（无 id 无从排除）
     assert searcher.calls[0]["filters"] == {"domain": "rag"}
     assert searcher.calls[0]["query"] == "RAG"  # 无漏点 → 回退域名
+    assert searcher.calls[0]["rerank"] is True  # 无漏点回退纯域名 → 仍走 rerank
+
+
+async def test_多漏点长查询跳过rerank(attach):
+    """P2-M2：有漏点 = 多漏点长查询 → 检索层跳过 rerank（离线实测该场景净贡献为负）。"""
+    payload = _payload(["rag"], [_comment("rag", missed=["切片粒度", "召回评估"], qid="q_1")])
+    searcher = FakeSearcher({"rag": [_row("q_new")]})
+
+    await recommend.recommend_for_report(payload, searcher=searcher, db_path=Path("x"))
+
+    assert searcher.calls[0]["rerank"] is False
 
 
 async def test_过滤已问题目_保序并截到k(attach):

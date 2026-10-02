@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from app.domain import COUNTED_QUESTION_TYPES, DOMAIN_WEIGHTS, INTERVIEW_BEHAVIORAL
+from app.domain import (
+    COUNTED_QUESTION_TYPES,
+    DOMAIN_LABELS,
+    DOMAIN_WEIGHTS,
+    INTERVIEW_BEHAVIORAL,
+)
 from app.graph.state import BehavioralScoreItem, QuestionRecord, ScoreItem
 
 # 五维键与中文标签同源（顺序即报告展示顺序：雷达图顶点、逐题得分列表都按它排）。
@@ -42,6 +47,34 @@ def dims_payload(interview_type: str) -> list[dict[str, str]]:
     """报告 payload 的 `dims` 字段：前端与 PDF 都按它渲染维度（标签单一来源在后端，
     前端不再硬编维度表——行为面的中文标签否则要复制两份）。"""
     return [{"key": key, "label": label} for key, label in dims_for(interview_type).items()]
+
+
+# 建议域归一的别名表（P2-M2）：中文标签 → key。域标签与两套维度标签**值域不重叠**
+#（已核对；「沟通表达」「项目经验」两套维度表同值同 key），合并成一张表。
+_ADVICE_DOMAIN_ALIASES = {
+    **{label: key for key, label in DOMAIN_LABELS.items()},
+    **{label: key for key, label in {**DIMENSION_LABELS, **BEHAVIORAL_DIMENSION_LABELS}.items()},
+}
+
+
+def normalize_advice_domain(value: str) -> str:
+    """study_advice.domain 宽容归一（P2-M2）：key 原样 / 中文标签 → key / 未知保留原文。
+
+    **绝不抛错**：报告节点的结构化输出校验失败 = LLMError = 整份报告失败，一个建议
+    字段不值得炸掉整场面试（配不上的值由前端 domainLabel 兜底显示原文）。归一是为了
+    让学习推荐能按域 id 把建议配到推荐分组上（此前 LLM 自由填散文，配不上）。
+    """
+    text = (value or "").strip()
+    return _ADVICE_DOMAIN_ALIASES.get(text, text)
+
+
+def report_domain_options(interview_type: str) -> str:
+    """报告 prompt 里 study_advice.domain 的合法取值清单（`key（中文标签）` 成对给出）。"""
+    if interview_type == INTERVIEW_BEHAVIORAL:
+        pairs = list(BEHAVIORAL_DIMENSION_LABELS.items())
+    else:
+        pairs = [(key, DOMAIN_LABELS[key]) for key in DOMAIN_WEIGHTS]
+    return "、".join(f"{key}（{label}）" for key, label in pairs)
 
 
 def overall_score(scores: dict[str, float], dims: tuple[str, ...] = FIVE_DIMS) -> float:

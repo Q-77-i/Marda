@@ -203,6 +203,15 @@ def _question_label(item: dict, index: int) -> str:
     return f"第 {index + 1} 题"
 
 
+def _advice_label(domain: str | None, dims: tuple[str, ...]) -> str:
+    """学习建议的域标签（P2-M2）：建议域可能是**评分维度 key**（行为面，报告节点归一成 key）
+    或**知识域 id**（技术面），先查维度表再查域表，都没有则原样——与前端同序。"""
+    key = domain or ""
+    if key in dims:
+        return dims_label(key)
+    return DOMAIN_LABELS.get(key, key)
+
+
 def _question_context(item: dict, index: int, dims: tuple[str, ...] = FIVE_DIMS) -> dict:
     score = item.get("score") or {}
     return {
@@ -275,7 +284,7 @@ def _build_context(payload: dict, created_at: str) -> dict:
         ],
         "advice": [
             {
-                "label": DOMAIN_LABELS.get(item.get("domain") or "", item.get("domain") or ""),
+                "label": _advice_label(item.get("domain"), dims),
                 "advice": item.get("advice") or "",
             }
             for item in payload.get("study_advice") or []

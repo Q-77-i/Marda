@@ -213,3 +213,53 @@ async def test_无筛选不构造空Filter(install):
     )
 
     assert all(p.filter is None for p in f["qdrant"].kwargs["prefetch"])
+
+
+# ---- P2-M2：rerank 输入剥离域名标签（长查询修复；域约束由 filters 承担，标签是共性词）----
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # 线上形态（学习推荐）：域中文标签 + 多个漏点「；」分隔 → 剥首段
+        ("RAG；向量检索与关键词检索的分工；怎么调混合检索", "向量检索与关键词检索的分工；怎么调混合检索"),
+        ("Tool 与 Function Calling；单一职责怎么理解", "单一职责怎么理解"),
+        # 无标签（题库搜索的短查询形态）→ 逐字不变
+        ("Function Calling 的参数怎么设计", "Function Calling 的参数怎么设计"),
+        # 纯域名（M9 无漏点回退）→ 剥完为空，保留原样（退化成空查询会更糟）
+        ("Memory", "Memory"),
+        ("RAG；", "RAG；"),
+        ("RAG；   ", "RAG；   "),
+        # 首段不是已知标签 → 原样（哪怕含「；」；英文 id 小写形态不是标签值）
+        ("先做混合检索；再做重排", "先做混合检索；再做重排"),
+        ("rag；怎么做混合检索", "rag；怎么做混合检索"),
+    ],
+)
+def test_rerank输入剥标签的四种形态(raw, expected):
+    assert hybrid_search._rerank_query(raw) == expected
+
+
+async def test_嵌入吃原始query而rerank吃剥标签query(install):
+    f = install(["q1", "q2"])
+    f["ranker"]._result = [(0, 0.9), (1, 0.8)]
+
+    await hybrid_search.hybrid_search(
+        "RAG；向量检索与关键词检索的分工；怎么调混合检索",
+        k=2, embedder=f["embedder"], qclient=f["qdrant"], ranker=f["ranker"], db_path=Path("x"),
+    )
+
+    assert f["embedder"].texts == ["RAG；向量检索与关键词检索的分工；怎么调混合检索"]
+    assert f["ranker"].calls[0][0] == "向量检索与关键词检索的分工；怎么调混合检索"
+
+
+async def test_关闭rerank时按融合序返回前k(install):
+    """P2-M2：多漏点长查询走 RRF 融合序——不调 rerank，返回候选序（= 融合序）前 k 条。"""
+    f = install(["q3", "q1", "q2"])
+
+    result = await hybrid_search.hybrid_search(
+        "RAG；漏点甲；漏点乙", k=2, rerank=False,
+        embedder=f["embedder"], qclient=f["qdrant"], ranker=f["ranker"], db_path=Path("x"),
+    )
+
+    assert f["ranker"].calls == []
+    assert [r["question_id"] for r in result] == ["q3", "q1"]

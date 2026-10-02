@@ -69,12 +69,16 @@ async def rank_variants(
     *,
     k: int = DEFAULT_K,
     filters: dict[str, str | None] | None = None,
+    rerank: bool = True,
     embedder: EmbeddingClient | None = None,
     qclient: Any | None = None,
     ranker: Callable[..., Awaitable[list[tuple[int, float]]]] | None = None,
     db_path: Path | None = None,
 ) -> dict[str, list[str]]:
-    """一条 query → 四个变体的 ranked id 列表（各截到 k）。"""
+    """一条 query → 四个变体的 ranked id 列表（各截到 k）。
+
+    `rerank=False` 只影响 hybrid 变体（透传给生产函数，同 recommend 的长查询口径）。
+    """
     if not query.strip():
         raise ValueError("查询文本不能为空")
     embedder = embedder or EmbeddingClient()
@@ -124,7 +128,8 @@ async def rank_variants(
     )
     # hybrid 走生产函数（内部会再嵌入一次——一条 query 多一次本地嵌入，换「与生产逐字同一路径」值得）
     rows = await hybrid_search(
-        query, k=k, filters=filters, embedder=embedder, ranker=ranker, db_path=db_path
+        query, k=k, filters=filters, rerank=rerank,
+        embedder=embedder, ranker=ranker, db_path=db_path,
     )
     return {
         "dense": dense_ids,

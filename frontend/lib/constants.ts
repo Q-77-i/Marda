@@ -108,6 +108,14 @@ export function domainLabel(domain: string): string {
 }
 
 /**
+ * 报告内域/维度标签（P2-M2）：先查**评分维度**（行为面的学习建议域是维度 key，
+ * 报告节点的归一产物），再查知识域表，最后原值——与后端 PDF `_advice_label` 同序。
+ */
+export function reportLabel(domain: string, dims: { key: string; label: string }[]): string {
+  return dims.find((dim) => dim.key === domain)?.label ?? domainLabel(domain);
+}
+
+/**
  * 阶段名；未知阶段给 null。
  *
  * 与 domainLabel 的差别：阶段名会被拼进「进入 X」这类文案里，未知阶段显示原值

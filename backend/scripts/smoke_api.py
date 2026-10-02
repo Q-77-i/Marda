@@ -57,7 +57,7 @@ import httpx
 
 from app import db, observability
 from app.config import get_settings
-from app.domain import DOMAIN_LABELS, project_count
+from app.domain import DOMAIN_LABELS, DOMAIN_WEIGHTS, project_count
 from app.graph.rules.aggregate import BEHAVIORAL_DIMS
 from app.graph.rules.transition import domain_label
 from app.tools import question_search
@@ -361,14 +361,18 @@ async def main() -> None:
             await bob.aclose()
             print("私有题隔离 OK：B 账号列表空 / 按 id 改 404 / 公共检索无 p_ 题")
 
-            # 混入出题（真库 algorithms 只有 L2，L1 公共供给为 0）→ 候选池只可能是私有题，
-            # 于是「私有题被检索到」这件事在真实 Qdrant + 真实 SQL 上是确定性的
+            # 混入出题：k 取到比整个池子大 → 全量返回，「私有题在候选池里」是确定性的。
+            # （原口径是「algorithms/L1 无公共题 → 池子只可能是私有题」，P2-M1 难度重标注
+            #   把原本全落 L2 的题分开后该前提不再成立——改用全量取池，与新数据无关。
+            #   random.sample 有 min(k, len(rows)) 保护，k 超大不抛错。）
             merged = await question_search.search_questions(
-                domain="algorithms", difficulty="L1", k=10, user_id=me["id"]
+                domain="algorithms", difficulty="L1", k=200, user_id=me["id"]
             )
-            assert {i["question_id"] for i in merged} == private_ids, \
-                f"私有题未进候选池：{[i['question_id'] for i in merged]}"
-            print(f"私有题混入出题 OK：algorithms/L1 无公共题，候选池 {len(merged)} 条全是私有题")
+            merged_ids = {i["question_id"] for i in merged}
+            assert private_ids <= merged_ids, \
+                f"私有题未进候选池：{sorted(private_ids - merged_ids)}"
+            print(f"私有题混入出题 OK：algorithms/L1 候选池 {len(merged)} 条"
+                  f"（公共 {len(merged_ids - private_ids)} + 私有 {len(private_ids)}）")
 
             # 编辑 → 归档 → 恢复（归档后不出现在「使用中」里，但仍在列表中可找回）
             one = sorted(private_ids)[0]
@@ -498,6 +502,11 @@ async def main() -> None:
             print("域均分:", report["domain_scores"])
             print("短板:", report["weaknesses"])
             print("总评:", report["total_comment"])
+            # 学习建议（P2-M2）：domain 必须归一成合法域 id（prompt 给清单 + 后端宽容归一），
+            # 否则学习推荐按域配对配不上、建议卡与分组各说各的
+            assert report["study_advice"], "报告缺学习建议"
+            bad_domains = [a["domain"] for a in report["study_advice"] if a["domain"] not in DOMAIN_WEIGHTS]
+            assert not bad_domains, f"学习建议的域没归一成合法 id：{bad_domains}"
             for item in report["study_advice"]:
                 print(f"  学习建议 - {item['domain']}: {item['advice']}")
             print("逐题复盘（FR-25：我的回答 / 五维 / 关键点 / 参考答案）:")
@@ -565,8 +574,13 @@ async def main() -> None:
                 for card in group["cards"]:
                     sources = "、".join(s["source"] for s in card["sources"]) or "无来源"
                     print(f"    [{card['difficulty']}] {card['question'][:36]}… · 来源：{sources}")
+            # 学习建议配得上推荐分组（P2-M2 验收）：短板域 ∩ 建议域 至少一组带上 advice
+            advice_domains = {a["domain"] for a in report["study_advice"]}
+            matched = [g["domain"] for g in groups if g["advice"]]
+            assert not groups or matched, \
+                f"学习建议一条都没配到推荐分组：建议域 {sorted(advice_domains)} vs 短板域 {report['weaknesses']}"
             print(f"推荐 OK：{len(groups)} 个短板域 / {len(cards)} 张资料卡，"
-                  f"全部落在短板域内、无本场已问题"
+                  f"全部落在短板域内、无本场已问题；建议配上 {len(matched)}/{len(groups)} 组"
                   + ("" if cards else "（本场短板域在题库里暂时没有新题）"))
 
             # 能力档案（FR-19）：该用户全部已落库报告 → 曲线与短板变化

@@ -14,6 +14,8 @@ from app.graph.rules.aggregate import (
     build_per_question_comments,
     dims_for,
     dims_payload,
+    normalize_advice_domain,
+    report_domain_options,
 )
 from app.graph.state import (
     InterviewState,
@@ -34,6 +36,7 @@ async def report_node(state: InterviewState) -> dict:
     llm_part = await llm.chat_json(
         [{"role": "system", "content": REPORT_TEMPLATE.format(
             axis="能力维度" if behavioral else "知识域",
+            domain_options=report_domain_options(state.interview_type),  # P2-M2：建议域给合法清单
             records=_format_records(state.answered_questions, behavioral=behavioral))}],
         schema=ReportLLM,
         temperature=0.3,
@@ -63,7 +66,12 @@ async def report_node(state: InterviewState) -> dict:
             [c.comment for c in llm_part.per_question_comments],
             reference_answers,
         ),
-        "study_advice": [a.model_dump() for a in llm_part.study_advice],
+        # 建议域宽容归一（P2-M2）：LLM 填标签也能配回 id，学习推荐据此把建议挂到分组上；
+        # 未知值保留原文（绝不抛错——一个建议字段不值得炸掉整场报告）
+        "study_advice": [
+            {"domain": normalize_advice_domain(a.domain), "advice": a.advice}
+            for a in llm_part.study_advice
+        ],
     }
     # 结束陈词（P1-M4.7-D）：模板不带任何输入——结构上就说不出分数与短板（红线另写死在 prompt）
     # 陈词是装饰、报告是产物：这一句失败不能把整份报告（和整场结束）一起拖垮，降级为不追加
