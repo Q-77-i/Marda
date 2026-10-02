@@ -161,7 +161,7 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 
 ```bash
 cd backend
-uv run pytest -q                              # 606 个测试（不需要任何密钥）
+uv run pytest -q                              # 653 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
@@ -169,7 +169,7 @@ SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看�
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 169 个：SSE 解析 / 打字机 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 175 个：SSE 解析 / 打字机 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -191,7 +191,7 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（606 passed · vitest 169 · 三个 smoke · 评分门禁 7/7）：
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（653 passed · vitest 175 · 三个 smoke · 评分门禁 7/7）：
 
 | 里程碑 | 内容 |
 | --- | --- |
