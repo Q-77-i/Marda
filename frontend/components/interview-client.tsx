@@ -31,10 +31,22 @@ import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { progressLabel } from "@/lib/format";
 import { reconcile, type PendingTurn } from "@/lib/recovery";
 import { UnauthorizedError, redirectToLogin, setUnauthorizedHandler } from "@/lib/session";
+import {
+  StreamBuffer,
+  applyStreamAction,
+  type StreamAction,
+} from "@/lib/stream-render";
 import { TypewriterQueue } from "@/lib/typewriter";
 
 /** 吐字节拍：每 30ms 一次，字符数随积压自适应，长文案不落后于流。 */
 const TICK_MS = 30;
+
+/** 新建面试官气泡（applyStreamAction 的回调：保住 ChatItem 的字段形状）。 */
+const createAssistant = (id: string, content: string): ChatItem => ({
+  id,
+  role: "assistant",
+  content,
+});
 
 export function InterviewClient({ interviewId }: { interviewId: string }) {
   const router = useRouter();
@@ -178,12 +190,24 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       node.scrollHeight - node.scrollTop - node.clientHeight < 120;
   };
 
+  /** 流式缓冲：分片/终稿的配对全在它里面（纯逻辑，vitest 覆盖），这里只落列表。 */
+  const streamRef = useRef<StreamBuffer | null>(null);
+  if (streamRef.current === null) streamRef.current = new StreamBuffer(nextId);
+  const streamBuf = streamRef.current;
+
+  const applyAction = (action: StreamAction) => {
+    if (action.kind === "legacy") {
+      // 旧打字机路径：无分片的消息（旧后端 / 未来的非流式节点）逐字吐
+      queueRef.current.push(action.id, action.text);
+    }
+    setMessages((prev) => applyStreamAction(prev, action, createAssistant));
+  };
+
   const handlers: SSEHandlers = {
-    delta: ({ text }) => {
-      const id = nextId();
-      queueRef.current.push(id, text);
-      setMessages((prev) => [...prev, { id, role: "assistant", content: "" }]);
-    },
+    // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算
+    delta_start: () => applyAction(streamBuf.start()),
+    delta_chunk: ({ text }) => applyAction(streamBuf.chunk(text)),
+    delta: ({ text }) => applyAction(streamBuf.delta(text)),
     question: (q) => {
       // 出题节点同一更新内先发 delta 再发 question → 挂到最后一条面试官消息上
       setMessages((prev) => {
@@ -225,6 +249,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         const session = await getSession(interviewId);
         if (reconcile(failed, session) === "resend") return;
         queueRef.current.clear(); // 列表整体换成服务端版本，未吐完的残缺文案作废
+        streamRef.current?.reset(); // 气泡 id 也一并换了，缓冲里的旧 id 必须作废
         applySession(session);
         applyPending(null);
         setError(null);
@@ -276,6 +301,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         queueRef.current.clear(); // 丢弃未吐完的残缺文案，避免与错误提示混淆
       } finally {
         streamingRef.current = false;
+        /* 没收敛到终稿的流式气泡 = 该消息从未落 checkpoint（节点抛错则状态不提交）：
+           留着就是「看得见、刷新就没」的假消息，收走（重试会重跑该节点、重新流一遍） */
+        const leftover = streamBuf.abandon();
+        if (leftover.length > 0) {
+          setMessages((prev) => prev.filter((m) => !leftover.includes(m.id)));
+        }
         if (queueRef.current.idle) {
           setBusy(false);
           busyRef.current = false;

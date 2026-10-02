@@ -25,6 +25,7 @@ from app.domain import (
     INTERVIEW_BEHAVIORAL,
     QUESTION_TYPE_BEHAVIORAL,
 )
+from app.graph.rules import stream
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
 from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
@@ -44,18 +45,22 @@ async def ask_node(state: InterviewState) -> dict:
     else:
         # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
         question, hits = await _generate_scenario(state), 0
-    # 人味层（P1-M4.7-D）：答错缓冲独立成条（它回应的是上一题），衔接语与题目同一条消息
+    # 人味层（P1-M4.7-D）：答错缓冲独立成条（它回应的是上一题），衔接语与题目同一条消息。
+    # P2-M4：两条消息都走流式通道——分片先于 delta 到达，纯代码的那条若不发分片，
+    # 前端就只能插在流式消息之后，用户会看到顺序倒过来。
     buffer = buffer_line(state)
     if buffer:
+        stream.begin(buffer)
         add_history(state, "assistant", buffer)
-    text = await llm.chat(
+    text = await stream.speak(
         [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
             persona=persona_for(state.interview_type),
             question=question.text,
             profile=state.candidate_profile or "（候选人未提供项目背景）",
-        )}]
+        )}],
+        preamble=transition_line(state, question),
     )
-    add_history(state, "assistant", f"{transition_line(state, question)}{text}")
+    add_history(state, "assistant", text)
     state.current_question = question
     if question.question_id:
         state.asked_ids.append(question.question_id)

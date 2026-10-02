@@ -91,6 +91,39 @@ async def test_创建面试SSE事件序与响应头(client):
     assert events[-1]["data"]["interview_id"] == interview_id
 
 
+async def test_流式协议_分片收敛到终稿且拼接一致(client):
+    """P2-M4：每条面试官消息 = delta_start → delta_chunk… → delta（终稿）。
+
+    不变量三条：① 每条 start 恰好收敛一条 delta；② 分片数 > 1（证明是真流式，
+    整段一块在协议上等价于旧 delta、测不出边界）；③ **分片拼接 == 终稿全文**
+    （前端「收终稿替换累积」的对账依据，漂了就是用户看见文字跳变）。
+    开场与一轮出题各验一次——出题节点在答错缓冲时一次跑出两条消息，是多消息边界的现场。
+    """
+    interview_id, events = await _create(client)
+    events += await _send(client, interview_id, TURNS[0])
+
+    messages: list[dict] = []
+    current: dict | None = None
+    for e in events:
+        if e["event"] == "delta_start":
+            current = {"chunks": [], "final": None}
+            messages.append(current)
+        elif e["event"] == "delta_chunk":
+            assert current is not None, "delta_chunk 出现在 delta_start 之前"
+            assert current["final"] is None, "终稿之后仍收到分片"
+            current["chunks"].append(e["data"]["text"])
+        elif e["event"] == "delta":
+            assert current is not None, "delta 之前没有 delta_start（旧前端兜底路径不该在流式里出现）"
+            assert current["final"] is None, "同一消息收到两条终稿"
+            current["final"] = e["data"]["text"]
+
+    assert len(messages) >= 2  # 开场 + 首题
+    for m in messages:
+        assert m["final"] is not None, "delta_start 没有收敛到终稿（半截消息泄漏到流里）"
+        assert len(m["chunks"]) > 1, f"应有多片分片，实得 {len(m['chunks'])} 片"
+        assert "".join(m["chunks"]).strip() == m["final"].strip()
+
+
 async def test_响应头带禁缓冲(client):
     async with client.stream(
         "POST", "/api/interviews", json={"position": "x", "question_count": 2},

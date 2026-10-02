@@ -23,7 +23,15 @@ export type MetaEvent = {
   answered_count: number;
   question_count: number;
 };
+/**
+ * 面试官消息的**终稿全文**（P2-M4）：语义未变（旧后端/非流式消息仍只有它），
+ * 流式消息在它之前另有 delta_start + delta_chunk，前端用终稿替换累积文本做对账。
+ */
 export type DeltaEvent = { text: string };
+/** 一条面试官消息开始（P2-M4）：data 为空对象，仅作消息边界。 */
+export type DeltaStartEvent = Record<string, never>;
+/** 流式增量分片（P2-M4）：追加到最近一条未结算的消息上。 */
+export type DeltaChunkEvent = { text: string };
 export type QuestionEvent = {
   index: number;
   question_id: string;
@@ -158,13 +166,23 @@ export type TraceResponse = {
 
 export type SSEHandlers = {
   meta?: (event: MetaEvent) => void;
+  /** 消息边界（P2-M4）：先于该消息的 delta_chunk 到达 */
+  delta_start?: (event: DeltaStartEvent) => void;
+  /** 流式增量（P2-M4）：真 token 流的每一片 */
+  delta_chunk?: (event: DeltaChunkEvent) => void;
   delta?: (event: DeltaEvent) => void;
   question?: (event: QuestionEvent) => void;
   done?: (event: DoneEvent) => void;
   error?: (event: ErrorEvent) => void;
 };
 
-/** SSE 原始事件 → 按 event 名分发 + JSON 解析（数据格式与后端 §7 事件表一致）。 */
+/**
+ * SSE 原始事件 → 按 event 名分发 + JSON 解析（数据格式与后端 §7 事件表一致）。
+ *
+ * **未注册的事件名静默丢弃**——这正是旧前端兼容新后端的方式：后端加 delta_start /
+ * delta_chunk（P2-M4）或 M5 的语音事件（asr_partial / tts_chunk，协议里已登记）时，
+ * 没有对应 handler 的客户端不受影响，只是看不到那一路数据。别在这里抛错。
+ */
 export function dispatcher(handlers: SSEHandlers): (event: SSEEvent) => void {
   return (event) => {
     const handler = handlers[event.event as keyof SSEHandlers];

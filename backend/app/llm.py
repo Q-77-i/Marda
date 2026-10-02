@@ -10,10 +10,13 @@
 - 两层重试语义分开：网络层（429/5xx/超时）tenacity 指数退避，
   内容层（空输出 / JSON 校验失败）重请求 1 次；
 - 失败统一抛 `LLMError`，`retryable` 供 API 层映射 SSE error 事件；
+- **文案类（`chat`）内部走流式**（P2-M4）：逐块回调 `on_delta`，由节点侧透传成 SSE；
+  结构化类（`chat_json`）保持非流式（json_object + 整段 Pydantic 校验，无增量语义）；
 - 不做限流/熔断/成本统计（阶段 3，SPEC §3）。
 
 用法：
     text = await chat([{"role": "user", "content": "出个题"}])
+    text = await chat(messages, on_delta=piece => ...)   # 流式：边生成边拿增量
     score = await chat_json(messages, schema=ScoreItem)
 """
 
@@ -21,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator, Callable
 from functools import lru_cache
 from typing import Any, TypeVar
 
@@ -107,6 +111,64 @@ async def _create(
     )
 
 
+@retry(
+    retry=retry_if_exception(_is_retryable),
+    stop=stop_after_attempt(NETWORK_RETRY_ATTEMPTS),
+    wait=wait_exponential_jitter(initial=1, max=10),
+    reraise=True,
+)
+async def _create_stream(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int,
+    temperature: float,
+    model: str | None = None,
+) -> Any:
+    """建立流式请求。**重试只覆盖这一步**（建连 + 响应头）——一旦开始吐字，重试就会
+    把同一段话说两遍，中途断流交给上层抛错（用户侧「重试」= 重跑失败节点，语义已有）。
+
+    `stream_options.include_usage`：usage 随最后一帧单独回来（choices 为空）。少了它，
+    Langfuse 里的流式 generation 没有 token 数、成本读回恒为 0（P1-M4 的验收物）。
+    """
+    return await _get_client().chat.completions.create(
+        model=model or get_settings().deepseek_model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        extra_body={"thinking": {"type": "disabled"}},  # 坑位 1/2：流式下同样关 thinking
+        stream=True,
+        stream_options={"include_usage": True},
+    )
+
+
+async def stream_chat(
+    messages: list[dict[str, Any]],
+    *,
+    max_tokens: int = 2048,
+    temperature: float = 0.7,
+    model: str | None = None,
+) -> AsyncIterator[str]:
+    """流式文案调用：逐块产出正文增量（usage 块与空块不产出）。
+
+    异常语义：建连失败已由 `_create_stream` 重试；**中途断流不重试**，
+    统一抛 `LLMError`（`retryable` 反映错误性质，供前端提示）。
+    """
+    try:
+        response = await _create_stream(
+            messages, max_tokens=max_tokens, temperature=temperature, model=model
+        )
+        async for chunk in response:
+            if not chunk.choices:
+                continue  # usage 块（choices 为空是正常形态，不是空响应）
+            content = chunk.choices[0].delta.content
+            if content:
+                yield content
+    except LLMError:
+        raise
+    except Exception as exc:
+        raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
+
+
 async def _request(
     messages: list[dict[str, Any]],
     *,
@@ -138,22 +200,35 @@ async def chat(
     max_tokens: int = 2048,
     temperature: float = 0.7,
     model: str | None = None,
+    on_delta: Callable[[str], None] | None = None,
 ) -> str:
-    """文案类调用（开场/出题/追问/结束语）。空输出重请求 1 次，仍空才报错。
+    """文案类调用（开场/出题/追问/结束语）。**内部走流式**，逐块回调 `on_delta`。
+
+    - 单实现纪律：展示类文案只有这一条路径（结构化另有 `chat_json`），流式与非流式
+      若各写一套，关 thinking / 空输出重请求 / 错误映射就会各自漂移；
+    - 空输出重请求 1 次（与既有语义一致）：**只在一个字都没吐时重试**——已吐字的
+      重试会把同一段话说两遍，那种情况按空内容报错；
+    - `on_delta` 缺省 None = 不做增量回调（evals / 脚本 / 单测调用不受影响）。
 
     model 缺省走 flash；深度档（v4-pro）由调用方显式传入（SPEC §3）。
     """
-    content = await _request(messages, max_tokens=max_tokens, temperature=temperature, model=model)
-    if not content:
-        content = await _request(
-            [*messages, {"role": "user", "content": "（请继续输出）"}],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            model=model,
-        )
-    if not content:
-        raise LLMError("LLM 返回空内容", retryable=False)
-    return content
+    current = messages
+    for attempt in range(2):  # 首次 + 空输出重请求 1 次
+        parts: list[str] = []
+        async for piece in stream_chat(
+            current, max_tokens=max_tokens, temperature=temperature, model=model
+        ):
+            parts.append(piece)
+            if on_delta is not None:
+                on_delta(piece)
+        text = "".join(parts).strip()
+        if text:
+            return text
+        if parts:
+            break  # 只吐了空白：重发会重复已发出的块，按空内容处理
+        if attempt == 0:
+            current = [*messages, {"role": "user", "content": "（请继续输出）"}]
+    raise LLMError("LLM 返回空内容", retryable=False)
 
 
 def _with_schema_hint(messages: list[dict[str, Any]], schema: type[BaseModel]) -> list[dict[str, Any]]:

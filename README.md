@@ -161,7 +161,7 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 
 ```bash
 cd backend
-uv run pytest -q                              # 653 个测试（不需要任何密钥）
+uv run pytest -q                              # 670 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
@@ -169,7 +169,7 @@ SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看�
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 175 个：SSE 解析 / 打字机 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 194 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -191,7 +191,7 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（653 passed · vitest 175 · 三个 smoke · 评分门禁 7/7）：
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（670 passed · vitest 194 · 三个 smoke · 评分门禁 7/7）：
 
 | 里程碑 | 内容 |
 | --- | --- |
@@ -215,9 +215,12 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 | 里程碑 | 内容 |
 | --- | --- |
 | P2-M1 | 题库质量三连（全库难度重标注 1002 题；近似重复 3 对措辞级合并；行为题 6 道补讲述要点） |
+| P2-M2 | 检索与推荐修复（长查询按形态跳过 rerank，missed_point NDCG@5 0.660 → 0.813；学习建议域结构化） |
+| P2-M3 | 前端小修包（窄屏顶栏换行；能力档案补「报告缺失场次」说明与空态第三态） |
+| P2-M4 | 模态层 + 真 token 流（SSE 新增 `delta_start`/`delta_chunk`，`delta` 语义不变；`chat()` 单一实现改流式聚合） |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
 ## 部署：本地一键起（Docker Compose）
 
-阶段 1 的部署形态就是这份编排 + 本地一键起（演示/验收即 `docker compose up -d --build`）；**服务器部署与部署方案随阶段 3 再定**，届时同一份编排直接复用。两条已记下的口径：**nginx 是唯一入口**（`/api` 段关 `proxy_buffering` —— SSE 打字机的前提，最大的部署风险在本地就验证掉）；**镜像是分架构的**——Mac（arm64）本地构建的镜像在 amd64 服务器上跑不了，要么在服务器上构建，要么 `buildx --platform linux/amd64`。
+阶段 1 的部署形态就是这份编排 + 本地一键起（演示/验收即 `docker compose up -d --build`）；**服务器部署与部署方案随阶段 3 再定**，届时同一份编排直接复用。两条已记下的口径：**nginx 是唯一入口**（`/api` 段关 `proxy_buffering` —— SSE 流式推送的前提，最大的部署风险在本地就验证掉）；**镜像是分架构的**——Mac（arm64）本地构建的镜像在 amd64 服务器上跑不了，要么在服务器上构建，要么 `buildx --platform linux/amd64`。

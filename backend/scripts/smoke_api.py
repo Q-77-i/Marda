@@ -125,6 +125,35 @@ async def _events(response) -> list[dict]:
     return out
 
 
+def _check_stream(events: list[tuple], *, where: str) -> tuple[int, int]:
+    """P2-M4 流式协议断言（真链路）：返回 (消息数, 分片数)。
+
+    不变量三条：① 每条 delta_start 恰好收敛一条 delta（终稿）；② 分片数 > 1 ——
+    **真 token 流**才有 >1 片，整段一块等价于旧 delta、这一条就失去意义；
+    ③ **分片拼接 == 终稿全文**（前端「收终稿替换累积文本」的对账依据）。
+    """
+    messages: list[dict] = []
+    current: dict | None = None
+    for name, data in events:
+        if name == "delta_start":
+            current = {"chunks": [], "final": None}
+            messages.append(current)
+        elif name == "delta_chunk":
+            assert current is not None, f"{where}：delta_chunk 出现在 delta_start 之前"
+            assert current["final"] is None, f"{where}：终稿之后仍有分片"
+            current["chunks"].append(data["text"])
+        elif name == "delta":
+            assert current is not None, f"{where}：delta 没有对应的 delta_start"
+            assert current["final"] is None, f"{where}：同一消息收到两条终稿"
+            current["final"] = data["text"]
+    for m in messages:
+        assert m["final"] is not None, f"{where}：delta_start 未收敛到终稿（半截消息）"
+        assert len(m["chunks"]) > 1, f"{where}：仅 {len(m['chunks'])} 片，不是真流式"
+        assert "".join(m["chunks"]).strip() == m["final"].strip(), \
+            f"{where}：分片拼接与终稿不一致（前端对账会跳变）"
+    return len(messages), sum(len(m["chunks"]) for m in messages)
+
+
 async def wait_ready() -> None:
     for _ in range(60):
         try:
@@ -442,6 +471,9 @@ async def main() -> None:
             for name, data in events:
                 if name == "delta":
                     print(f"[开场] {data['text']}\n")
+            # 流式协议（P2-M4）：开场就断言一遍，别等到最后
+            stream_msgs, stream_chunks = _check_stream(events, where="开场")
+            print(f"流式 OK：开场 {stream_msgs} 条消息 / {stream_chunks} 片，分片拼接逐字一致")
 
             # 逐轮发消息直到 done（角色扮演：自我介绍 → 逐题作答 → 反问）
             turn = 0
@@ -457,6 +489,9 @@ async def main() -> None:
                 ) as r:
                     assert r.status_code == 200, f"消息失败: {r.status_code}"
                     events = await _events(r)
+                msgs, chunks = _check_stream(events, where=f"第 {turn + 1} 轮")
+                stream_msgs += msgs
+                stream_chunks += chunks
                 for name, data in events:
                     if name == "delta":
                         print(f"[面试官] {data['text']}\n")
@@ -663,6 +698,11 @@ async def main() -> None:
             assert rounds == sorted(rounds), f"轮次非单调：{rounds}"
             assert all(e["detail"] for e in events), "事件 detail 不得为空"
             print(f"回放 OK：{len(events)} 个事件 / 轮次 1-{max(rounds)}")
+            # 流式协议（P2-M4）：整场累计——每轮都已逐段断言过，这里给场次级总数
+            assert stream_msgs >= QUESTION_COUNT + 1, \
+                f"流式消息数少于应有的面试官发言：{stream_msgs}"
+            print(f"流式 OK：全场 {stream_msgs} 条消息 / {stream_chunks} 片，"
+                  f"平均 {stream_chunks / stream_msgs:.1f} 片/条")
 
             # 技术题同域成块（P1-M4.7-D）：域被切碎成散点就说明粘性失效；
             # 块内难度曲线是人工观测点——同域连问会不会一段卡在高难度
@@ -733,6 +773,7 @@ async def main() -> None:
                 assert r.status_code == 200, f"行为面创建失败: {r.status_code} {r.text}"
                 beh_events = await _events(r)
             beh_id = beh_events[0][1]["interview_id"]
+            _check_stream(beh_events, where="行为面开场")  # 流式协议对两种会话类型同样成立
             print("=" * 60)
             print("行为面（P1-M11）：新维度评分 + 出题池隔离")
             print("=" * 60)

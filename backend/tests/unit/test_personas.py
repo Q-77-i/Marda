@@ -13,9 +13,12 @@ import pytest
 
 from app import llm
 from evals import personas
+from fake_llm import stream_of
 
 
 class _CapturingClient:
+    """persona 生成走 llm.chat（P2-M4 起恒为流式），替身直接回流式响应。"""
+
     def __init__(self):
         self.calls: list[dict] = []
 
@@ -26,9 +29,7 @@ class _CapturingClient:
         class _Completions:
             async def create(self, **kwargs):
                 outer.calls.append(kwargs)
-                return SimpleNamespace(
-                    choices=[SimpleNamespace(message=SimpleNamespace(content="我的回答"))]
-                )
+                return stream_of("我的回答")
 
         return SimpleNamespace(completions=_Completions())
 

@@ -9,6 +9,7 @@ from app.agents.prompts import CLOSING_REMARK_TEMPLATE, REPORT_TEMPLATE, persona
 from app.agents.schemas import ReportLLM
 from app.config import get_settings
 from app.domain import INTERVIEW_BEHAVIORAL
+from app.graph.rules import stream
 from app.graph.rules.aggregate import (
     aggregate_scores,
     build_per_question_comments,
@@ -76,7 +77,7 @@ async def report_node(state: InterviewState) -> dict:
     # 结束陈词（P1-M4.7-D）：模板不带任何输入——结构上就说不出分数与短板（红线另写死在 prompt）
     # 陈词是装饰、报告是产物：这一句失败不能把整份报告（和整场结束）一起拖垮，降级为不追加
     try:
-        remark = await llm.chat(
+        remark = await stream.speak(
             [{"role": "system", "content": CLOSING_REMARK_TEMPLATE.format(
                 persona=persona_for(state.interview_type),
             )}]

@@ -65,6 +65,7 @@ export function CreateForm() {
     setBusy(true);
     setError(null);
     setOpening("");
+    let streamed = false; // 当前这条面试官消息是否收到过分片（决定终稿要不要再追加）
     try {
       const interviewId = await createInterview(
         POSITION,
@@ -72,7 +73,19 @@ export function CreateForm() {
         // 行为面不消费难度（D3）：仍发 adaptive，state 里照常自适应但只作死数据
         behavioral ? DIFFICULTY_OPTIONS[0].value : difficulty,
         dispatcher({
-          delta: ({ text }) => setOpening((prev) => prev + text),
+          // 流式（P2-M4）：开场逐片显示；终稿（delta）只在**没有分片**时才追加，
+          // 否则同一段文案会被写两遍（这里只是等待期的预览，不必做终稿对账替换）
+          delta_start: () => {
+            streamed = false;
+          },
+          delta_chunk: ({ text }) => {
+            streamed = true;
+            setOpening((prev) => prev + text);
+          },
+          delta: ({ text }) => {
+            if (streamed) return;
+            setOpening((prev) => prev + text);
+          },
           error: ({ message }) => setError(message),
         }),
         interviewType,

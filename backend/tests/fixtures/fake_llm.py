@@ -60,6 +60,34 @@ def _response(content: str) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
 
 
+STREAM_PIECE_SIZE = 3  # 流式分片粒度：模拟真 token 流的「多片」（数值无意义，只要 >1 片）
+
+
+def _delta_chunk(text: str) -> SimpleNamespace:
+    """流式正文分片（openai AsyncStream 的 chunk 形状）。"""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))], usage=None
+    )
+
+
+def _usage_chunk() -> SimpleNamespace:
+    """结尾的 usage 块：choices 为空、只有 usage（P2-M4 开 include_usage 后必有）。"""
+    return SimpleNamespace(
+        choices=[],
+        usage=SimpleNamespace(prompt_tokens=10, completion_tokens=10, total_tokens=20),
+    )
+
+
+def stream_of(text: str, *, piece_size: int = STREAM_PIECE_SIZE):
+    """把整段文本包成流式响应（openai AsyncStream 形状）；各测试替身共用同一套切片。"""
+    async def _gen():
+        for i in range(0, len(text), piece_size):
+            yield _delta_chunk(text[i:i + piece_size])
+        yield _usage_chunk()
+
+    return _gen()
+
+
 class FakeLLMClient:
     """chat.completions.create 的 fake（经 app.llm._get_client 注入）。"""
 
@@ -91,24 +119,36 @@ class FakeLLMClient:
 
         class _Completions:
             async def create(self, **kwargs):
+                if kwargs.get("stream"):
+                    return outer._stream(**kwargs)  # 异步生成器对象（await 后可直接 async for）
                 return outer._create(**kwargs)
 
         return SimpleNamespace(completions=_Completions())
 
+    async def _stream(self, **kwargs):
+        """流式分支（P2-M4）：按固定粒度切片产出，结尾补 usage 块。
+
+        切片的粒度是刻意的「多片且非等长于全文」——单片的流式在协议上等价于旧 delta，
+        测不出边界（前端分片拼接、事件序断言都需要真的多片）。
+        """
+        async for chunk in stream_of(self._content(**kwargs)):
+            yield chunk
+
     def _create(self, **kwargs):
+        return _response(self._content(**kwargs))
+
+    def _content(self, **kwargs) -> str:
         system = kwargs["messages"][0]["content"]
         self.calls.append({"system": system})
         if "评分官" in system:
             raw = self._behavioral_score if "行为面" in system else self._score
-            content = json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)
-        elif "报告官" in system:
-            content = json.dumps(self._report, ensure_ascii=False)
-        elif "出题官" in system:
-            content = json.dumps(self._generated, ensure_ascii=False)
-        elif "提炼" in system:
-            content = json.dumps(self._profile, ensure_ascii=False)
-        elif "真诚收尾" in system:
-            content = self._closing
-        else:
-            content = self._text
-        return _response(content)
+            return json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)
+        if "报告官" in system:
+            return json.dumps(self._report, ensure_ascii=False)
+        if "出题官" in system:
+            return json.dumps(self._generated, ensure_ascii=False)
+        if "提炼" in system:
+            return json.dumps(self._profile, ensure_ascii=False)
+        if "真诚收尾" in system:
+            return self._closing
+        return self._text

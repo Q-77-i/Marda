@@ -56,6 +56,21 @@ def _event(name: str, data: dict) -> dict:
     return {"event": name, "data": json.dumps(data, ensure_ascii=False)}
 
 
+# custom 流事件（graph/rules/stream.py 的领域形状）→ SSE 事件名（P2-M4）。
+# 映射放在 transport 层：节点不认识 SSE 事件名，M5 的语音事件在这里登记即可。
+CUSTOM_EVENTS = {"message_start": "delta_start", "message_delta": "delta_chunk"}
+
+
+def map_custom(payload: Any) -> dict | None:
+    """custom 流块 → SSE 事件；未知类型返回 None（丢弃，前后兼容）。"""
+    if not isinstance(payload, dict):
+        return None
+    name = CUSTOM_EVENTS.get(payload.get("type"))
+    if name is None:
+        return None
+    return _event(name, {k: v for k, v in payload.items() if k != "type"})
+
+
 def engine_stalled(snapshot: Any) -> bool:
     """引擎是否卡在失败节点上（P1-M4.7 后续，前端「重试」的判据）。
 
@@ -244,9 +259,16 @@ class Service:
         snapshot = _plain(initial_values)
         with observability.turn_span(interview_id, user_id=user_id):
             try:
-                # langgraph 1.2 单 stream_mode 时每次产出 (mode, {node: updates}) 二元组
-                async for item in self._g.astream(input_value, config=config, stream_mode=["updates"]):
-                    _, chunk = item
+                # langgraph 1.2 多 stream_mode 时每次产出 (mode, chunk) 二元组：
+                # custom 一路是节点运行中的文案分片（P2-M4），updates 一路是节点结束后的状态
+                async for mode, chunk in self._g.astream(
+                    input_value, config=config, stream_mode=["updates", "custom"]
+                ):
+                    if mode == "custom":
+                        event = map_custom(chunk)
+                        if event is not None:
+                            yield event
+                        continue
                     events, snapshot = map_updates(chunk, snapshot, interview_id=interview_id)
                     for event in events:
                         yield event

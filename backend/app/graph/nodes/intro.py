@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from app import llm
 from app.agents.prompts import INTRO_TEMPLATE, persona_for
 from app.domain import INTERVIEW_BEHAVIORAL
+from app.graph.rules import stream
 from app.graph.rules.transition import estimated_minutes
 from app.graph.state import InterviewState, Phase, add_history
 
@@ -15,7 +15,7 @@ async def intro_node(state: InterviewState) -> dict:
         if state.interview_type == INTERVIEW_BEHAVIORAL
         else "技术模拟面试"
     )
-    text = await llm.chat(
+    text = await stream.speak(
         [{"role": "system", "content": INTRO_TEMPLATE.format(
             persona=persona_for(state.interview_type),
             position=state.position,

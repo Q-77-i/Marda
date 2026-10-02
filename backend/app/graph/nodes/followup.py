@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from app import llm
 from app.agents.prompts import (
     FOLLOWUP_CLARIFY_TEMPLATE,
     FOLLOWUP_DEEPEN_BEHAVIORAL_TEMPLATE,
@@ -11,6 +10,7 @@ from app.agents.prompts import (
     persona_for,
 )
 from app.domain import QUESTION_TYPE_BEHAVIORAL
+from app.graph.rules import stream
 from app.graph.rules.follow_up import (
     Decision,
     explain_decision,
@@ -44,7 +44,7 @@ async def followup_node(state: InterviewState) -> dict:
         prompt = FOLLOWUP_CLARIFY_TEMPLATE.format(
             persona=persona, question=question.text, answer=question.answer
         )
-        text = await llm.chat([{"role": "system", "content": prompt}])
+        text = await stream.speak([{"role": "system", "content": prompt}])
     elif decision is Decision.MISSING:
         question.missing_used += 1
         # 只问没问过的漏点（同一 key_point 只追问一次），并写入 asked 集合
@@ -56,7 +56,7 @@ async def followup_node(state: InterviewState) -> dict:
             answer=question.answer,
             missed_points="；".join(unasked),
         )
-        text = await llm.chat([{"role": "system", "content": prompt}])
+        text = await stream.speak([{"role": "system", "content": prompt}])
     else:  # DEEPEN
         question.deepen_used += 1
         # 题库题直接发 follow_ups 元数据（P1-M4.5 拍板：零 LLM 调用，确定性可回放）；
@@ -64,6 +64,7 @@ async def followup_node(state: InterviewState) -> dict:
         # （行为面走行为面口吻模板：不同「底层机制/权衡」，问细节与情境，P1-M11）
         if question.from_bank and question.follow_ups:
             text = question.follow_ups[question.deepen_used - 1]
+            stream.begin(text)  # 纯元数据文案：仍要走流式通道，否则会插到别的消息之后
         else:
             template = (
                 FOLLOWUP_DEEPEN_BEHAVIORAL_TEMPLATE
@@ -73,7 +74,7 @@ async def followup_node(state: InterviewState) -> dict:
             prompt = template.format(
                 persona=persona, question=question.text, answer=question.answer
             )
-            text = await llm.chat([{"role": "system", "content": prompt}])
+            text = await stream.speak([{"role": "system", "content": prompt}])
     question.follow_up_count += 1
     question.followup_log.append(text)
     add_history(state, "assistant", text)

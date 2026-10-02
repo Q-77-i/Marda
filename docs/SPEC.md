@@ -63,12 +63,13 @@ marda/
 
 - 统一封装 `openai` SDK：`base_url="https://api.deepseek.com"`，`api_key` 从 .env 读。
 - 模型：`deepseek-flash`（阶段 1 全部调用；v4-pro 阶段 2 用于报告）。
-- **阶段 1 所有调用关 thinking**（`extra_body={"thinking": {"type": "disabled"}}`），规避坑位清单 1/2；阶段 2 再按节点开启。
+- **所有调用关 thinking**（`extra_body={"thinking": {"type": "disabled"}}`），规避坑位清单 1/2；要开思考模式是独立决策（结构化节点与流式展示都不兼容它）。
 - 两个函数：
-  - `chat(messages, *, max_tokens, temperature) -> str`：文案类（开场/出题/追问/结束语）
-  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），`response_format={"type":"json_object"}` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次（非法 JSON 时）
-- 重试：429/5xx tenacity 指数退避（阶段 1 只做重试，限流/熔断阶段 3）。
+  - `chat(messages, *, max_tokens, temperature, model, on_delta) -> str`：文案类（开场/出题/追问/结束语）。**内部走流式**（P2-M4）：`stream=True` + `stream_options={"include_usage": True}`（usage 随末帧单发，**Langfuse 成本归因的硬前提**），逐块回调 `on_delta`（默认 None = 不回调，evals/脚本不受影响）。空输出重请求 1 次**只在一个字都没吐时**——已吐字的重发会把同一段说两遍
+  - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），**非流式**（`json_object` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次）——结构化输出没有增量语义，展示类才有
+- 重试：429/5xx tenacity 指数退避（阶段 1 只做重试，限流/熔断阶段 3）。**流式的重试只覆盖建连段**（建立连接 + 拿到响应头）：一旦开始吐字，重试就是重复输出，中途断流直接抛（用户侧「重试」= 重跑失败节点，§7）。
 - 调用点全部走 `LLMError` 自定义异常 → API 层转 SSE error 事件。
+- **单一实现纪律**：展示类文案只有 `chat` 一条路径——流式与非流式若各写一套，关 thinking / 空输出重请求 / 错误映射三处会各自漂移（`overall_score` 三处消费的教训同款）。
 
 ## 4. 面试状态机（LangGraph）
 
@@ -551,16 +552,21 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | event | data | 说明 |
 | --- | --- | --- |
 | meta | `{interview_id, phase, answered_count, question_count}` | 阶段/进度（创建流首事件携带 interview_id） |
-| delta | `{text}` | 面试官消息（完整文案；打字机由前端客户端渲染） |
+| delta_start | `{}` | **一条面试官消息开始**（P2-M4）：只作边界标记。**必须显式发**——同一节点内的分片全部先于该节点的 delta 到达，出题节点一次跑出两条消息（答错缓冲 + 题目）时，没有它就切不开谁是谁 |
+| delta_chunk | `{text}` | **流式增量**（P2-M4）：真 token 流的分片，追加到最近一条未结算的消息。1:1 透传不做碎块合并（实测中位 2 字/片、首字 0.47s） |
+| delta | `{text}` | 面试官消息**终稿全文**（语义未变）：兼三职——前端用它对账（替换累积文本）、失败半截的清算依据、旧前端兼容（不认识前两个事件的客户端照常渲染） |
 | question | `{index, question_id, domain, difficulty}` | 新题提示（只在新题时发一次：追问/评分重传同题不发；生成题无 question_id 不发） |
 | done | `{interview_id, report_ready}` | 面试结束 |
-| error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限）：**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义） |
+| error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限）：**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义）。**流式下多一条口径**：错误时未收敛到终稿的气泡按「从未落 checkpoint」丢弃（节点抛错则状态不提交），重试会重新流一遍 |
+| asr_partial / tts_chunk | —（M5 实现） | **预留**（P2-M4 登记，M5 语音用）：名字先占好，前端分发层对未注册事件名静默丢弃（`lib/api.test.ts` 钉死），M5 加 handler 即接上 |
 
 **`stalled`（P1-M4.7 后续）**：`true` = 图卡在失败节点上（`next` 指向该节点且无中断载荷），区别于正常停在 `pause` 中断点（`next == ("pause",)` 且 tasks 带 interrupts）；已结束（`next` 为空）恒为 `false`。它是**服务端给的**判据，不是让前端从「末条消息是不是 assistant」这类外部特征反推——报告节点失败恰恰也表现为「末条是 assistant」，猜错就是面试永久卡死。
 
 前端据此分两路（决策纯函数 `frontend/lib/recovery.ts`，vitest 覆盖）：卡住或回答没入账 → 重发（踢活失败节点 / 补发从未送达的回答）；**已跑完只是回复没传回来 → 只按服务端记录重建列表，绝不重发**（重发会被当成新一轮，同一份回答判两次）。
 
-工程要求：`stream_mode=["updates"]`（llm.py 走裸 openai SDK，无 LangChain messages token 流可推；打字机效果由前端逐字渲染，阶段 2 若上真 token 流 delta 事件形状不变）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
+工程要求：`stream_mode=["updates", "custom"]`（P2-M4：节点内 `get_stream_writer()` 逐块外送，走 custom 流——**状态机与图结构一条不动**，service 只把 custom 块映射成 SSE 事件名；节点在图外跑时 `get_stream_writer` 抛 `RuntimeError`，`graph/rules/stream.py` 统一吞掉退化为空操作）；`X-Accel-Buffering: no`；15s 心跳注释（sse-starlette 内置 ping=15 实现）；async handler 全程 `astream` 不阻塞事件循环。
+
+**流式不变量（测试钉死）**：发出的分片拼接 == 节点落 `chat_history` 的那条消息（节点侧只经 `stream.speak()/begin()` 出口，构造上不会漂）；集成测试与 smoke 各断言一次「每条 delta_start 恰好收敛一条 delta、分片 > 1 片、拼接逐字一致」。**已知边界**：报告生成期间（报告官走 `chat_json`，v4-pro）无输出——结构化不流式，等待体验由报告页承接。
 
 ## 8. 数据库（SQLite，阶段 2 仍 SQLite，PG 迁移推阶段 3）
 
@@ -612,9 +618,9 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 - **题库页**（`/bank`，P1-M6 FR-12）：顶部搜索框（关键词走混合检索，提交后与筛选叠加）+ 域 chips（值来自 `facets`，`aria-pressed` 表选中）+ 三个下拉（难度/厂商/面次，首项「全部」）+ 结果卡片（可展开：参考答案 / 关键点 / **来源合规四要素**，主源标注「答案主源」、`原文` 外链 `rel=noreferrer`）+ 分页。结果卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选/搜索任一项变更即回第一页**（否则在第 5 页改筛选会落到空页）——这条在 `lib/bank.ts` 的 `withFilter` 里，vitest 钉死。
 - **私有题库页**（`/bank/private`，P1-M7 FR-13）：上传卡（模板说明前置）→ 结果条给**三份明细**（导入 / 重复 / 失败，重复特意写明「未覆盖」——答案可能已被他手改过）→ 列表筛选 + **行内展开**编辑 / 归档恢复（与题库页展开看答案同一套交互，不引新 dialog 原语）；后端复用的 `enabled`/`draft` 在前端读作「使用中 / 已归档」。
 - **容量校验的前端口径（FR-14）**：创建表单挂载时拉一次 `/api/bank/capacity`（题量选项 × 4 难度一次拿全，切换难度零网络）；**直供不足的题量禁用 + 明写缺在哪**（「15 题不可选 —— 题库直供不足：规划与推理范式（需 2 题，题库 1 题）」），不做静默禁用（禁了不说原因，用户只会以为页面坏了）。**拉取失败一律不禁用**（`.catch` → `capacity = null`）：服务端本就不拦创建，网络抖动绝不能让表单自己把用户锁死。
-- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏换「查看报告」，报告页与回放页互链，复用同一恢复接口；完整回放的前提是 `chat_history` 只增不截，见 §11 风险点 6）。
+- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、**流式渲染 + 打字机兜底**（见下）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏换「查看报告」，报告页与回放页互链，复用同一恢复接口；完整回放的前提是 `chat_history` 只增不截，见 §11 风险点 6）。
   - **SSE 走 POST**：`EventSource` 只支持 GET，`lib/sse.ts` 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断。
-  - **打字机在前端**：后端 `delta` 发完整文案，前端 `TypewriterQueue` 逐字渲染（FIFO，前一题吐完才吐下一题；单测钉死顺序性）。
+  - **流式与打字机并存（P2-M4）**：纯逻辑在 `lib/stream-render.ts`（`StreamBuffer`，vitest 覆盖）——`delta_start` 开气泡、`delta_chunk` 追加给最近一条未结算消息、`delta` 按序 FIFO 结算（**用终稿替换累积文本**：服务端会 strip 两侧空白，分片拼接可能与终稿差几个不可见字符，以终稿为准、前端不二次拼接）。**旧打字机只剩两条路**：① 没有分片的消息（旧后端 / 未来的非流式节点）走 `TypewriterQueue` 逐字吐——PRD「旧打字机兼容」的落点；② 未注册事件名静默丢弃，旧前端遇到新事件照常渲染。**未结算气泡在错误/流结束时收走**（没终稿 = 从未落 checkpoint，留着就是「看得见、刷新就没」的假消息）。创建表单的开场预览按分片累加、终稿只在无分片时追加（防同一段写两遍）。
   - **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表；网络失败、HTTP 4xx 与流内 `error` 事件（LLM 抖动等）都转中文文案 + 重试按钮，**判据由服务端 `stalled` 给**（§7），`lib/recovery.ts` 纯函数分两路处置；重试不重复插入消息。
   - **输入体验**：Enter 发送、Shift+Enter 换行（输入法「上屏回车」不误发送）；输入框随内容长高，约 40% 视口高封顶后框内滚动。
 - **报告页**：Recharts 雷达图（五维）+ 知识域横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意；配色经调色板校验器明暗双模式检查）、逐题点评卡片、短板高亮、总评；**逐题复盘卡**（阶段 2 FR-25：我的回答按「【追问补充】」标记分成「首答 / 追问补充 N」不混成一大段、五维得分、关键点覆盖对比 ✓/✗、题库题参考答案折叠展示——项目深挖题无权威答案只给关键点对比；历史报告缺字段时退化为「题干 + 点评」）。三处入口：页头「决策回放」（P1-M4）、「导出 PDF」（P1-M8，文件名纯逻辑在 `lib/download.ts`）、「针对性练习推荐」卡（P1-M9，`?interview=<id>` 跳学习页承接来源场次，`showAdvice=false` 避免与学习建议卡复述；行为面不渲染）。
@@ -640,7 +646,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（653 个，不需要任何密钥）· `cd frontend && pnpm test`（175 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（670 个，不需要任何密钥）· `cd frontend && pnpm test`（194 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 ## 11. 风险注意点（实现时强制）
 
@@ -654,6 +660,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 8. 检索指标（§4.13）是**池内口径**（池外视作不相关）：跨版本可比，**不能当绝对召回率读**；改池策略 = 换基准——两份结果文件的 golden `sha256` 不同就只能各自读，别直接比数字。差值小于噪声地板（`hybrid` ±0.005）时不要下结论
 9. 评分门禁（§4.13 会话 2）的阈值 = **基线 + 余量**，余量按「同一基线连跑两次的指标自身波动」定：**MAE 低于评分官的 σ̄ 时不构成结论**（分不出「偏了」还是「本来就晃」）；golden `sha256` 变了 = 换了基准，门禁**拒绝比较**并提示先重跑基线。改 `judge_messages`/维度表/评分模型后必须跑一次门禁
 10. 评分评测的输入统一是「单轮回答」（`followup_log` 恒「无」）：带追问的真实样本取**合并后的最终答案**，中间轮次的评分任务不入 golden——重建其输入需要 trace，代价不值。这点的后果是「追问过程中的评分」不在覆盖范围内，如实写进报告局限
+11. 流式（§3/§7）：**首块之后不重试**（已吐字重发 = 同一段说两遍）；展示类文案只走 `llm.chat` 一条路径（另起一套非流式实现会在关 thinking / 空输出重试 / 错误映射三处漂移）；**分片拼接 == 落 `chat_history` 的那条消息**——节点侧只经 `stream.speak()/begin()` 出口，别在节点里自己拼前缀（拼错 = 前端收终稿时文字跳变）；`include_usage` 不能摘（摘了 Langfuse 成本读回恒 0）
 
 ---
 
@@ -663,6 +670,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-02 | P2-M4 模态层 + 真 token 流 | §3 `chat` 改流式（重试只覆盖建连段 / 单一实现纪律） · §7 事件表补 `delta_start`/`delta_chunk` 与语音事件预留 + 工程要求改写（custom 流）+ 流式不变量 · §9 流式与打字机并存 · §10 计数 · §11 风险 11 |
 | 2026-10-02 | P2-M3 前端小修包 | §9 补窄屏顶栏口径 · §4.11 `excluded.no_report` 与空态三态 · §4.12 D7 复核（私有题不开放行为面域，接口层断言） |
 | 2026-10-02 | P2-M2 检索与推荐修复 | §4.6 建议域枚举口径 · §4.10 长查询不 rerank 判据 · §4.13 噪声地板 0.005 → 0.013（四次同路径复跑修正）· §5.2 同步 |
 | 2026-10-02 | P2-M1 题库质量三连 | §6.6 补白名单两处应用 + 难度重标注表（含 apply 脚本与校准口径） · §6.4 补按域 prompt 分支 · §4.13 局限改为「已解局限」（golden 快照陈旧如实记录） |

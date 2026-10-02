@@ -34,6 +34,40 @@ def _response(content: str | None) -> SimpleNamespace:
     )
 
 
+def _chunk(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=text))], usage=None
+    )
+
+
+def _usage_chunk() -> SimpleNamespace:
+    """结尾 usage 块：choices 为空、只有 usage（include_usage 的产物，不产出正文）。"""
+    return SimpleNamespace(
+        choices=[], usage=SimpleNamespace(prompt_tokens=12, completion_tokens=6)
+    )
+
+
+def _pieces(text: str | None, size: int = 3) -> list[str]:
+    if not text:
+        return []
+    return [text[i:i + size] for i in range(0, len(text), size)]
+
+
+class FakeStream:
+    """模拟 openai AsyncStream：先吐分片，可选中途抛错，最后补 usage 块。"""
+
+    def __init__(self, pieces: list[str], *, error: Exception | None = None) -> None:
+        self._pieces = pieces
+        self._error = error
+
+    async def __aiter__(self):
+        for piece in self._pieces:
+            yield _chunk(piece)
+        if self._error is not None:
+            raise self._error  # 中途断流（已吐过字）
+        yield _usage_chunk()
+
+
 def _status_error(status: int) -> Exception:
     response = httpx.Response(status, request=REQUEST)
     if status == 429:
@@ -42,7 +76,12 @@ def _status_error(status: int) -> Exception:
 
 
 class FakeClient:
-    """按序吐出预置结果；Exception 项直接抛出（模拟网络层失败）。"""
+    """按序吐出预置结果；Exception 项直接抛出（模拟网络层失败）。
+
+    流式分支（P2-M4）：`stream=True` 时把预置结果包成 FakeStream——
+    - FakeStream 原样返回（可编程分片/中途抛错）；
+    - `_response(...)`/空 choices 的响应对象按正文自动切片（既有用例零改动）。
+    """
 
     def __init__(self, outcomes: list) -> None:
         self._outcomes = list(outcomes)
@@ -55,10 +94,20 @@ class FakeClient:
                 outer.calls.append(kwargs)
                 item = outer._outcomes.pop(0)
                 if isinstance(item, Exception):
-                    raise item
+                    raise item  # 建连期失败（重试覆盖的就是这一段）
+                if kwargs.get("stream"):
+                    return outer._as_stream(item)
                 return item
 
         self.chat = SimpleNamespace(completions=_Completions())
+
+    @staticmethod
+    def _as_stream(item) -> FakeStream:
+        if isinstance(item, FakeStream):
+            return item
+        choices = getattr(item, "choices", None) or []
+        content = choices[0].message.content if choices else None
+        return FakeStream(_pieces(content))
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +124,7 @@ def _test_env(monkeypatch):
 def install(monkeypatch):
     """注入 fake client，并把退避等待清零（测试不真睡）。"""
     monkeypatch.setattr(llm._create.retry, "wait", wait_none())
+    monkeypatch.setattr(llm._create_stream.retry, "wait", wait_none())
 
     def _install(outcomes: list) -> FakeClient:
         client = FakeClient(outcomes)
@@ -235,3 +285,88 @@ async def test_连接错误耗尽后抛可重试错误(install):
 
     assert excinfo.value.retryable is True
     assert len(client.calls) == llm.NETWORK_RETRY_ATTEMPTS
+
+
+# ── 流式（P2-M4）────────────────────────────────────────────────────────────
+
+
+async def test_chat_流式分片聚合为全文并剥离两侧空白(install):
+    client = install([FakeStream(["  你好", "，我是", "面试官。  "])])
+
+    assert await llm.chat(MESSAGES) == "你好，我是面试官。"
+    call = client.calls[0]
+    assert call["stream"] is True
+    assert call["stream_options"] == {"include_usage": True}  # Langfuse 成本归因的硬前提
+    assert call["extra_body"] == {"thinking": {"type": "disabled"}}  # 流式下同样关 thinking
+
+
+async def test_chat_on_delta逐块回调(install):
+    install([FakeStream(["甲", "乙", "丙"])])
+    seen: list[str] = []
+
+    text = await llm.chat(MESSAGES, on_delta=seen.append)
+
+    assert seen == ["甲", "乙", "丙"]  # 逐块、保序、不合并
+    assert text == "甲乙丙"
+
+
+async def test_stream_chat_逐块产出(install):
+    install([FakeStream(["一", "二", "三"])])
+
+    pieces = [p async for p in llm.stream_chat(MESSAGES)]
+
+    assert pieces == ["一", "二", "三"]  # usage 块不产出正文
+
+
+async def test_流式_建连失败仍按网络层重试(install):
+    client = install([_status_error(429), FakeStream(["重试成功"])])
+
+    assert await llm.chat(MESSAGES) == "重试成功"
+    assert len(client.calls) == 2
+
+
+async def test_流式_首块之后断流不重试(install):
+    """已吐字再重试会重复输出——重试只覆盖建连段，中途断流直接抛。"""
+    client = install([FakeStream(["半截"], error=APIConnectionError(request=REQUEST))])
+
+    with pytest.raises(llm.LLMError) as excinfo:
+        await llm.chat(MESSAGES)
+
+    assert excinfo.value.retryable is True  # 可重试的是「用户重发」，不是本层自动重发
+    assert len(client.calls) == 1
+
+
+async def test_流式_空流重请求一次并带纠偏提示(install):
+    client = install([FakeStream([]), FakeStream(["补上了"])])
+
+    assert await llm.chat(MESSAGES) == "补上了"
+    assert len(client.calls) == 2
+    assert "请继续输出" in client.calls[1]["messages"][-1]["content"]
+
+
+async def test_流式_空流重请求后仍空抛错(install):
+    client = install([FakeStream([]), FakeStream([])])
+
+    with pytest.raises(llm.LLMError) as excinfo:
+        await llm.chat(MESSAGES)
+
+    assert excinfo.value.retryable is False
+    assert len(client.calls) == 2
+
+
+async def test_流式_空流重请求时on_delta不被重复触发(install):
+    seen: list[str] = []
+    install([FakeStream([]), FakeStream(["补上了"])])
+
+    await llm.chat(MESSAGES, on_delta=seen.append)
+
+    assert seen == ["补上了"]  # 第一次全空、没有块可发，不存在重复
+
+
+async def test_chat_json_不走流式(install):
+    """结构化输出保持非流式（json_object + 整段校验），流式只服务展示类文案。"""
+    client = install([_response('{"technical_depth": 4, "comment": "好"}')])
+
+    await llm.chat_json(MESSAGES, schema=Review)
+
+    assert not client.calls[0].get("stream")
