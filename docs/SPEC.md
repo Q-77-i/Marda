@@ -24,30 +24,36 @@ marda/
 │   │   ├── llm.py                # DeepSeek 统一封装（openai SDK + base_url）
 │   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级，P1-M4）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
-│   │   ├── api/                  # interviews.py（五端点，SSE 流）
-│   │   ├── graph/                # state.py / graph.py / nodes/ / rules/
-│   │   ├── agents/               # prompts.py / schemas.py（结构化输出 Pydantic）
-│   │   ├── tools/                # question_search.py（RAG 检索工具）
+│   │   ├── api/                  # interviews / auth / bank / bank_private / profile（SSE 流在 interviews）
+│   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接）
+│   │   ├── agents/               # prompts.py / schemas.py（出题与评分的提示词模板与结构化输出 schema）
+│   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）
+│   │   ├── templates/            # report.html.j2（PDF 模板）
+│   │   ├── report_pdf.py         # 报告 PDF 渲染（jinja2 + weasyprint + 手绘雷达 SVG，P1-M8）
+│   │   ├── security.py           # 密码哈希（scrypt）与 JWT（P1-M2）
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
-│   │   └── db.py                 # 业务库三表（interviews / answers / reports）
-│   ├── scripts/                  # smoke_llm.py / smoke_graph.py / smoke_api.py
+│   │   └── db.py                 # 业务库六表（questions / question_sources / users / interviews / answers / reports）
+│   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import，P1-M12）
+│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api + eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
-│   ├── app/                      # page.tsx（仪表盘）/ interview/[id]/ report/[id]/
-│   ├── components/               # chat / radar / report / …
-│   └── lib/                      # api.ts / sse.ts / typewriter.ts / format.ts / constants.ts / chart-tokens.ts
+│   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
+│   ├── components/               # 页面客户端组件 + 共享件（PageShell / PageHeader / EmptyState / ErrorState / StatusBanner / InlinePanel）+ ui/
+│   └── lib/                      # sse / typewriter / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens
 ├── data/
-│   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest / apply_overrides / enable_behavioral
+│   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest / apply_overrides / enable_behavioral / check_redline
 │   ├── curation/                 # 人工改判表（question_overrides.json）
+│   ├── eval/                     # 评测产物：summary.md 入库，golden/ 与 results/ gitignore（P1-M12）
 │   ├── parsed/                   # 解析产物（gitignore）
+│   ├── raw/                      # 开源语料原仓（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
 ├── docker/
 │   └── nginx.conf                # 唯一入口：/api → api，其余 → web（本地与阶段 3 同构）
 └── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、langfuse==4.9.1（可观测，P1-M4）、sqlite3（内置）
-- 前端依赖：next@15、react、tailwindcss、shadcn/ui、framer-motion、recharts
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、pyjwt（P1-M2）、python-multipart（P1-M7 上传）、weasyprint + jinja2（P1-M8 PDF）、langfuse==4.9.1（可观测，P1-M4）、sqlite3（内置）；评测依赖（ragas 等）在 dev 组，容器 `uv sync --no-dev` 不进镜像（§4.13）
+- 前端依赖：next@15、react 19、tailwindcss v4、shadcn/ui（@base-ui/react）、framer-motion、recharts、tw-animate-css、lucide-react
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：**本地 BGE-M3 独立容器**（M3 起，`backend/embedding_service/`，torch 不进 api 镜像）；SiliconFlow 只留 rerank
 
@@ -336,6 +342,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 - **数据来源是报告 payload 本身**（§4.6），导出不重算任何分数：页面显示什么，PDF 就显示什么。旧 payload 缺字段（FR-25 之前）按缺失略过，不报错。
 - **五维键与中文标签单一来源 = `graph/rules/aggregate.DIMENSION_LABELS`**（`FIVE_DIMS` 由它派生）；前端 `constants.DIMENSIONS` 是展示副本。雷达图顶点顺序即该表顺序。
+- **语义色与主蓝与前端令牌同源**（P1 收尾专项会话 1）：成功 / 警告 / 主蓝三处取 `globals.css` 令牌的 sRGB 值并在模板注明出处（PDF 是独立渲染管线，拿不到 CSS 变量，只能对值）；浅色底与描边属版式自身的灰阶，不随令牌走。
 - **雷达图 = 内联 SVG 手绘**（五轴五点，0–5 线性映射，越界截断）。两条打印引擎的硬约束，都踩过：
   1. **样式写 SVG 呈现属性，不写 CSS** —— `fill-opacity` 走 CSS 会被忽略（数据多边形糊成实心黑）；
   2. **画布与坐标系 1:1** —— 引擎对 `<text>` **不套用 viewBox 变换**（五边形按 viewBox 缩放、文字按原始坐标摆），靠 viewBox 留白给标签腾位置会被裁掉半截字；改为收紧半径把标签收进框内。
@@ -370,7 +377,13 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **响应形状 = `{sessions, summary, weakness_changes, excluded}`**，**不含图表序列**——曲线行是 Recharts 专用的展示整形，放前端 `lib/profile.ts`（纯函数 + vitest），后端重复算一遍等于同一批数字有两个来源。`excluded`（P1-M11）是未计入的场次计数（形状 `{"behavioral": N}`），供空档案/混排时说明白「为什么看不到那几场」。
 - **行为面场次不计入档案（P1-M11 D4）**：**过滤字段 = 报告 payload 的 `interview_type`**（`payload.get("interview_type") or "tech"`，缺省视为技术面——FR-19 之前的老 payload 没有该字段，不能被误排除）。档案 = 技术能力档案：行为面的评分维度与知识域体系都不同，混入曲线会出现维度缺键造成的全 0 假点。排除掉的场次进 `excluded` 计数，前端据此渲染空态/提示（「行为面不计入技术能力档案」），不静默。
 - **端点 `GET /api/profile` 无场次参数**：档案看的是「我的全部场次」，隔离由 user_id 过滤承担，因此**没有 404/越权面**（对照面试各端点的 owner 校验）；**没有场次时返回零态结构而不是 404**——「还没有数据」是正常状态。
-- **前端三种形态**（判定在 `lib/profile.ts`）：空档案 → 文案 + 「开始第一场面试」CTA（**空态不只是告知，要给出路**）/ 只有一场 → 说明为什么画不出曲线 + 该场雷达等快照 + 「再开始一场」CTA / 多场 → 总分主曲线（点位可点进该场报告）+ 短板变化 + 知识域与五维的**小倍图**。选小倍图而不是多线图：5 条 / 6 条线缠在一张图里，交叉处用户分不清谁是谁，还得配图例与一套分类色板；各自成图则涨跌一眼可见，每张只用一个主色。横轴刻度同一天多场加序号（`MM-DD #2`）——只写日期会看起来是重复的点。
+- **前端三形态**（判定与整形都在 `lib/profile.ts`，纯函数 + vitest）：空档案 → 文案 + 「开始第一场面试」CTA（**空态不只是告知，要给出路**；只有行为面场次时说明「行为面不计入技术能力档案」）/ 只有一场 → 说明为什么画不出曲线 + 该场快照 + 「再开始一场」CTA / 多场 → 四张卡。**卡片顺序 = 认知路径（M10.5）**：五维对照（我是谁，静态）→ 总分曲线（在变好还是变差，整体）→ 知识域趋势（哪个细分方向，交叉对比）→ 短板变化（逐场明细）。
+- **视图口径（P1-M10.5，真数据 7 个点暴露三条问题后的改版）**：
+  - **知识域 = 热力图**（行 = 域、列 = 场次、格 = 色 + 数字；缺场灰底虚线写「未考」不写数字——M10「不补零」的延续）。原「每域一张迷你曲线」被替换：6 张小图的 **X 轴刻度不对齐**，无法横向比较「第 3 场里哪个域最强」，热力图天然解决且没有「断线」这个视觉问题。**用 CSS grid 不用 recharts**——后者没有热力图原语（用 Cell 拼是 hack），CSS grid 直接吃 CSS 变量、明暗自适应、缺场格与窄屏横向滚动都是天然的。色阶**固定锚定 1–5**（同一分数永远同一颜色；min-max 归一化会让新加一场就重刷旧格子 = 假信号），品牌 H240 单色 5 级、明暗各一套步值，已过 dataviz 调色板校验（唯「最近底色档 ≥2:1」是该 skill 对 sequential 热力图明确豁免的口径，兜底是每格都印数字）；**色阶的硬约束是文色翻转死区**——格子里要印数字，深字（≥4.5:1）要求底色够亮、浅字要求够暗，中间的亮度带两种字都不够看，故 5 档不等距、在死区处留跳变（五档数字对比全 ≥4.5:1）。
+  - **五维 = 场均 / 最近对照表**：真数据上五维**同涨同跌**（走向与总分曲线重复），真正有差异的是**水平**——数字比线读得准，也不必为 5 条近乎平行的线引分类色板 + 图例（与单一强调色的设计语言相悖）。
+  - **总分曲线横轴「一天一个标签」**：同日多场合并到该组首点，`#n` 保留在 tooltip 与热力图列头；抽稀**按日期组**做，天然不会产出「有 #2 没 #1」的孤儿编号（日期组超 7 个再等距抽稀、首末必留）。
+  - **窗口策略（场次变多后三视图三种策略）**：曲线**全量**（趋势的价值就在整体走向）；热力图默认最近 **7** 场 + 「查看全部 N 场」展开（列再多数字就难读）；短板变化默认最近 **5** 场 + 展开（每场 3–5 行文字，再多就淹没在列表里，想看旧场次点曲线上的点进报告）。两个坑：热力图列头取**全量**那套标签而不是重算（重算会把窗口内第一场改名，同一场在两个视图里就不同名了）；短板变化**先按升序切尾部窗口、再倒序展示**（先倒序再切会取到最旧的 5 场）。
+  - **洞察一行**（最小版）：只陈述事实 + 依据（如「场均最低的知识域是 X（2.4 分，考过 4 场）」），**不替用户下结论**；「场均最低」要求**≥2 个可比域且确有高低差**（都 4.0 分时说「最低」是废话）；短板的连续场次直接数 `sessions[].weaknesses`，不走 changes 链。
 - **验收口径**：单测覆盖总分口径、域洞、三态、并列取最早、历史残缺 payload；集成测试覆盖零态、与报告 payload 逐字段对账、用户隔离、未结束场次不入选；smoke 在真链路取回档案与报告对账。
 
 ## 4.12 行为面 / HR 面（P1-M11 / FR-22）
@@ -598,14 +611,25 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 9. 前端设计
 
+**页面清单（九页）**：登录 `/login`、仪表盘 `/`（新建 + 历史）、题库 `/bank`、私有题库 `/bank/private`、能力档案 `/profile`、学习推荐 `/learn`、面试页 `/interview/[id]`、报告页 `/report/[id]`、决策回放页 `/trace/[id]`。请求走同源 `/api/*`（`next.config.ts` rewrites → 后端），免 CORS 配置；开发模式走 rewrites，生产由 nginx 前置接手 `/api`（standalone 下 rewrites 构建期烤死）。
+
 - **导航（P1-M6 定调）**：**顶栏 tab**（`components/main-nav.tsx`），不用侧边栏。理由是这一层的页面性质：顶层页面是 3–4 个**平级工具页**（仪表盘 / 题库 / 能力档案 / 学习推荐），没有层级也没有分区，侧边栏是为「多层级 + 常驻切换」设计的，在这个规模上只是白占一条纵深；而面试页与报告页是**沉浸式**（导航必须隐藏），顶栏只要不渲染 `MainNav` 就干净了，侧边栏还得额外处理布局位移。**没做的页面现在就占位**：`NAV_ITEMS` 里 `ready: false` 的项渲染成不可点的灰字（`aria-disabled` + 「即将上线」），**绝不发出会 404 的 `<a href>`**——占位是让 M7/M9/M10 往里塞时不必重排导航，不是提前给用户一个坏链接。
-- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + 题量 5/10/15 轮 + **难度选择**（P1-M6 FR-14：自适应 / L1 / L2 / L3，四选二行网格 + 一行说明）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口），meta 行显示题量与难度）。
+- **登录与路由守卫（FR-23）**：`lib/session.ts` 管 token（localStorage 优先，隐私模式等环境自动降级 sessionStorage，两者都禁用则明确提示而非静默失败），`lib/http.ts` 统一注入 Bearer 与 401 处置，`components/auth-guard.tsx` 拦未登录访问（判断完成前先渲染载入态，不闪受保护内容）。**401 默认直跳登录页，唯独面试页弹确认再跳**——答题答到一半被直接踢走体感太差；登录接口自身的 401/409 只当表单错误展示，绝不触发全局跳转；登录成功统一 `replace("/")`（demo 不做原页回跳）。
+- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + **面试类型**（P1-M11：技术面 / 行为面）+ 题量 5/10/15 轮 + **难度选择**（P1-M6 FR-14：自适应 / L1 / L2 / L3，四选二行网格 + 一行说明）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口），meta 行显示题量与难度；行为面场次挂类型徽标且不显示难度）。
+- **面试类型切换（P1-M11 FR-22）**：**选行为面后隐藏难度选择器与容量校验**（容量按「难度 × 域配额」算，与行为面题源无关），题量只给 5/10；出题与评分的两处口径见 §4.12。
 - **题库页**（`/bank`，P1-M6 FR-12）：顶部搜索框（关键词走混合检索，提交后与筛选叠加）+ 域 chips（值来自 `facets`，`aria-pressed` 表选中）+ 三个下拉（难度/厂商/面次，首项「全部」）+ 结果卡片（可展开：参考答案 / 关键点 / **来源合规四要素**，主源标注「答案主源」、`原文` 外链 `rel=noreferrer`）+ 分页。结果卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选/搜索任一项变更即回第一页**（否则在第 5 页改筛选会落到空页）——这条在 `lib/bank.ts` 的 `withFilter` 里，vitest 钉死。
+- **私有题库页**（`/bank/private`，P1-M7 FR-13）：上传卡（模板说明前置）→ 结果条给**三份明细**（导入 / 重复 / 失败，重复特意写明「未覆盖」——答案可能已被他手改过）→ 列表筛选 + **行内展开**编辑 / 归档恢复（与题库页展开看答案同一套交互，不引新 dialog 原语）；后端复用的 `enabled`/`draft` 在前端读作「使用中 / 已归档」。
 - **容量校验的前端口径（FR-14）**：创建表单挂载时拉一次 `/api/bank/capacity`（题量选项 × 4 难度一次拿全，切换难度零网络）；**直供不足的题量禁用 + 明写缺在哪**（「15 题不可选 —— 题库直供不足：规划与推理范式（需 2 题，题库 1 题）」），不做静默禁用（禁了不说原因，用户只会以为页面坏了）。**拉取失败一律不禁用**（`.catch` → `capacity = null`）：服务端本就不拦创建，网络抖动绝不能让表单自己把用户锁死。
-- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏标「已结束」，复用同一恢复接口）。
-- **报告页**：Recharts 雷达图（五维）、知识域条形图、逐题点评卡片、短板高亮、总评；逐题复盘卡（阶段 2 FR-25：我的回答 / 五维得分 / 关键点对比 / 题库题参考答案折叠展示，项目深挖题仅关键点对比）。页头「决策回放」入口（P1-M4）。
+- **面试页**：聊天流（fetch POST + SSE 流解析，`lib/sse.ts`）、打字机渲染（客户端逐字动画，delta 事件为完整文案）、阶段/进度指示（"技术问答 7/10"）、主动结束按钮、刷新后用 GET /interviews/{id} 恢复 UI；已结束场次进入只读回放（阶段 2 FR-25：隐藏输入框、顶栏换「查看报告」，报告页与回放页互链，复用同一恢复接口；完整回放的前提是 `chat_history` 只增不截，见 §11 风险点 6）。
+  - **SSE 走 POST**：`EventSource` 只支持 GET，`lib/sse.ts` 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断。
+  - **打字机在前端**：后端 `delta` 发完整文案，前端 `TypewriterQueue` 逐字渲染（FIFO，前一题吐完才吐下一题；单测钉死顺序性）。
+  - **刷新恢复与错误路径**：刷新后从 checkpoint 重建消息列表；网络失败、HTTP 4xx 与流内 `error` 事件（LLM 抖动等）都转中文文案 + 重试按钮，**判据由服务端 `stalled` 给**（§7），`lib/recovery.ts` 纯函数分两路处置；重试不重复插入消息。
+  - **输入体验**：Enter 发送、Shift+Enter 换行（输入法「上屏回车」不误发送）；输入框随内容长高，约 40% 视口高封顶后框内滚动。
+- **报告页**：Recharts 雷达图（五维）+ 知识域横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意；配色经调色板校验器明暗双模式检查）、逐题点评卡片、短板高亮、总评；**逐题复盘卡**（阶段 2 FR-25：我的回答按「【追问补充】」标记分成「首答 / 追问补充 N」不混成一大段、五维得分、关键点覆盖对比 ✓/✗、题库题参考答案折叠展示——项目深挖题无权威答案只给关键点对比；历史报告缺字段时退化为「题干 + 点评」）。三处入口：页头「决策回放」（P1-M4）、「导出 PDF」（P1-M8，文件名纯逻辑在 `lib/download.ts`）、「针对性练习推荐」卡（P1-M9，`?interview=<id>` 跳学习页承接来源场次，`showAdvice=false` 避免与学习建议卡复述；行为面不渲染）。
+- **学习推荐页**（`/learn`，P1-M9 FR-20）：场次选择器（只列技术面）+ 按短板域分组的资料卡；与报告页共用 `recommend-groups.tsx`（行内展开同题库页交互，不引新原语），默认场次判定在 `lib/learn.ts`。
+- **能力档案页**（`/profile`，P1-M10 / M10.5 FR-19）：四张卡按认知路径排（五维对照 → 总分曲线 → 知识域热力图 → 短板变化）+ 一行洞察；窗口、色阶与空态口径见 §4.11。
 - **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：只读时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
-- 设计：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。
+- **设计（P1 收尾专项会话 1 归一）**：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。设计令牌是明暗双套 OKLCH（`globals.css`，含 P1 补的 `--success`）+ 中文回退字体栈（Geist 不含 CJK）+ 全局 `prefers-reduced-motion` 兜底；**状态态各有唯一档位**（空态 / 加载态两档 / 错误态三档规则：可重试 = inline + 按钮、表单级 = 一行红字、全页 = 中性色 + 返回首页），卡片材质两档（卡片 = `rounded-xl + ring-1`，内嵌面板 = `rounded-lg border + bg-muted/30`，无阴影），共享件 `PageShell` / `PageHeader` / `EmptyState` / `ErrorState` / `StatusBanner` / `InlinePanel`。主题只跟随系统 `prefers-color-scheme`（不做切换）；移动端布局按响应式写但**未实测**（窄屏顶栏导航竖排是已知问题，移动端整体暂缓）。
 
 ## 10. 测试与验收（TDD 顺序）
 
@@ -640,6 +664,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 ## 12. Changelog
 
+- 2026-10-02 P1 收尾专项 · 会话 2（README 门面重写 + 文档系统性核对）：README 瘦身为门面（定位 / 架构图 / 核心亮点 / 快速开始 / 技术栈 / 精简目录 / 验证命令 / 进度表），**机制移本节、操作留 README**。本节同步：§2 目录树与依赖行对齐实际（`evals/`、`scripts/eval_*`、`templates/`、`report_pdf.py`、`security.py`、六表、`data/eval`、`data/raw`；前端依赖补 `tw-animate-css` / `lucide-react` 等）；**§9 由 8 条 bullet 扩写为前端规格的完整家**——页面清单（九页）、登录与路由守卫（FR-23）、面试类型切换（M11）、私有题库页（M7）、面试页子口径（SSE 走 POST / 打字机在前端 / 刷新恢复与错误路径 / 输入体验）、报告页三入口（回放 / PDF / 推荐卡）与逐题复盘卡、学习推荐页、能力档案页、设计令牌归一（收尾会话 1：`--success`、中文回退字体栈、reduced-motion 兜底、状态态与卡片材质唯一档位、六个共享件）；§4.9 补「语义色与主蓝与前端令牌同源」；§4.11 前端形态更新为 M10.5 口径（见下条）。文档核对同时修掉：README 测试计数（vitest 166 → 169）、API 端点前缀统一带 `/api`、密钥清单补 `LANGFUSE_*`、`frontend/README.md` 的 create-next-app 样板残留改为指向根 README、PRD §5 页面表补登录页与学习推荐页、PRD §8.1 的收尾专项口径由「报告页视觉升级」改为实际三件事
+- 2026-10-01 P1-M10.5（能力档案前端三条改版）：§4.11 前端形态重写——知识域由「每域一张迷你曲线」改**热力图**（X 轴刻度不对齐、无法横向比较的问题由此消失；CSS grid 实现、缺场灰格「未考」、色阶固定锚定 1–5 与文色翻转死区）、五维由 5 张小图改**场均 / 最近对照表**（真数据上同涨同跌、差异只在水平）、总分曲线横轴改「一天一个标签」（按日期组抽稀）；补卡片顺序（认知路径）、**三视图三种窗口策略**（曲线全量 / 热力图最近 7 场 / 短板变化最近 5 场，含列头取全量标签、升序切尾部再倒序两个坑）与洞察一行的口径。后端零改动
 - 2026-10-01 P1-M12 会话 2（评估体系 · 评分一致性 + 门禁）：§4.13 新增「评分一致性」「门禁」两节（三条线、生产 prompt 单一来源、golden 三臂与分层抽样、期望分=独立标注非实得、覆盖率两口径的理由、温度对照的边界、基线数字与局限、门禁阈值来自两次基线的自身波动、完全一致率不进门的理由、哈希纪律）+ §10 测试行 11 + §11 风险点 9/10（门禁阈值纪律、单轮回答形态的局限）。**选型修正**：原定 DeepEval 改**自研 harness**——它没有现成的一致性/准确性 metric，本会话要测的三样都得自研，引包只买到 TestCase/assert 骨架 + 重依赖树（PRD §8.1 有专节，规划报告按历史记录保留原文 + 顶部修订注）。新增 `app/graph/nodes/judge.py::judge_messages` + `JUDGE_TEMPERATURE`（**评测与生产共用同一入口**，单测钉死逐字一致）、`evals/judge_metrics.py`（一致性/准确性/单调性纯函数）、`evals/judge_golden.py`（校验：臂与类型绑定、维度键、**同组题干必须一致**）、`evals/judge_run.py`（生产 prompt 跑 K 次 + 失败不静默 + 原始运行落盘可复算）、`evals/personas.py`（三档 persona，从 /tmp 脚本归档，硬约束=不喂关键点）、`evals/corpus.py::answer_samples`（真库取样，关键点优先题库原表）；`scripts/eval_judge_golden.py` / `eval_judge_run.py` / `eval_judge_gate.py`。**基线**（37 条 golden / K=5 / 生产温度）：σ̄ **0.113** · 完全一致率 0.324 · 总分 MAE **0.225** · 偏置 +0.017 · 覆盖率比例误差 0.076 · 三档单调 **3/3**；**温度对照**（实验，未改生产）：温度 0 的 σ̄ 0.063（≈0.3 的一半）、准确性持平；**指标自身的重复性**（两次基线）：σ̄ ±0.013 · MAE ±0.002 · 偏置 ±0.022。**实测发现**：评分官会截断/改写长的关键点（7/185 与 3/185 次），故覆盖率补「比例误差」口径（集合口径会被改写低估）；真库 6 道启用行为题 `key_points` 为空（M11 遗留）。测试 552 → 606 passed
 - 2026-10-01 P1-M12 会话 1（评估体系 · 检索评估）：新增 §4.13（离线评测包的定位与边界、四变体与**池内口径**、分级标注 `2^g−1` 与 Precision 取代 MRR 的理由、噪声地板、golden 构建与人工复核口径、RAGAS 按**单条漏点**打分的理由、dev 组三条依赖钉法）+ §10 测试行 + §11 风险点 8（池内口径与哈希不同不可比）。新增 `backend/evals/`（`retrieval_metrics` 指标纯函数 / `golden` 校验 / `retrieve` 四变体 / `label_relevance` 判级与复核产物 / `corpus` 真库报告只读）+ `scripts/eval_build_golden.py`、`scripts/eval_retrieval_run.py`、`scripts/eval_ragas_context.py`；`recommend.build_query_items` 返回值补 `missed` 字段（拼进 query 的漏点原文——离线评测按单条漏点打分要用，切字符串不可靠：187 条漏点里有 4 条自身含「；」）。**真栈基线**（31 条 query / 1972 条标注 / golden sha256 `1e40a8d6e84a`）：dense NDCG@5 0.787 · sparse 0.749 · **rrf 0.783** · hybrid（生产）0.746；**rerank 净贡献按场景分叉**——bank_search（短查询，18 条）**+0.045**、missed_point（长查询：域名标签 + 多个漏点拼接，13 条）**−0.152**；域维度上 tool-use（0.634）与 agent-architecture（0.676）是 rerank 伤得最重的两处。**RAGAS ContextRelevance（按单条漏点，13 组 / 67 条漏点）**：总体 0.504，tool-use 0.217 与 agent-architecture 0.208 垫底——与 NDCG 的域排序**互相印证**（两条独立指标指向同一处短板）。噪声地板：同 golden 连跑两次 dense/sparse 逐位一致、rrf ±0.003、hybrid ±0.005。测试 510 → 552 passed
 - 2026-10-01 P1-M11（行为面 / HR 面 FR-22）：新增 §4.12（会话类型与 position 正交、单 BEHAVIORAL 段流程、行为题整池检索（不限难度）、题量上限 10、行为面五维与第 3 维对齐、**deepen-only 追问**（key_points 是讲述结构不是知识点）、聚合（域为空、短板改维度）、报告/PDF/推荐/档案的四处分派、`ASKABLE_DOMAINS`「可出题但不属于技术配额」、`enable_behavioral.py` 的 Qdrant 逐点核对验收、不做清单）；§4.1 补 `Phase.BEHAVIORAL` / `BaseScore`+`BehavioralScoreItem` / `interview_type`；§4.3 补 `explain_decision(deepen_only=)` 与 `Reason.DEEPEN_LIMIT`；§4.11 补**行为面排除（过滤字段 = 报告 payload 的 `interview_type`）**与响应新增 `excluded`；§7 创建接口补 `interview_type`（行为面 >10 题 422）、推荐与档案契约同步；§8 interviews 补 `interview_type` 列（老库补列 NULL ≡ tech，不回填）。新增 `data/scripts/enable_behavioral.py`（幂等：`finalize_status` 同源判定 + ingest 同源点构造 + **写后从 Qdrant 读回逐点核对**；真库已执行：behavioral enabled 14 题 / Qdrant 1099 点）。测试 470 → 506 passed
