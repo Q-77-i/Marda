@@ -4,7 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { InlinePanel } from "@/components/ui/inline-panel";
+import { ListSkeleton } from "@/components/ui/skeleton";
 import { getRecommendations, type RecommendationGroup } from "@/lib/api";
 import { domainLabel, difficultyLabel } from "@/lib/constants";
 import { groupNotice } from "@/lib/learn";
@@ -45,32 +48,28 @@ export function RecommendGroups({
 
   if (error) {
     return (
-      <div className="flex flex-col items-start gap-2 py-4">
-        <p className="text-sm text-destructive" role="alert">
-          {error}
-        </p>
-        <Button variant="outline" size="sm" onClick={() => void load()}>
-          重试
-        </Button>
-      </div>
+      <ErrorState
+        message={error}
+        action={
+          <Button variant="outline" size="sm" onClick={() => void load()}>
+            重试
+          </Button>
+        }
+      />
     );
   }
 
   if (groups === null) {
-    return (
-      <div className="flex flex-col gap-3">
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-        <Skeleton className="h-16 w-full" />
-      </div>
-    );
+    return <ListSkeleton />;
   }
 
   if (groups.length === 0) {
     return (
-      <p className="py-4 text-sm text-muted-foreground">
-        本场没有定位到短板域，暂无针对性推荐
-      </p>
+      <EmptyState
+        className="py-6"
+        title="本场没有定位到短板域"
+        description="暂无针对性推荐"
+      />
     );
   }
 
@@ -120,7 +119,7 @@ export function RecommendGroups({
                       </button>
 
                       {open ? (
-                        <div className="mt-3 flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+                        <InlinePanel>
                           <section className="flex flex-col gap-1">
                             <h3 className="text-xs font-medium text-muted-foreground">参考答案</h3>
                             <p className="whitespace-pre-wrap text-sm leading-relaxed">
@@ -156,7 +155,7 @@ export function RecommendGroups({
                                       <Badge variant="outline">{source.license}</Badge>
                                     ) : null}
                                     {index === 0 && card.sources.length > 1 ? (
-                                      <span className="text-[10px]">（答案主源）</span>
+                                      <span>（答案主源）</span>
                                     ) : null}
                                     {source.source_detail ? <span>{source.source_detail}</span> : null}
                                     {source.url ? (
@@ -174,7 +173,7 @@ export function RecommendGroups({
                               </ul>
                             </section>
                           ) : null}
-                        </div>
+                        </InlinePanel>
                       ) : null}
                     </li>
                   );

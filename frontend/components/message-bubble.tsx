@@ -36,7 +36,7 @@ export function MessageBubble({ item }: { item: ChatItem }) {
       >
         {item.tag && (
           <div className="mb-1.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-            <span className="tabular font-medium text-foreground">
+            <span className="tabular-nums font-medium text-foreground">
               第 {item.tag.index} 题
             </span>
             <span>{domainLabel(item.tag.domain)}</span>

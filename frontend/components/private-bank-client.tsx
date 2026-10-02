@@ -2,10 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { InlinePanel, inlinePanelClass } from "@/components/ui/inline-panel";
+import { ListSkeleton } from "@/components/ui/skeleton";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   getPrivateQuestions,
@@ -88,8 +93,8 @@ export function PrivateBankClient() {
     setUploadError(reason);
   }
 
-  async function doUpload(event: React.FormEvent) {
-    event.preventDefault();
+  async function doUpload(event?: React.FormEvent) {
+    event?.preventDefault();
     if (!file || uploading) return;
     setUploading(true);
     setUploadError(null);
@@ -129,7 +134,11 @@ export function PrivateBankClient() {
   const summary = report ? uploadSummary(report) : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
+      <PageHeader
+        title="私有题库"
+        description="上传你自己整理的题目，与公共题库一起参与出题——只对你可见"
+      />
       <Card>
         <CardHeader>
           <CardTitle>上传我的题目</CardTitle>
@@ -191,9 +200,21 @@ export function PrivateBankClient() {
           </form>
 
           {uploadError ? (
-            <p className="text-sm text-destructive" role="alert">
+            <StatusBanner
+              tone="error"
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={!file || uploading}
+                  onClick={() => void doUpload()}
+                >
+                  重试
+                </Button>
+              }
+            >
               {uploadError}
-            </p>
+            </StatusBanner>
           ) : null}
 
           {report && summary ? (
@@ -251,29 +272,26 @@ export function PrivateBankClient() {
           </div>
 
           {loading ? (
-            <div className="flex flex-col gap-3">
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-            </div>
+            <ListSkeleton />
           ) : error ? (
-            <div className="flex flex-col items-start gap-2 py-6">
-              <p className="text-sm text-destructive" role="alert">
-                {error}
-              </p>
-              <Button variant="outline" size="sm" onClick={() => void load(filters)}>
-                重试
-              </Button>
-            </div>
+            <ErrorState
+              message={error}
+              action={
+                <Button variant="outline" size="sm" onClick={() => void load(filters)}>
+                  重试
+                </Button>
+              }
+            />
           ) : !data || data.items.length === 0 ? (
-            <div className="flex flex-col items-center gap-1 py-12 text-center">
-              <p className="text-sm font-medium">还没有题目</p>
-              <p className="text-sm text-muted-foreground">
-                {filters.status || filters.domain || filters.difficulty
+            <EmptyState
+              className="py-12"
+              title="还没有题目"
+              description={
+                filters.status || filters.domain || filters.difficulty
                   ? "当前筛选下没有题目，换个条件看看"
-                  : "上传一份你自己的题库文件，它们会参与出题"}
-              </p>
-            </div>
+                  : "上传一份你自己的题库文件，它们会参与出题"
+              }
+            />
           ) : (
             <ul className="divide-y">
               {data.items.map((item) => (
@@ -300,7 +318,7 @@ export function PrivateBankClient() {
               >
                 上一页
               </Button>
-              <span className="tabular text-xs text-muted-foreground">
+              <span className="tabular-nums text-xs text-muted-foreground">
                 {data.page} / {pages}
               </span>
               <Button
@@ -315,7 +333,7 @@ export function PrivateBankClient() {
           ) : null}
         </CardContent>
       </Card>
-    </div>
+    </>
   );
 }
 
@@ -331,9 +349,9 @@ function UploadReportBar({
 }) {
   const color =
     tone === "ok"
-      ? "border-emerald-500/40 bg-emerald-500/5"
+      ? "border-success/40 bg-success/5"
       : tone === "warn"
-        ? "border-amber-500/40 bg-amber-500/5"
+        ? "border-warning/40 bg-warning/5"
         : "border-border bg-muted/30";
   return (
     <div className={`flex flex-col gap-2 rounded-lg border p-3 text-sm ${color}`} role="status">
@@ -430,7 +448,7 @@ function PrivateRow({
         <span className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <Badge variant={archived ? "outline" : "secondary"}>{privateStatusLabel(item.status)}</Badge>
           <Badge variant="outline">{domainLabel(item.domain)}</Badge>
-          <span>{difficultyLabel(item.difficulty)}</span>
+          <Badge variant="outline">{difficultyLabel(item.difficulty)}</Badge>
           <span>· {item.topic}</span>
         </span>
       </button>
@@ -446,7 +464,7 @@ function PrivateRow({
             }}
           />
         ) : (
-          <div className="mt-3 flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+          <InlinePanel>
             <section className="flex flex-col gap-1">
               <h3 className="text-xs font-medium text-muted-foreground">参考答案</h3>
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{item.answer}</p>
@@ -492,7 +510,7 @@ function PrivateRow({
             <p className="text-xs text-muted-foreground">
               {archived ? "已归档的题不参与出题，恢复后重新进入出题池。" : "归档后不再参与出题，随时可恢复。"}
             </p>
-          </div>
+          </InlinePanel>
         )
       ) : null}
     </li>
@@ -537,7 +555,7 @@ function EditForm({
 
   return (
     <form
-      className="mt-3 flex flex-col gap-3 rounded-lg border bg-muted/30 p-3"
+      className={inlinePanelClass}
       onSubmit={submit}
     >
       <Field label="题干">

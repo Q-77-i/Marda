@@ -71,7 +71,7 @@ export function OverallTrend({
               ticks={Y_TICKS}
               axisLine={false}
               tickLine={false}
-              tick={{ fill: tokens.muted, fontSize: 11 }}
+              tick={{ fill: tokens.muted, fontSize: 12 }}
             />
             <Tooltip
               {...tooltipStyles(tokens)}
@@ -136,7 +136,7 @@ export function DomainHeatmap({ rows, labels }: { rows: HeatRow[]; labels: strin
                     className={cn(
                       "flex h-9 items-center justify-center rounded-[4px] text-xs tabular-nums",
                       // 缺场不静默留白：写「未考」并虚线描边——「没有数据」与「低分」必须一眼分开
-                      value === null && "border border-dashed border-border text-[11px] text-muted-foreground",
+                      value === null && "border border-dashed border-border text-muted-foreground",
                     )}
                     style={
                       level === null

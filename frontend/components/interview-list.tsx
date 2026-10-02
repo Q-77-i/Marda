@@ -17,7 +17,10 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { ListSkeleton } from "@/components/ui/skeleton";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { deleteInterview, listInterviews, type InterviewRow } from "@/lib/api";
 import { difficultyLabel, interviewTypeLabel, isBehavioral } from "@/lib/constants";
 import { formatDuration, formatTime } from "@/lib/format";
@@ -29,20 +32,25 @@ export function InterviewList() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
+    setLoadError(null);
     listInterviews()
       .then((data) => {
         if (active) setRows(data);
       })
       .catch((err: unknown) => {
-        if (active) setLoadError(err instanceof Error ? err.message : "加载失败");
+        if (active) {
+          setRows(null);
+          setLoadError(err instanceof Error ? err.message : "加载失败");
+        }
       });
     return () => {
       active = false;
     };
-  }, []);
+  }, [reloadKey]);
 
   async function handleDelete(id: string) {
     setDeletingId(id);
@@ -64,27 +72,31 @@ export function InterviewList() {
       </CardHeader>
       <CardContent>
         {deleteError ? (
-          <p className="pb-3 text-sm text-destructive" role="alert">
+          <StatusBanner tone="error" className="mb-3">
             {deleteError}
-          </p>
+          </StatusBanner>
         ) : null}
         {loadError ? (
-          <p className="py-6 text-sm text-destructive" role="alert">
-            {loadError}
-          </p>
+          <ErrorState
+            message={loadError}
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setReloadKey((key) => key + 1)}
+              >
+                重试
+              </Button>
+            }
+          />
         ) : rows === null ? (
-          <div className="flex flex-col gap-3">
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-            <Skeleton className="h-12 w-full" />
-          </div>
+          <ListSkeleton rowClassName="h-12 w-full" />
         ) : rows.length === 0 ? (
-          <div className="flex flex-col items-center gap-1 py-12 text-center">
-            <p className="text-sm font-medium">还没有面试记录</p>
-            <p className="text-sm text-muted-foreground">
-              从左侧创建一场面试，开始你的第一次模拟
-            </p>
-          </div>
+          <EmptyState
+            className="py-12"
+            title="还没有面试记录"
+            description="从左侧创建一场面试，开始你的第一次模拟"
+          />
         ) : (
           <ul className="divide-y">
             {rows.map((row) => {
@@ -105,7 +117,7 @@ export function InterviewList() {
                           {interviewTypeLabel(row.interview_type)}
                         </Badge>
                       </span>
-                      <span className="tabular text-xs text-muted-foreground">
+                      <span className="tabular-nums text-xs text-muted-foreground">
                         {row.question_count} 题
                         {/* 行为面不展示难度（P1-M11 D3）：难度不参与行为面出题，是死数据 */}
                         {!behavioral && ` · ${difficultyLabel(row.difficulty)}`}
@@ -113,7 +125,7 @@ export function InterviewList() {
                       </span>
                     </div>
                     <div className="flex shrink-0 items-center gap-3">
-                      <span className="tabular text-xs text-muted-foreground">
+                      <span className="tabular-nums text-xs text-muted-foreground">
                         {formatTime(row.started_at)}
                       </span>
                       <Badge variant={finished ? "secondary" : "default"}>
@@ -145,7 +157,7 @@ export function InterviewList() {
                       <AlertDialogFooter>
                         <AlertDialogCancel>取消</AlertDialogCancel>
                         <AlertDialogAction
-                          className="bg-destructive text-white hover:bg-destructive/90"
+                          className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                           disabled={deletingId !== null}
                           onClick={() => handleDelete(row.id)}
                         >

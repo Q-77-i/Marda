@@ -40,7 +40,7 @@
     font-size: 11pt;
     margin: 0 0 8px;
     padding-left: 8px;
-    border-left: 3px solid #3a6ea5;
+    border-left: 3px solid #056a9d;
     line-height: 1.2;
   }
 
@@ -75,16 +75,19 @@
   .bars .row { display: table; width: 100%; }
   .bars .k { display: table-cell; font-size: 9pt; }
   .bars .v { display: table-cell; text-align: right; font-size: 9pt; font-weight: 600; }
-  .bars .k.weak { color: #b8762a; }
+  /* 语义色与主蓝都取前端 globals.css 令牌（--success / --warning / --primary）的 sRGB
+     等价值——同一份报告在页面与 PDF 两个出口颜色必须一致。中性色与浅色底/描边是 PDF
+     版式自身的灰阶，不随令牌走。 */
+  .bars .k.weak { color: #ba7917; }
   .bars .track { height: 5px; margin-top: 2px; background: #f0f3f5; border-radius: 3px; }
-  .bars .fill { height: 5px; border-radius: 3px; background: #3a6ea5; }
-  .bars .fill.weak { background: #c98a3a; }
+  .bars .fill { height: 5px; border-radius: 3px; background: #056a9d; }
+  .bars .fill.weak { background: #ba7917; }
 
   .chips { margin-top: 6px; }
   .chip {
     display: inline-block; margin-right: 6px; padding: 1px 8px;
     border: 1px solid #e6cfa8; border-radius: 10px;
-    font-size: 8.5pt; color: #b8762a; background: #fdf8f0;
+    font-size: 8.5pt; color: #ba7917; background: #fdf8f0;
   }
 
   /* ---- 正文 ---- */
@@ -109,8 +112,8 @@
 
   .points { margin-bottom: 3px; font-size: 9pt; }
   .points-label { color: #6a7280; margin-right: 4px; }
-  .pt.ok { color: #2f7d5f; }
-  .pt.miss { color: #b8762a; }
+  .pt.ok { color: #177c52; }
+  .pt.miss { color: #ba7917; }
 
   .comment { margin: 6px 0 0; }
 
@@ -122,7 +125,7 @@
   .advice { margin-bottom: 8px; }
   .advice-domain {
     display: inline-block; margin-bottom: 2px; padding: 0 7px;
-    border-radius: 3px; background: #eef2f6; color: #3a6ea5; font-size: 8.5pt;
+    border-radius: 3px; background: #eef2f6; color: #056a9d; font-size: 8.5pt;
   }
   .advice p { margin: 0; }
 

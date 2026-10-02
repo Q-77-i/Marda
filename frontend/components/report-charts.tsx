@@ -71,7 +71,7 @@ export function ScoreRadar({
               domain={[0, 5]}
               tickCount={6}
               axisLine={false}
-              tick={{ fill: tokens.muted, fontSize: 10 }}
+              tick={{ fill: tokens.muted, fontSize: 12 }}
             />
             <Radar
               dataKey="score"
@@ -130,7 +130,7 @@ export function DomainBars({
               ticks={[0, 1, 2, 3, 4, 5]}
               axisLine={false}
               tickLine={false}
-              tick={{ fill: tokens.muted, fontSize: 11 }}
+              tick={{ fill: tokens.muted, fontSize: 12 }}
             />
             <YAxis
               type="category"

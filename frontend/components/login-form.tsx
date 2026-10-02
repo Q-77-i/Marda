@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { login, register, validatePassword, validateUsername } from "@/lib/auth";
 import { getToken, isStorageAvailable, setToken } from "@/lib/session";
 
@@ -88,7 +89,7 @@ export function LoginForm() {
               className={cn(
                 "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
                 item === mode
-                  ? "bg-background shadow-sm"
+                  ? "bg-background"
                   : "text-muted-foreground hover:text-foreground",
               )}
             >
@@ -129,12 +130,9 @@ export function LoginForm() {
           )}
 
           {!storageOk && (
-            <p
-              className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-              role="alert"
-            >
+            <StatusBanner tone="error">
               当前浏览器环境禁用了本地存储（常见于隐私/无痕模式），无法保存登录状态。
-            </p>
+            </StatusBanner>
           )}
 
           <Button type="submit" size="lg" disabled={disabled}>

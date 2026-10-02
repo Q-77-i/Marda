@@ -4,10 +4,13 @@ import { cn } from "cn";
 import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { AppHeader } from "@/components/app-header";
+import { PageHeader } from "@/components/page-header";
+import { PageShell } from "@/components/page-shell";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getTrace, type Dim, type TraceEvent, type TraceResponse } from "@/lib/api";
 import {
@@ -61,69 +64,69 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
 
   if (error) {
     return (
-      <div className="min-h-[100dvh]">
-        <AppHeader />
-        <main className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
-          <p className="text-sm font-medium">{error}</p>
-          <Link href="/" className={cn(buttonVariants({ variant: "outline" }), "mt-6")}>
-            返回首页
-          </Link>
-        </main>
-      </div>
+      <PageShell nav={false} width="narrow" right={null}>
+        <ErrorState
+          variant="page"
+          message={error}
+          description="决策回放与场次同时产生，早于本版的场次没有事件流"
+          action={
+            <Link href="/" className={cn(buttonVariants({ variant: "outline" }))}>
+              返回首页
+            </Link>
+          }
+        />
+      </PageShell>
     );
   }
 
   if (!data) {
     return (
-      <div className="min-h-[100dvh]">
-        <AppHeader />
-        <main className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-8 sm:px-6">
-          <Skeleton className="h-8 w-56" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-24 w-full" />
-        </main>
-      </div>
+      <PageShell nav={false} width="narrow" right={null}>
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+        <Skeleton className="h-24 w-full" />
+      </PageShell>
     );
   }
 
   const { rounds, closing } = groupTraceEvents(data.events);
 
   return (
-    <div className="min-h-[100dvh]">
-      <AppHeader
-        right={
-          <div className="flex items-center gap-2">
-            <Link
-              href={`/report/${interviewId}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-            >
-              查看报告
-            </Link>
-            <Link
-              href={`/interview/${interviewId}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-            >
-              面试回放
-            </Link>
-          </div>
-        }
-      />
-      <main className="mx-auto flex max-w-3xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold tracking-tight">决策回放</h1>
-            <p className="text-sm text-muted-foreground">{data.position}</p>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="tabular text-sm text-muted-foreground">
-              {progressLabel(data.answered_count, data.question_count)} 题
-            </span>
-            <Badge variant={data.status === "finished" ? "secondary" : "outline"}>
-              {data.status === "finished" ? "已结束" : "进行中"}
-            </Badge>
-          </div>
+    <PageShell
+      nav={false}
+      width="narrow"
+      right={
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/report/${interviewId}`}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            查看报告
+          </Link>
+          <Link
+            href={`/interview/${interviewId}`}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            面试回放
+          </Link>
         </div>
+      }
+    >
+        <PageHeader
+          title="决策回放"
+          description={data.position}
+          right={
+            <>
+              <span className="tabular-nums text-sm text-muted-foreground">
+                {progressLabel(data.answered_count, data.question_count)} 题
+              </span>
+              <Badge variant={data.status === "finished" ? "secondary" : "outline"}>
+                {data.status === "finished" ? "已结束" : "进行中"}
+              </Badge>
+            </>
+          }
+        />
 
         <p className="text-sm leading-relaxed text-muted-foreground">
           这里记录面试过程中引擎的每一次判断：选了哪道题、评分如何、
@@ -132,11 +135,11 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
 
         {data.events.length === 0 ? (
           <Card>
-            <CardContent className="flex flex-col gap-1 py-4 text-sm">
-              <p className="font-medium">该场次未记录决策</p>
-              <p className="text-muted-foreground">
-                决策回放从本版面试引擎起开始记录，更早的场次没有事件流可展示。
-              </p>
+            <CardContent>
+              <EmptyState
+                title="该场次未记录决策"
+                description="决策回放从本版面试引擎起开始记录，更早的场次没有事件流可展示。"
+              />
             </CardContent>
           </Card>
         ) : (
@@ -149,8 +152,7 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
             {closing.length > 0 && <ClosingCard events={closing} dims={traceDims} />}
           </>
         )}
-      </main>
-    </div>
+    </PageShell>
   );
 }
 
@@ -165,14 +167,14 @@ function RoundCard({ round, dims }: { round: TraceRound; dims: Dim[] }) {
   const sections = round.events.filter((event) => event !== ask);
 
   return (
-    <li className="flex flex-col gap-3 rounded-xl border p-4">
+    <li className="flex flex-col gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <span className="tabular text-sm font-medium">第 {round.round} 题</span>
+        <span className="tabular-nums text-sm font-medium">第 {round.round} 题</span>
         {domain && (
           <span className="text-xs text-muted-foreground">{domainLabel(domain)}</span>
         )}
         {difficulty && (
-          <Badge variant="outline" className="tabular">
+          <Badge variant="outline" className="tabular-nums">
             {difficulty}
           </Badge>
         )}
@@ -263,7 +265,7 @@ function JudgeSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
       chips={
         <>
           {coverage !== null && (
-            <Badge variant="outline" className="tabular">
+            <Badge variant="outline" className="tabular-nums">
               覆盖率 {coverage}%
             </Badge>
           )}
@@ -271,7 +273,7 @@ function JudgeSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
             <Badge variant="destructive">回答有误</Badge>
           )}
           {difficulty && (
-            <span className="tabular text-xs text-muted-foreground">
+            <span className="tabular-nums text-xs text-muted-foreground">
               {changed ? `难度变化 → ${difficulty}` : `难度 ${difficulty}`}
             </span>
           )}
@@ -286,7 +288,7 @@ function JudgeSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
             return (
               <li key={dim.key} className="flex items-baseline gap-1">
                 <span className="text-xs text-muted-foreground">{dim.label}</span>
-                <span className="tabular text-xs font-medium">{value}</span>
+                <span className="tabular-nums text-xs font-medium">{value}</span>
               </li>
             );
           })}
@@ -378,7 +380,7 @@ function RefusedSection({ event }: { event: TraceEvent }) {
       label="结束被挽留"
       chips={
         gap !== null && gap > 0 ? (
-          <Badge variant="outline" className="tabular">
+          <Badge variant="outline" className="tabular-nums">
             还差 {gap} 题
           </Badge>
         ) : undefined
@@ -420,8 +422,8 @@ function ClosingCard({ events, dims }: { events: TraceEvent[]; dims: Dim[] }) {
       <CardContent className="flex flex-col gap-3">
         {answered !== null && total !== null && (
           <p className="text-sm">
-            完成 <span className="tabular font-medium">{answered}</span> /{" "}
-            <span className="tabular">{total}</span> 题后生成报告
+            完成 <span className="tabular-nums font-medium">{answered}</span> /{" "}
+            <span className="tabular-nums">{total}</span> 题后生成报告
           </p>
         )}
         {weaknesses.length > 0 && (

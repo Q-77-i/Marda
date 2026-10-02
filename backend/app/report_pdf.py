@@ -85,7 +85,7 @@ _LABEL_RADIUS_RATIO = 1.28
 # 走 CSS 的 fill-opacity 会被忽略（实心多边形糊住网格线）。
 _RING_COLOR = "#e3e7ea"
 _DATA_FILL = "#dbe6f1"
-_DATA_STROKE = "#3a6ea5"
+_DATA_STROKE = "#056a9d"
 _LABEL_COLOR = "#6a7280"
 
 # 题型展示名（与前端 constants.QUESTION_TYPE_LABELS 一致；tech 走编号、不入表，

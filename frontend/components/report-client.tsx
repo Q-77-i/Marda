@@ -4,14 +4,17 @@ import { cn } from "cn";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { AppHeader } from "@/components/app-header";
+import { PageHeader } from "@/components/page-header";
+import { PageShell } from "@/components/page-shell";
 import { RecommendGroups } from "@/components/recommend-groups";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { ReviewCard } from "@/components/review-card";
 import { Badge } from "@/components/ui/badge";
-import { buttonVariants } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
 import { DIMENSIONS, domainLabel, isBehavioral } from "@/lib/constants";
 import { downloadBlob, reportFileName } from "@/lib/download";
@@ -39,34 +42,31 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
 
   if (error) {
     return (
-      <div className="min-h-[100dvh]">
-        <AppHeader />
-        <main className="mx-auto max-w-3xl px-4 py-16 text-center sm:px-6">
-          <p className="text-sm font-medium">{error}</p>
-          <p className="mt-1 text-sm text-muted-foreground">
-            报告在面试结束后生成，未结束的场次暂无报告
-          </p>
-          <Link href="/" className={cn(buttonVariants({ variant: "outline" }), "mt-6")}>
-            返回首页
-          </Link>
-        </main>
-      </div>
+      <PageShell nav={false} right={null}>
+        <ErrorState
+          variant="page"
+          message={error}
+          description="报告在面试结束后生成，未结束的场次暂无报告"
+          action={
+            <Link href="/" className={cn(buttonVariants({ variant: "outline" }))}>
+              返回首页
+            </Link>
+          }
+        />
+      </PageShell>
     );
   }
 
   if (!data) {
     return (
-      <div className="min-h-[100dvh]">
-        <AppHeader />
-        <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6">
-          <Skeleton className="h-8 w-48" />
-          <div className="grid gap-6 lg:grid-cols-2">
-            <Skeleton className="h-80 w-full" />
-            <Skeleton className="h-80 w-full" />
-          </div>
-          <Skeleton className="h-32 w-full" />
-        </main>
-      </div>
+      <PageShell nav={false} right={null}>
+        <Skeleton className="h-8 w-48" />
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Skeleton className="h-80 w-full" />
+          <Skeleton className="h-80 w-full" />
+        </div>
+        <Skeleton className="h-32 w-full" />
+      </PageShell>
     );
   }
 
@@ -102,63 +102,72 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
   );
 
   return (
-    <div className="min-h-[100dvh]">
-      <AppHeader
-        right={
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onExport}
-              disabled={exporting}
-              className={cn(buttonVariants({ size: "sm" }))}
-            >
-              {exporting ? "导出中…" : "导出 PDF"}
-            </button>
-            <Link
-              href={`/trace/${interviewId}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-            >
-              决策回放
-            </Link>
-            <Link
-              href={`/interview/${interviewId}`}
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-            >
-              查看面试回放
-            </Link>
-            <Link
-              href="/"
-              className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-            >
-              返回首页
-            </Link>
-          </div>
-        }
-      />
-      <main className="mx-auto flex max-w-5xl flex-col gap-6 px-4 py-8 sm:px-6 sm:py-10">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-semibold tracking-tight">能力评估报告</h1>
-            <p className="text-sm text-muted-foreground">
-              {report.position}
-            </p>
-          </div>
-          <div className="flex items-center gap-6">
-            <Stat label="五维均分" value={formatScore(overall)} suffix="/ 5" />
-            <Stat
-              label="完成题量"
-              value={`${completedCount(report.answered_count, report.question_count)}`}
-              suffix={`/ ${report.question_count}`}
-            />
-            <Stat label="生成时间" value={formatTime(data.created_at)} />
-          </div>
+    <PageShell
+      nav={false}
+      right={
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onExport}
+            disabled={exporting}
+            className={cn(buttonVariants({ size: "sm" }))}
+          >
+            {exporting ? "导出中…" : "导出 PDF"}
+          </button>
+          <Link
+            href={`/trace/${interviewId}`}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            决策回放
+          </Link>
+          <Link
+            href={`/interview/${interviewId}`}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            查看面试回放
+          </Link>
+          <Link
+            href="/"
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            返回首页
+          </Link>
         </div>
+      }
+    >
+        <PageHeader
+          title="能力评估报告"
+          description={report.position}
+          right={
+            <>
+              <Stat label="五维均分" value={formatScore(overall)} suffix="/ 5" />
+              <Stat
+                label="完成题量"
+                value={`${completedCount(report.answered_count, report.question_count)}`}
+                suffix={`/ ${report.question_count}`}
+              />
+              <Stat label="生成时间" value={formatTime(data.created_at)} />
+            </>
+          }
+        />
 
-        {exportError && (
-          <p className="text-sm text-destructive" role="alert">
+        {exportError ? (
+          <StatusBanner
+            tone="error"
+            action={
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={exporting}
+                onClick={() => void onExport()}
+              >
+                重试
+              </Button>
+            }
+          >
             {exportError}
-          </p>
-        )}
+          </StatusBanner>
+        ) : null}
 
         <div className={cn("grid gap-6", !behavioral && "lg:grid-cols-2")}>
           <Card>
@@ -171,7 +180,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
                 {dims.map((dim) => (
                   <li key={dim.key} className="flex items-baseline justify-between gap-2">
                     <span className="text-xs text-muted-foreground">{dim.label}</span>
-                    <span className="tabular text-sm font-medium">
+                    <span className="tabular-nums text-sm font-medium">
                       {formatScore(report.scores[dim.key] ?? 0)}
                     </span>
                   </li>
@@ -297,8 +306,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </CardContent>
           </Card>
         )}
-      </main>
-    </div>
+    </PageShell>
   );
 }
 
@@ -314,7 +322,7 @@ function Stat({
   return (
     <div className="flex flex-col gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="tabular text-lg font-semibold leading-none">
+      <span className="tabular-nums text-lg font-semibold leading-none">
         {value}
         {suffix && (
           <span className="ml-1 text-xs font-normal text-muted-foreground">{suffix}</span>

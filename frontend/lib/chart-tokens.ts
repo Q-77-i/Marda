@@ -18,6 +18,7 @@ export type ChartTokens = {
   surface: string;
 };
 
+/** 兜底常量必须与 globals.css 的明色令牌一致（改令牌时同步这里）。 */
 const FALLBACK: ChartTokens = {
   primary: "#056a9d",
   warning: "#ba7917",

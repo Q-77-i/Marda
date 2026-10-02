@@ -1,4 +1,7 @@
 @import "tailwindcss";
+/* 入场/退场动画工具类（animate-in / fade-in-* / zoom-in-* / slide-in-from-*）。
+   装了依赖但一直没 import——弹窗写的 data-open:animate-in 全是空转，本条补上才生效。 */
+@import "tw-animate-css";
 
 /*
  * 设计令牌：冷中性底 + 单一钢蓝强调色（面试工具，克制、专注）。
@@ -38,9 +41,13 @@
   --destructive: oklch(0.55 0.19 25);
   --destructive-foreground: oklch(0.99 0.008 25);
 
-  /* 语义状态色：短板域提示（报告页专用，非第二强调色） */
+  /* 语义状态色（非第二强调色）：
+     --warning 短板/部分失败；--success 能力改善/上传成功（与报告 PDF 的成功语义同源，见 report_pdf.py）。 */
   --warning: oklch(0.63 0.13 70);
   --warning-foreground: oklch(0.99 0.01 70);
+
+  --success: oklch(0.52 0.11 160);
+  --success-foreground: oklch(0.99 0.008 160);
 
   /*
    * 热力图色阶（P1-M10.5，能力档案专用）：品牌 H240 单色 5 级，
@@ -103,6 +110,9 @@
     --warning: oklch(0.66 0.12 72);
     --warning-foreground: oklch(0.18 0.03 72);
 
+    --success: oklch(0.72 0.13 160);
+    --success-foreground: oklch(0.18 0.03 160);
+
     /* 热力图色阶（暗色）：同一品牌色相重新选步——暗=低分、亮=高分；
        数字墨色的翻转点仍是 3→4 档，但方向与明色相反（亮底用深字）。 */
     --heat-1: oklch(0.34 0.055 240);
@@ -141,6 +151,8 @@
   --color-destructive-foreground: var(--destructive-foreground);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -150,7 +162,10 @@
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
-  --font-sans: var(--font-geist-sans);
+  /* 中文回退栈显式声明：Geist 不含 CJK 字形，不写这一段就落到各平台默认字体
+     （macOS 苹方 / Windows 雅黑 / Linux 各异），同一页面跨平台字形与字重不一致。 */
+  --font-sans: var(--font-geist-sans), "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
   --font-mono: var(--font-geist-mono);
 }
 
@@ -161,11 +176,6 @@
 
   body {
     @apply bg-background text-foreground font-sans antialiased;
-  }
-
-  /* 数字对齐（进度/评分/计时）走等宽字形 */
-  .tabular {
-    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -188,8 +198,14 @@
   animation: caret-blink 1.1s step-end infinite;
 }
 
+/* 全局动效兜底：骨架 pulse、弹窗入场/退场、各类 transition 一并随系统偏好停下。
+   保留极短时长而非 none——过渡结束后停在终态，避免中间态被冻住。 */
 @media (prefers-reduced-motion: reduce) {
-  .caret {
-    animation: none;
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }

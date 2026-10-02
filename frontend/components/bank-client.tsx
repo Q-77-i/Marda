@@ -2,11 +2,15 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { PageHeader } from "@/components/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
+import { InlinePanel } from "@/components/ui/inline-panel";
 import { Input } from "@/components/ui/input";
-import { Skeleton } from "@/components/ui/skeleton";
+import { ListSkeleton } from "@/components/ui/skeleton";
 import {
   getBankFacets,
   getBankQuestions,
@@ -68,11 +72,12 @@ export function BankClient() {
   const pages = totalPages(data?.total ?? null, PAGE_SIZE);
 
   return (
-    <div className="flex flex-col gap-6">
+    <>
+      <PageHeader
+        title="题库"
+        description="按知识域、难度、厂商、面试轮次筛选，或直接搜题；每题都带来源与许可"
+      />
       <Card>
-        <CardHeader>
-          <CardTitle>题库</CardTitle>
-        </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <form
             className="flex gap-2"
@@ -159,27 +164,34 @@ export function BankClient() {
         </CardHeader>
         <CardContent>
           {loading ? (
-            <div className="flex flex-col gap-3">
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-            </div>
+            <ListSkeleton />
           ) : error ? (
-            <div className="flex flex-col items-start gap-2 py-6">
-              <p className="text-sm text-destructive" role="alert">
-                {error}
-              </p>
-              <Button variant="outline" size="sm" onClick={() => void load(filters)}>
-                重试
-              </Button>
-            </div>
+            <ErrorState
+              message={error}
+              action={
+                <Button variant="outline" size="sm" onClick={() => void load(filters)}>
+                  重试
+                </Button>
+              }
+            />
           ) : !data || data.items.length === 0 ? (
-            <div className="flex flex-col items-center gap-1 py-12 text-center">
-              <p className="text-sm font-medium">没有匹配的题目</p>
-              <p className="text-sm text-muted-foreground">
-                {searchMode ? "换个说法再搜，或清空筛选条件" : "试试放宽筛选条件"}
-              </p>
-            </div>
+            <EmptyState
+              className="py-12"
+              title="没有匹配的题目"
+              description={searchMode ? "换个说法再搜，或清空筛选条件" : "试试放宽筛选条件"}
+              action={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setDraft("");
+                    setFilters(EMPTY_FILTERS);
+                  }}
+                >
+                  清空筛选
+                </Button>
+              }
+            />
           ) : (
             <ul className="divide-y">
               {data.items.map((item) => {
@@ -203,7 +215,7 @@ export function BankClient() {
                     </button>
 
                     {open ? (
-                      <div className="mt-3 flex flex-col gap-3 rounded-lg border bg-muted/30 p-3">
+                      <InlinePanel>
                         <section className="flex flex-col gap-1">
                           <h3 className="text-xs font-medium text-muted-foreground">参考答案</h3>
                           <p className="whitespace-pre-wrap text-sm leading-relaxed">
@@ -236,7 +248,7 @@ export function BankClient() {
                                     <Badge variant="outline">{source.license}</Badge>
                                   ) : null}
                                   {index === 0 && item.sources.length > 1 ? (
-                                    <span className="text-[10px]">（答案主源）</span>
+                                    <span>（答案主源）</span>
                                   ) : null}
                                   {source.source_detail ? <span>{source.source_detail}</span> : null}
                                   {source.url ? (
@@ -254,7 +266,7 @@ export function BankClient() {
                             </ul>
                           </section>
                         ) : null}
-                      </div>
+                      </InlinePanel>
                     ) : null}
                   </li>
                 );
@@ -272,7 +284,7 @@ export function BankClient() {
               >
                 上一页
               </Button>
-              <span className="tabular text-xs text-muted-foreground">
+              <span className="tabular-nums text-xs text-muted-foreground">
                 {data.page} / {pages}
               </span>
               <Button
@@ -287,7 +299,7 @@ export function BankClient() {
           ) : null}
         </CardContent>
       </Card>
-    </div>
+    </>
   );
 }
 

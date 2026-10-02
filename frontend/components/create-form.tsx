@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { createInterview, dispatcher, getBankCapacity, type CapacityOption } from "@/lib/api";
 import { capacityFor, shortfallMessage } from "@/lib/bank";
 import {
@@ -174,9 +175,9 @@ export function CreateForm() {
         </Button>
 
         {busy && (
-          <div className="rounded-lg border bg-muted/40 p-3 text-sm leading-relaxed text-muted-foreground">
+          <StatusBanner className="items-start py-3 leading-relaxed">
             {opening || "面试官正在准备开场…"}
-          </div>
+          </StatusBanner>
         )}
 
         {error && (

@@ -2,12 +2,15 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useState, type ReactNode } from "react";
 
+import { PageHeader } from "@/components/page-header";
 import { DomainHeatmap, OverallTrend } from "@/components/profile-charts";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { EmptyState } from "@/components/ui/empty-state";
+import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProfile, type ProfileResponse, type ProfileSession } from "@/lib/api";
 import {
@@ -67,33 +70,46 @@ export function ProfileClient() {
     };
   }, [reloadKey]);
 
+  // 页头常驻：加载/错误/空档案三种形态下页面标题不变，切态时不跳
+  const page = (content: ReactNode) => (
+    <>
+      <PageHeader
+        title="能力档案"
+        description="多次面试的得分曲线与短板变化，用来看在变好还是变差"
+      />
+      {content}
+    </>
+  );
+
   if (error) {
-    return (
+    return page(
       <Card>
-        <CardContent className="flex flex-col items-start gap-3 py-6">
-          <p className="text-sm text-destructive" role="alert">
-            {error}
-          </p>
-          <Button variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>
-            重试
-          </Button>
+        <CardContent>
+          <ErrorState
+            message={error}
+            action={
+              <Button variant="outline" size="sm" onClick={() => setReloadKey((key) => key + 1)}>
+                重试
+              </Button>
+            }
+          />
         </CardContent>
-      </Card>
+      </Card>,
     );
   }
 
   if (data === null) {
-    return (
+    return page(
       <div className="flex flex-col gap-6">
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-64 w-full" />
         <Skeleton className="h-40 w-full" />
-      </div>
+      </div>,
     );
   }
 
   const stage = profileStage(data.sessions.length);
-  if (stage === "empty") return <EmptyProfile excluded={data.excluded} />;
+  if (stage === "empty") return page(<EmptyProfile excluded={data.excluded} />);
 
   const sessions = data.sessions;
   const latest = sessions[sessions.length - 1];
@@ -103,8 +119,8 @@ export function ProfileClient() {
   const labelOf = (interviewId: string) =>
     labels[sessions.findIndex((session) => session.interview_id === interviewId)] ?? "";
 
-  return (
-    <div className="flex flex-col gap-6">
+  return page(
+    <>
       <SummaryTiles data={data} labelOf={labelOf} />
       {/* 行为面场次不计入档案（P1-M11 D4）：混排时说一句，别让用户以为那几场丢了 */}
       {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
@@ -138,7 +154,7 @@ export function ProfileClient() {
           <WeaknessChanges data={data} />
         </>
       )}
-    </div>
+    </>,
   );
 }
 
@@ -243,7 +259,7 @@ function SummaryTiles({
         <Card key={tile.title}>
           <CardContent className="flex flex-col gap-1 py-4">
             <span className="text-xs text-muted-foreground">{tile.title}</span>
-            <span className="text-2xl font-medium tabular-nums">{tile.value}</span>
+            <span className="text-2xl font-semibold tabular-nums">{tile.value}</span>
             <span className="truncate text-xs text-muted-foreground">{tile.hint}</span>
           </CardContent>
         </Card>
@@ -389,11 +405,11 @@ function WeaknessLine({
   tone: "warning" | "danger" | "ok";
 }) {
   if (domains.length === 0) return null;
-  // 语义色同「短板域」徽标（text-warning）；已改善用 emerald（同私有题库的「使用中」绿）
+  // 语义色与全局一致：短板 text-warning / 新出现 text-destructive / 已改善 text-success
   const toneClass = {
     warning: "text-warning",
     danger: "text-destructive",
-    ok: "text-emerald-600 dark:text-emerald-400",
+    ok: "text-success",
   }[tone];
 
   return (
@@ -414,25 +430,30 @@ function EmptyProfile({ excluded }: { excluded?: Record<string, number> }) {
   const behavioralOnly = emptyProfileKind(excluded) === "behavioral-only";
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>能力档案</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col items-start gap-3">
-        {behavioralOnly ? (
-          <p className="text-sm text-muted-foreground">
-            你已完成 {excluded?.behavioral} 场行为面——行为面不计入技术能力档案（评分维度与
-            知识域体系都不同）。完成一场技术面后，这里会记录总分、五维能力与各知识域的走向，
-            并把每场暴露的短板变化连起来看。
-          </p>
-        ) : (
-          <p className="text-sm text-muted-foreground">
-            还没有可分析的面试记录。完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，
-            并把每场暴露的短板变化连起来看。
-          </p>
-        )}
-        <Link href="/" className={cn(buttonVariants({ size: "sm" }))}>
-          {behavioralOnly ? "开始第一场技术面" : "开始第一场面试"}
-        </Link>
+      <CardContent>
+        <EmptyState
+          className="py-12"
+          title={behavioralOnly ? "只跑过行为面" : "还没有可分析的面试记录"}
+          description={
+            behavioralOnly ? (
+              <>
+                你已完成 {excluded?.behavioral} 场行为面——行为面不计入技术能力档案（评分维度与
+                知识域体系都不同）。完成一场技术面后，这里会记录总分、五维能力与各知识域的走向，
+                并把每场暴露的短板变化连起来看。
+              </>
+            ) : (
+              <>
+                完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，
+                并把每场暴露的短板变化连起来看。
+              </>
+            )
+          }
+          action={
+            <Link href="/" className={cn(buttonVariants({ size: "sm" }))}>
+              {behavioralOnly ? "开始第一场技术面" : "开始第一场面试"}
+            </Link>
+          }
+        />
       </CardContent>
     </Card>
   );

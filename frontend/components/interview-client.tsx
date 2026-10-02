@@ -17,6 +17,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { StatusBanner } from "@/components/ui/status-banner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   dispatcher,
@@ -345,12 +346,13 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       </AlertDialog>
 
       <AppHeader
+        width="narrow"
         right={
           <div className="flex items-center gap-3">
             <span className="hidden text-xs text-muted-foreground sm:inline">
               {PHASE_LABELS[phase]}
             </span>
-            <span className="tabular text-xs font-medium">
+            <span className="tabular-nums text-xs font-medium">
               {progressLabel(answered, total)}
             </span>
             {readonly ? (
@@ -404,27 +406,21 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
       <div className="border-t bg-background">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:px-6">
-          {notice && (
-            <div
-              className="rounded-lg border bg-muted/50 px-3 py-2 text-sm text-muted-foreground"
-              role="status"
-            >
-              {notice}
-            </div>
-          )}
+          {notice && <StatusBanner>{notice}</StatusBanner>}
 
           {error && (
-            <div
-              className="flex items-center justify-between gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2"
-              role="alert"
+            <StatusBanner
+              tone="error"
+              action={
+                pending ? (
+                  <Button variant="outline" size="sm" onClick={handleRetry}>
+                    重试
+                  </Button>
+                ) : null
+              }
             >
-              <span className="text-sm text-destructive">{error}</span>
-              {pending && (
-                <Button variant="outline" size="sm" onClick={handleRetry}>
-                  重试
-                </Button>
-              )}
-            </div>
+              {error}
+            </StatusBanner>
           )}
 
           {readonly ? (

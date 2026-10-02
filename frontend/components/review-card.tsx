@@ -27,16 +27,16 @@ export function ReviewCard({
     : null;
 
   return (
-    <li className="flex flex-col gap-3 rounded-lg border p-4">
+    <li className="flex flex-col gap-3 rounded-xl bg-card p-4 ring-1 ring-foreground/10">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
         <div className="flex flex-wrap items-baseline gap-x-2">
-          <span className="tabular text-xs font-medium">{label}</span>
+          <span className="tabular-nums text-xs font-medium">{label}</span>
           {item.domain && (
             <span className="text-xs text-muted-foreground">{domainLabel(item.domain)}</span>
           )}
         </div>
         {mean !== null && (
-          <span className="tabular text-xs text-muted-foreground">
+          <span className="tabular-nums text-xs text-muted-foreground">
             五维均分 <span className="font-medium text-foreground">{formatScore(mean)}</span>
           </span>
         )}      </div>
@@ -62,7 +62,7 @@ export function ReviewCard({
           {dims.map((dim) => (
             <li key={dim.key} className="flex items-baseline gap-1">
               <span className="text-xs text-muted-foreground">{dim.label}</span>
-              <span className="tabular text-xs font-medium">
+              <span className="tabular-nums text-xs font-medium">
                 {score[dim.key] ?? 0}
               </span>
             </li>
