@@ -43,7 +43,8 @@ flowchart LR
   而**阶段推进 / 轮数上限 / 追问决策 / 域配额 / 难度升降全部是纯代码**——可解释、可单测、UI 可回放；LLM 只做出题、评分、追问文案。
   每次追问与换题的**原因与决策同源**（唯一实现 `explain_decision`），所以回放里的原因不是事后旁白。→ [SPEC §4](docs/SPEC.md)
 - **RAG 是 Agent 的一个工具**：出题检索（题库 → 难度放宽 → LLM 生成三级降级）与混合检索
-  （dense + sparse 服务端 RRF + rerank）；语料 1568 题、一题可多源、来源四要素带 license。→ [SPEC §5](docs/SPEC.md) / [§6](docs/SPEC.md)
+  （dense + sparse 服务端 RRF + rerank，**rerank 按查询形态开关**——长查询实测净贡献为负即不用，
+  短查询保留）；语料 1568 题、一题可多源、来源四要素带 license。→ [SPEC §5](docs/SPEC.md) / [§6](docs/SPEC.md)
 - **评估驱动的学习闭环**：报告五维评分 → 短板域与漏点关键词 → 混合检索推题 → 多场能力档案（曲线 / 热力图 / 短板变化）。
   总分口径后端单一来源，报告页、PDF、档案显示的是同一个数。→ [SPEC §4.10](docs/SPEC.md) / [§4.11](docs/SPEC.md)
 - **质量是量出来的，不是感觉出来的**：检索侧四变体离线基线（NDCG / RAGAS，噪声地板先量后用）；

@@ -253,6 +253,7 @@ def update_difficulty(state) -> None:
   项目深挖题据此可识别（`domain="project"`、`question_id=null`），前端不再靠数组位置猜；`index` 为作答顺序（1 起）。
 - **题型语义由后端定义**：`question_type` 为题型种类（tech/scenario，值不变；展示标签「项目深挖」），计入问答轮次的题型集合见 `app/domain.py COUNTED_QUESTION_TYPES`（单一来源）；`number` 为计入题型的按序编号（项目深挖题计入轮次，编号为其轮次序号）。前端只消费不推断，未知题型显示原值；历史 payload（无新字段）前端按 domain/位置兜底。
 - 报告落库（reports 表）+ state.status="finished"。
+- **学习建议的域是枚举（P2-M2）**：prompt 注入合法清单（技术面六域 / 行为面五维，`aggregate.report_domain_options`），落库前经 `normalize_advice_domain` **宽容归一**（key 原样 / 中文标签 → key / 未知保留原文）——提示词与代码双双容错，一个建议字段绝不因校验失败炸掉整场报告（`chat_json` 校验失败 = 整份报告失败）。归一是为了让学习推荐（§4.10）按域 id 把建议配上分组——此前 LLM 自由填散文（「状态机与回放架构」），配不上。前端与 PDF 按「维度表 → 域表 → 原值」查标签（`constants.reportLabel` / `report_pdf._advice_label`，两侧同序；行为面建议域是维度 key，报告 payload 的 `dims` 即查表来源）。
 
 **阶段 2 复盘扩展（FR-25）**：`per_question_comments` 每项增 `candidate_answer`（我的回答，含追问轮）、`score`（五维）、`covered_key_points` / `missed_key_points`（评分官输出）、`reference_answer`（题库题 = 参考答案全文，按 question_id 取题库；项目深挖题 question_id=null → null，前端不渲染——项目深挖题无权威答案，硬编反而误导）。candidate_answer/score/关键点从 `state.answered_questions` 带出，组装口径与现有元信息一致；条数恒等于已答题目数不变。已结束场次的面试回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端（隐藏输入框 + 状态标识）。
 
@@ -352,6 +353,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 - **查询文本 = 域中文标签 + 该域漏点关键词**（去重保序、最多 6 个；无漏点回退域名，因为 `hybrid_search` 收到空串会抛 ValueError）。漏点来自评分官输出，**零新增 LLM 调用**；用中文标签而非英文 key——题干与关键点都是中文，嵌入时 `agent-architecture` 这类 key 是噪点，域约束由 `filters={"domain": …}` 承担。
 - **排除本场已问过的题**：复盘卡（§4.6）已给过它们的参考答案，推荐要给同域新材料。检索条数取 **`k + 本场该域已问数`**——最多只有这么多条会被过滤掉，故过滤后仍 ≥ k（题库够的话）；**比固定 margin 稳**，不依赖「题库比 margin 厚」的假设。生成题（`question_id` 为空）无从排除，也不进排除集。
+- **多漏点长查询不 rerank（P2-M2）**：有漏点即调 `hybrid_search(rerank=False)`，直接走 dense+sparse 融合序——离线实测 rerank 在这类查询上三种形态净贡献**全为负**（原始 −0.152 / 剥标签 −0.042 / 逐漏点融合 −0.114，rrf 基线 NDCG@5 0.813），而短查询（题库搜索）净贡献 +0.055、纯域名回退照常 rerank。判据在调用方（「该域有没有漏点」），检索层不猜（§5.2）。
 - **多域并发检索**（`asyncio.gather`），结果保序 = 报告里短板域的展示顺序；**检索失败直接抛**（同 §5.2 的 rerank 口径），端点 500 透传、前端给错误态 + 重试，绝不静默给半份推荐。
 - **空分组不静默隐藏**（用户看不到会以为系统漏了）：后端给 `status` 三态，前端给文案——`ok` 有卡片 / `exhausted` 命中的候选全是本场问过的（该域已无检索得到的新题）/ `empty` 该域一道题都没命中。
 - **卡片带来源明细**（`bank_query.attach_sources`，主源首位）：复用 M5 的合规四要素。`question_search.fetch_by_ids` 为此多 select 一列 `source`——否则「（答案主源）」会标在按字典序排第一的来源上（**主源标签不能靠猜**）。
@@ -407,7 +409,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **池内口径**：候选池 = 各变体并集（单路 @50，须比生产返回的 30 条深——否则「相关但没被检索到」在池口径下不可见、Recall 虚高），**池外一律视作不相关**。跨版本可比（同 golden、同池策略），**不能当绝对召回率读**；结果文件带 golden `sha256`，哈希不同不直接比数字。
 - **分级 0/1/2**（不相关 / 相邻知识点 / 直接命中），NDCG 增益 `2^g − 1`；二值相关集 = grade ≥ 1。用 **Precision@k 不用 MRR**：本库同题多，rank-1 几乎恒相关，MRR 恒 1.0 是死指标。
 - **场景两类**：`bank_search`（题库搜索形态）与 `missed_point`（推荐漏点查询，文本与线上逐字一致，由生产函数 `build_query_items` 派生）。**没有「纯域名回退」档**——域内每题同等相关，分级标注无从谈起（那一路由 RAGAS 量，见下）。
-- **噪声地板**：同 golden 连跑两次，`dense`/`sparse` **逐位一致**（本地嵌入 + Qdrant 是确定的），`rrf` ±0.003、`hybrid` ±0.005（rerank 是远程 API）。**小于 0.005 的差值不当结论读**。
+- **噪声地板**：同 golden 连跑两次，`dense`/`sparse` **逐位一致**（本地嵌入 + Qdrant 是确定的），`rrf` ±0.003、`hybrid` ±0.005（rerank 是远程 API）。**P2-M2 以四次同路径复跑修正**：bank_search 的 hybrid 实测 0.800 / 0.802 / 0.805 / 0.813 → 极差 **0.013**（两次运行估的 ±0.005 偏乐观）——**涉及 rerank 的差值以 ~0.01 为准**。
+- **长查询口径（P2-M2 修复）**：漏点查询上 rerank 净贡献为负，实测三种形态（原始 −0.152 / 剥标签后 −0.042 / 逐漏点 rerank + RRF 融合 −0.114，后者更差——平均名次奖励「每条漏点都中游」的泛题）→ 生产改为**多漏点长查询跳过 rerank**，missed_point NDCG@5 回到 rrf 基线 **0.813**，短查询保留 rerank（bank_search 0.813）。评测脚本按**与线上同判据**现场从真库报告派生该开关（`long_query_ids`，查不到即非零退出、不静默），golden 文件不动 → 哈希不变、前后严格可比。
 - **golden 构建与复核**（`eval_build_golden.py`）：候选池 → LLM 批式判级（温度 0）→ `review.md` 供**人工抽检** → 改 json → 重跑。复核文件只摊开每条 query 的 top-5 判定 + **「最该看的行」= 只收「✗0 却排进前 5」**（判定与排名方向相反，必有一边错；「✓2 排第 6」是常态、「✓2 沉到十名开外」是检索漏检、属报告读者），并附**标注自一致率**（抽样重判）——golden 自身的噪声会原样传给指标。
 
 ### 推荐链路内容相关性（`scripts/eval_ragas_context.py`）
@@ -463,6 +466,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - `hybrid_search(query, *, k=5)`（`app/tools/hybrid_search.py`）：query 本地 embed → Qdrant Query API `prefetch`（dense + sparse 各 limit 30）→ `FusionQuery(Fusion.RRF)` 融合候选 30 → SQLite join（payload 只存过滤字段，题干与关键点在 SQLite，且 rerank 需要文档文本）→ rerank → top k。输出键同 search_questions（question_id/question/answer/key_points/follow_ups/domain/topic/difficulty/company/round），仅 enabled 题；join 后按候选序重排（SQLite IN 查询不保序）；空 query 报 ValueError。
 - **筛选下推到两路 prefetch（P1-M6）**：`filters` 接受 `domain/difficulty/company/round`，构造 `Filter` 后**每一路 prefetch 都要挂**。参数名是 `query_filter`（q/client 里写 `filter` 直接抛 `Unknown arguments: ['filter']`，探测时踩到过）；挂在顶层 `query_points` 是错的——`limit` 是 prefetch 级的，两路会先各取满 30 条全集候选再融合，顶层的过滤只能筛掉融合结果，无关域的候选把名额吃光，命中数少得莫名其妙。无筛选时不构造空 `Filter`（空 Filter 与 None 在 Qdrant 里语义不同，别赌等价）。单测钉死三条：两路都挂、空值维度不生成条件、无筛选时 `prefetch[i].filter is None`。
 - 候选 ≤1 时跳过 rerank；**rerank 失败直接抛**（降级/熔断阶段 3）。Rerank 文档 = 题干 + 关键点（与嵌入文本同一函数）。
+- **`rerank=False` 跳过 rerank（P2-M2）**：直接返回 RRF 融合序前 k 条。给**已知的多漏点长查询**用（学习推荐 §4.10，判据在调用方，检索层不猜）。走 rerank 时 query 先经 `_rerank_query` 剥掉首段域标签（同一实测里 −0.152 → −0.042：标签是同域所有候选的共性词、域约束本就由 `filters` 承担；剥完为空则原样，纯域名查询不退化成空串；无「；」的短查询逐字不变）。
 - rerank 客户端（`app/tools/rerank.py`）：httpx 直调 `POST {siliconflow_base_url}/rerank`（Bearer 鉴权，超时 30s），请求 `{model: "BAAI/bge-reranker-v2-m3", query, documents, top_n, return_documents: false}`（top_n 为 None 时不传该字段）；响应 `results: [{index, relevance_score}]`（已按分降序）——客户端校验 index 在范围内且唯一、score 为有限数，否则 RuntimeError；空 documents 不发请求。
 - 消费方：M6 题库搜索（FR-12 关键词搜索）/ M9 学习推荐（按短板域召回）；本会话无 API 暴露，**用户可见零变化**。
 
