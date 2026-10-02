@@ -204,12 +204,14 @@ def test_仓库改判表条目合法():
             assert item["status"] in {"enabled", "draft"}, item
 
 
-def test_仓库改判表把项目叙事题移出技术域():
-    """M9 的整改口径（M11 修订）：技术域只放「不依赖候选人自述经历即可作答」的题。
+def test_仓库改判表的换域方向各自守住不变量():
+    """两个方向的改判，各自的不变量不同（P2-M1 起）。
 
-    M11 起行为面可出题（`behavioral ∈ ASKABLE_DOMAINS`），这些题会进**行为面**的池子——
-    那正是它们该待的地方；真正要守的底线是它们**永不被技术面抽到**：behavioral 不在
+    ① **移进 behavioral**（M9 整改，M11 修订）：技术域只放「不依赖候选人自述经历即可作答」的题。
+    这些叙事题该进行为面的池子；底线是它们**永不被技术面抽到**——behavioral 不在
     DOMAIN_WEIGHTS，`pick_domain` 只在权重表的域里分配配额。
+    ② **移出 behavioral**（P2-M1：知识型问题误归行为面）：目标域必须**在技术配额里**，
+    否则改判等于把它藏起来——既不出技术题、也退不出行为池。
     """
     payload = json.loads(REPO_CURATION.read_text(encoding="utf-8"))
 
@@ -217,6 +219,8 @@ def test_仓库改判表把项目叙事题移出技术域():
         target = item.get("domain")
         if target is None:  # 只置 draft 的（追问残片）不算换域
             continue
-        assert target == "behavioral", item
-        assert "behavioral" not in DOMAIN_WEIGHTS, "行为面进了技术配额，这些叙事题会被技术面抽到"
-        assert "behavioral" in ASKABLE_DOMAINS, "行为面可出题（M11）；不可出题时这些题等于下架"
+        if target == "behavioral":
+            assert "behavioral" not in DOMAIN_WEIGHTS, "行为面进了技术配额，这些叙事题会被技术面抽到"
+            assert "behavioral" in ASKABLE_DOMAINS, "行为面可出题（M11）；不可出题时这些题等于下架"
+        else:
+            assert target in DOMAIN_WEIGHTS, f"改判到非配额域等于把题藏起来：{item}"

@@ -35,6 +35,7 @@ from bank import (
     rank as _rank,
     source_rank,
 )
+from bank import merge_approved_pairs as _bank_merge_approved_pairs
 from app.domain import ENABLED_DOMAINS
 from mapping import DOMAIN_DIFFICULTY_OVERRIDE, ROUND_TO_DIFFICULTY, TOPIC_TO_DOMAIN
 
@@ -198,40 +199,13 @@ APPROVED_MERGE_PAIRS: Final[list[tuple[str, str]]] = [
 
 
 def merge_approved_pairs(questions: list[dict]) -> tuple[list[dict], list[dict]]:
-    """按 APPROVED_MERGE_PAIRS（question_id 对）合并人工确认的近似重复题。
+    """按 APPROVED_MERGE_PAIRS（个人库内部白名单）合并人工确认的近似重复题。
 
-    择优逻辑与 merge_exact_duplicates 相同（_rank：enabled > 答案长 > 轮次可信）。
-    只处理题干异写产生的重复（question_id 不同）——同 id 的重复在前面已合并；
-    id 唯一，故不存在「一条匹配到多题」的情形，只有匹配不到（题干改字 → 哈希变）。
+    实现收在 `bank.merge_approved_pairs`（combine 的跨源白名单共用同一份）；
+    本函数只负责把**本模块的清单**接上去——应用到哪一段由清单归属决定：
+    同源内部的在解析期合，跨源的留到 combine。
     """
-    by_id = {question["question_id"]: question for question in questions}
-    missing = [qid for pair in APPROVED_MERGE_PAIRS for qid in pair if qid not in by_id]
-    if missing:
-        raise ValueError(
-            f"白名单条目在题目里匹配不到（题干改过字？）：{missing}——"
-            "请核对本地库里的题干并更新 question_id"
-        )
-
-    drop_ids: set[str] = set()
-    replaced: dict[str, dict] = {}
-    report: list[dict] = []
-    for id_a, id_b in APPROVED_MERGE_PAIRS:
-        group = [by_id[id_a], by_id[id_b]]
-        best = min(group, key=_rank)
-        dropped = [q for q in group if q is not best]
-        drop_ids.update(q["question_id"] for q in dropped)
-        replaced[best["question_id"]] = _merge_group(group)
-        report.append(
-            {
-                "question_id": best["question_id"],
-                "question": best["question"],
-                "kept": describe(best),
-                "dropped": [describe(q) for q in dropped],
-            }
-        )
-
-    merged = [replaced.get(q["question_id"], q) for q in questions if q["question_id"] not in drop_ids]
-    return merged, report
+    return _bank_merge_approved_pairs(questions, APPROVED_MERGE_PAIRS)
 
 
 

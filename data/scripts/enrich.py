@@ -56,6 +56,12 @@ follow_ups：3-5 条，每条 ≤40 字。面试官顺着本题继续往下钻�
 ALGORITHM_EXTRA = """
 注意：本题是手撕算法题，key_points 请覆盖 思路 / 时间复杂度或空间复杂度 / 边界或易错点 三类。"""
 
+BEHAVIORAL_EXTRA = """
+注意：本题是行为面 / 面试表达类问题——按 SPEC §4.12，key_points 要写成**应答要点与讲述结构**
+（例如 业务目标→方案设计→个人贡献→难点→结果 这类组织方式、要突出的事实、要避免的坑），
+**不是技术知识点**；评分官据此判断候选人答得全不全。"""
+
+
 
 class Enrichment(BaseModel):
     key_points: list[str] = Field(min_length=3, max_length=8)
@@ -63,7 +69,12 @@ class Enrichment(BaseModel):
 
 
 def _build_messages(question: dict) -> list[dict]:
-    extra = ALGORITHM_EXTRA if question["domain"] == "algorithms" else ""
+    if question["domain"] == "algorithms":
+        extra = ALGORITHM_EXTRA
+    elif question["domain"] == "behavioral":
+        extra = BEHAVIORAL_EXTRA
+    else:
+        extra = ""
     return [
         {"role": "system", "content": SYSTEM_PROMPT},
         {

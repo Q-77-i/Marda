@@ -212,6 +212,46 @@ def find_duplicates(questions: list[dict], threshold: float = 0.9) -> list[tuple
     return sorted(pairs, key=lambda p: -p[2])
 
 
+def merge_approved_pairs(
+    questions: list[dict], pairs: list[tuple[str, str]]
+) -> tuple[list[dict], list[dict]]:
+    """按人工确认的白名单（question_id 对）合并近似重复题：题干异写 → 不同 question_id。
+
+    择优逻辑与 merge_exact_duplicates 相同（`rank`）；id 唯一，故不存在「一条匹配到多题」的
+    情形，只有匹配不到（题干改字 → 哈希变）。**匹配不到就报错**，防止白名单静默失效。
+    白名单分两处应用、各管一段：`parse_md`（个人库同源内部，解析期）+ `combine`（跨源，
+    合并期）——报告也在各自的应用点打印，见调用处。
+    """
+    by_id = {question["question_id"]: question for question in questions}
+    missing = [qid for pair in pairs for qid in pair if qid not in by_id]
+    if missing:
+        raise ValueError(
+            f"白名单条目在题目里匹配不到（题干改过字？）：{missing}——"
+            "请核对本地库里的题干并更新 question_id"
+        )
+
+    drop_ids: set[str] = set()
+    replaced: dict[str, dict] = {}
+    report: list[dict] = []
+    for id_a, id_b in pairs:
+        group = [by_id[id_a], by_id[id_b]]
+        best = min(group, key=rank)
+        dropped = [q for q in group if q is not best]
+        drop_ids.update(q["question_id"] for q in dropped)
+        replaced[best["question_id"]] = merge_group(group)
+        report.append(
+            {
+                "question_id": best["question_id"],
+                "question": best["question"],
+                "kept": describe(best),
+                "dropped": [describe(q) for q in dropped],
+            }
+        )
+
+    merged = [replaced.get(q["question_id"], q) for q in questions if q["question_id"] not in drop_ids]
+    return merged, report
+
+
 def print_stats(questions: list[dict]) -> None:
     """题库总览（各源解析脚本共用）。"""
     total = len(questions)
@@ -278,4 +318,42 @@ def apply_overrides(questions: list[dict], overrides: dict[str, dict]) -> list[s
             finalize_status(question)  # 换域后 status 跟着重算
         if override.get("status"):
             question["status"] = override["status"]  # 显式置位优先于域推导
+    return sorted(unmatched)
+
+
+# ---- 难度重标注（P2-M1）----
+# 场景：三个开源源没有难度标注、解析时一律落默认 L2（实测 686 题）——难度档因此几乎不区分。
+# 标注由 annotate_difficulty.py 批量生成（flash + rubric 见 data/curation/difficulty_annotations.json），
+# 本处只做「读表 + 应用」。与改判表同款纪律：内容哈希寻址、未命中必须报出来。
+
+DIFFICULTY_LEVELS: Final = ("L1", "L2", "L3")
+
+
+def load_difficulty(path: Path) -> dict[str, str]:
+    """读难度重标注表 `{question_id: "L1"|"L2"|"L3"}`；文件不存在 = 无标注。
+
+    非法档位直接报错：三档是引擎的难度序（rules/difficulty 的 DIFFICULTY_ORDER），
+    混进别的值会在出题端静默抽不到题。
+    """
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    levels: dict[str, str] = payload.get("levels") or {}
+    bad = {qid: value for qid, value in levels.items() if value not in DIFFICULTY_LEVELS}
+    if bad:
+        raise ValueError(f"难度重标注表里有非法档位：{bad}")
+    return levels
+
+
+def apply_difficulty(questions: list[dict], levels: dict[str, str]) -> list[str]:
+    """按 question_id 覆盖 difficulty，返回**未命中的条目 id**（不静默）。
+
+    与 apply_overrides 同因：question_id 是题干的内容哈希，题干改一个字条目就失效。
+    """
+    known = {question["question_id"] for question in questions}
+    unmatched = [qid for qid in levels if qid not in known]
+    for question in questions:
+        level = levels.get(question["question_id"])
+        if level is not None:
+            question["difficulty"] = level
     return sorted(unmatched)

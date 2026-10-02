@@ -50,6 +50,11 @@
       "question_id": "q_26fb2441566f",
       "status": "draft",
       "reason": "追问残片：同上一类，脱离上文不成立"
+    },
+    {
+      "question_id": "q_7e27e876b97e",
+      "domain": "engineering-observability",
+      "reason": "知识对比题：问的是几款 AI 编码工具各自的分工与适用场景，不是候选人的表达或经历，归工程化域承载；留在行为面会让技术域少一道可出题的知识题"
     }
   ]
 }
