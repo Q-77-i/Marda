@@ -43,7 +43,7 @@ flowchart LR
   而**阶段推进 / 轮数上限 / 追问决策 / 域配额 / 难度升降全部是纯代码**——可解释、可单测、UI 可回放；LLM 只做出题、评分、追问文案。
   每次追问与换题的**原因与决策同源**（唯一实现 `explain_decision`），所以回放里的原因不是事后旁白。→ [SPEC §4](docs/SPEC.md)
 - **RAG 是 Agent 的一个工具**：出题检索（题库 → 难度放宽 → LLM 生成三级降级）与混合检索
-  （dense + sparse 服务端 RRF + rerank）；语料 1571 题、一题可多源、来源四要素带 license。→ [SPEC §5](docs/SPEC.md) / [§6](docs/SPEC.md)
+  （dense + sparse 服务端 RRF + rerank）；语料 1568 题、一题可多源、来源四要素带 license。→ [SPEC §5](docs/SPEC.md) / [§6](docs/SPEC.md)
 - **评估驱动的学习闭环**：报告五维评分 → 短板域与漏点关键词 → 混合检索推题 → 多场能力档案（曲线 / 热力图 / 短板变化）。
   总分口径后端单一来源，报告页、PDF、档案显示的是同一个数。→ [SPEC §4.10](docs/SPEC.md) / [§4.11](docs/SPEC.md)
 - **质量是量出来的，不是感觉出来的**：检索侧四变体离线基线（NDCG / RAGAS，噪声地板先量后用）；
@@ -130,10 +130,17 @@ backend/.venv/bin/python data/scripts/ingest.py         # → SQLite + Qdrant �
 
 # 只改判十来道题（归域/上下架）时不必重跑全链：改判表 → 已落库的库
 backend/.venv/bin/python data/scripts/apply_overrides.py [--dry-run]
+
+# 难度重标注（P2-M1）：批量标 + 校准报告 + 只改档位不重建向量库
+backend/.venv/bin/python data/scripts/annotate_difficulty.py --select main   # 可断点续跑
+backend/.venv/bin/python data/scripts/annotate_difficulty.py --report
+backend/.venv/bin/python data/scripts/apply_difficulty.py [--dry-run]
 ```
 
-**语料规模**：个人题库 342 题 + 四源开源语料 1229 题 = **1571 题（enabled 1099）**，开源语料以 Agent 岗方向为主；
+**语料规模**：个人题库 342 题 + 四源开源语料 1229 题 = **1568 题（enabled 1096）**，开源语料以 Agent 岗方向为主；
 模型层理论页落在未启用的 `cs-fundamentals` 域、以 draft 只进 SQLite（域启用时零重采成本）。
+**难度**：全库按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档重标注（P2-M1，1002 题 LLM 标注 + 与真实标注源校准），
+启用题 L1 125 / L2 623 / L3 348——12 个「难度 × 题量」组合全部可供（原 L3 × 15 直供不足已消除）。
 
 **合规口径**：入库语料必须有明确 license，无 license / 非商用（NC）/ 来源不明的一律不入库；一题可有多源，
 来源明细进 `question_sources`（四要素，**license 按源记**），`questions.source` 只存答案主源。
@@ -201,6 +208,12 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 | M10.5 | 档案前端改版（知识域热力图 / 五维对照表 / 一天一个标签） |
 | M11 | 行为面 / HR 面（同一状态机换能力模型与题源，deepen-only 追问） |
 | M12 | 评估体系（检索四变体基线 + RAGAS；评分一致性自研 harness + 门禁） |
+
+阶段 3 + 二期（P2，多模态与企业级收尾）进行中：
+
+| 里程碑 | 内容 |
+| --- | --- |
+| P2-M1 | 题库质量三连（全库难度重标注 1002 题；近似重复 3 对措辞级合并；行为题 6 道补讲述要点） |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
