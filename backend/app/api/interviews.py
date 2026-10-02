@@ -154,7 +154,9 @@ async def export_interview_report_pdf(
     return Response(
         content=pdf,
         media_type="application/pdf",
-        headers={"Content-Disposition": report_pdf.content_disposition(interview_id)},
+        headers={
+            "Content-Disposition": report_pdf.content_disposition(interview_id, row["created_at"])
+        },
     )
 
 

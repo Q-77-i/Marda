@@ -155,15 +155,25 @@ def dims_label(dim: str) -> str:
     return DIMENSION_LABELS.get(dim) or BEHAVIORAL_DIMENSION_LABELS.get(dim, dim)
 
 
-def format_created_at(iso: str) -> str:
-    """UTC ISO 串 → 东八区 "YYYY-MM-DD HH:mm"；解析不了给空串（报告照常导出，只是不显示时间）。"""
+def _parse_utc(iso: str) -> datetime | None:
+    """UTC ISO 串 → 带时区的 datetime；解析不了给 None（报告照常导出，只是不显示时间）。"""
     try:
         moment = datetime.fromisoformat(iso)
     except (TypeError, ValueError):
-        return ""
-    if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
-    return moment.astimezone(_REPORT_TZ).strftime("%Y-%m-%d %H:%M")
+        return None
+    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+
+
+def format_created_at(iso: str) -> str:
+    """UTC ISO 串 → 东八区 "YYYY-MM-DD HH:mm"。"""
+    moment = _parse_utc(iso)
+    return moment.astimezone(_REPORT_TZ).strftime("%Y-%m-%d %H:%M") if moment else ""
+
+
+def _file_stamp(iso: str) -> str:
+    """UTC ISO 串 → 东八区 ``YYYYMMDD-HHmm``（文件名用，与 format_created_at 同一时区口径）。"""
+    moment = _parse_utc(iso)
+    return moment.astimezone(_REPORT_TZ).strftime("%Y%m%d-%H%M") if moment else ""
 
 
 def _split_answer(answer: str | None) -> list[dict]:
@@ -280,14 +290,22 @@ def render_report_pdf(payload: dict, created_at: str = "") -> bytes:
     return weasyprint.HTML(string=html, base_url=str(TEMPLATES_DIR)).write_pdf()
 
 
-def content_disposition(interview_id: str) -> str:
+def content_disposition(interview_id: str, created_at: str = "") -> str:
     """附件下载头。
 
     中文名走 RFC 5987（``filename*``），并另给一个纯 ASCII 的 ``filename`` 兜底：
     不认 ``filename*`` 的老客户端至少能存下文件，而不是把裸汉字塞进文件名（头字段只允许
     latin-1，裸塞还会让部分服务器直接抛错）。
+
+    尾部带该场报告时间：同名文件只会被存成 ``-2.pdf``，名字里带上时间才分得清是哪一场。
+    **浏览器实际落盘的名字由前端 `lib/download.ts` 决定**（blob 下载的 `link.download`
+    覆盖本头），这里服务的是直接访问 URL 的客户端；两处形状保持一致。
+
+    ⚠️ 本函数只拿到场次号与本场时间，拿不到岗位名（前端那份有），故第二段用场次号短码：
+    ``码达-能力评估-<场次短码>-<YYYYMMDD-HHmm>``。
     """
-    stem = f"码达能力评估报告-{interview_id[:8]}"
+    stamp = _file_stamp(created_at)
+    stem = f"码达-能力评估-{interview_id[:8]}{f'-{stamp}' if stamp else ''}"
     return (
         f'attachment; filename="marda-report-{interview_id[:8]}.pdf"; '
         f"filename*=UTF-8''{quote(stem)}.pdf"

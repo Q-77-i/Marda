@@ -11,6 +11,20 @@ export function formatTime(iso: string): string {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * 文件名时间戳 `YYYYMMDD-HHmm`（本地时区，与 formatTime 同一口径）。
+ * 用于导出文件名——同名文件会被浏览器存成 `-2.pdf`，光靠文件名分不出是哪一场。
+ */
+export function fileStamp(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}` +
+    `-${pad(date.getHours())}${pad(date.getMinutes())}`
+  );
+}
+
 /** 面试时长（分钟）：起止时间都在时给出。 */
 export function formatDuration(startedAt: string, endedAt: string | null): string | null {
   if (!endedAt) return null;

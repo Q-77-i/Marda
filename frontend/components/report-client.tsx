@@ -71,6 +71,8 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
   }
 
   const report = data.report;
+  // 收窄后的值存一份：onExport 是回调，闭包里 TS 不保留 data 的非空收窄
+  const createdAt = data.created_at;
 
   /** 导出 PDF（FR-18）：后端现渲染，前端只负责落盘；失败就地给一行提示，不挡页面。 */
   async function onExport() {
@@ -78,7 +80,15 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
     setExportError(null);
     try {
       const blob = await exportReportPdf(interviewId);
-      downloadBlob(blob, reportFileName(report.position, interviewId));
+      downloadBlob(
+        blob,
+        reportFileName({
+          position: report.position,
+          interviewId,
+          questionCount: report.question_count,
+          createdAt,
+        }),
+      );
     } catch (err: unknown) {
       setExportError(err instanceof Error ? err.message : "导出失败，请重试");
     } finally {
@@ -146,7 +156,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
                 value={`${completedCount(report.answered_count, report.question_count)}`}
                 suffix={`/ ${report.question_count}`}
               />
-              <Stat label="生成时间" value={formatTime(data.created_at)} />
+              <Stat label="生成时间" value={formatTime(createdAt)} />
             </>
           }
         />

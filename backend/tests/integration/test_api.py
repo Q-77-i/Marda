@@ -14,6 +14,7 @@ import json
 import re
 import sqlite3
 from types import SimpleNamespace
+from urllib.parse import unquote
 
 import pytest
 from pypdf import PdfReader
@@ -308,6 +309,10 @@ async def test_导出报告PDF(client):
     assert r.headers["content-type"] == "application/pdf"
     assert r.headers["content-disposition"].startswith("attachment;")
     assert "filename*=UTF-8''" in r.headers["content-disposition"]  # 中文名走 RFC 5987 编码
+    # 名字要自解释是哪一场：带场次短码与报告时间（YYYYMMDD-HHmm）。
+    # 浏览器落盘的名字由前端 lib/download.ts 定（另有 vitest），这里是直接访问 URL 的那份
+    stem = unquote(r.headers["content-disposition"].split("filename*=UTF-8''", 1)[1])
+    assert re.fullmatch(r"码达-能力评估-[0-9a-f]{8}-\d{8}-\d{4}\.pdf", stem), stem
     assert r.content[:5] == b"%PDF-"
 
     # 报告主体来自同一份 payload：总评/逐题点评/学习建议/五维标签都在，且无缺字
