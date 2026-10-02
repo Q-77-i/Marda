@@ -18,10 +18,13 @@ from app.domain import INTERVIEW_TECH
 from app.graph.rules.aggregate import FIVE_DIMS, overall_score
 
 
-def build_profile(rows: list[dict]) -> dict:
+def build_profile(rows: list[dict], *, no_report: int = 0) -> dict:
     """报告行（`db.list_reports` 输出，按 started_at 升序）→ 档案 payload。
 
     升序即曲线的从左到右 = 时间从早到晚；排序由 db 层保证，本层不重排。
+
+    `no_report` = 本人**已完成但没有报告**的场次数（P2-M3，`db.count_finished_without_report`）：
+    这类场次本来就不在 rows 里，计数只用于 `excluded` 说明，不进曲线。
 
     「域有洞」是常态而非异常：一场只考部分域（`tech_quota` 按权重分配题量），
     没考的域在该场的 `domain_scores` 里**根本没有键**——前端据此断线，不补零
@@ -34,11 +37,13 @@ def build_profile(rows: list[dict]) -> dict:
             excluded[interview_type] = excluded.get(interview_type, 0) + 1
             continue
         sessions.append(_session(row))
+    if no_report > 0:
+        excluded["no_report"] = no_report  # 没有分数可画的那类（P2-M3），0 时不给键（不误报）
     return {
         "sessions": sessions,
         "summary": _summary(sessions),
         "weakness_changes": _weakness_changes(sessions),
-        "excluded": excluded,  # 未计入的场次（P1-M11：{"behavioral": N}），供空态说明
+        "excluded": excluded,  # 未计入的场次（P1-M11 {"behavioral": N} / P2-M3 {"no_report": N}）
     }
 
 

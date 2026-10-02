@@ -220,6 +220,23 @@ def test_能力档案跳过没有报告的场次(tmp_path):
     assert [r["interview_id"] for r in db.list_reports(path, user_id="u1")] == ["iv-ok"]
 
 
+def test_缺报告的已完成场次可计数(tmp_path):
+    """P2-M3：档案要能说明「我明明跑了那场」——只数**已完成且没有报告**的场次。
+
+    进行中的场次不算（没有分数可谈，用户也不会觉得它该出现在档案里）。
+    """
+    path = tmp_path / "test.sqlite3"
+    db.ensure_schema(path)
+    db.create_interview(path, interview_id="iv-noreport", position="x", question_count=5, user_id="u1")
+    db.finish_interview(path, "iv-noreport")
+    db.create_interview(path, interview_id="iv-running", position="x", question_count=5, user_id="u1")
+    db.create_interview(path, interview_id="iv-ok", position="x", question_count=5, user_id="u1")
+    db.save_report(path, "iv-ok", _report_row(3.0))
+
+    assert db.count_finished_without_report(path, user_id="u1") == 1
+    assert db.count_finished_without_report(path, user_id="u2") == 0  # 只数本人场次
+
+
 # ---- 会话类型列（P1-M11 FR-22） ----
 
 

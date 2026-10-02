@@ -315,7 +315,7 @@ export type ProfileResponse = {
   sessions: ProfileSession[];
   summary: ProfileSummary;
   weakness_changes: WeaknessChange[];
-  /** 未计入档案的场次计数（P1-M11：{"behavioral": N}），空态/混排时用来说明原因 */
+  /** 未计入档案的场次计数（P1-M11 {"behavioral": N} / P2-M3 {"no_report": N}），空态/混排时用来说明原因 */
   excluded?: Record<string, number>;
 };
 

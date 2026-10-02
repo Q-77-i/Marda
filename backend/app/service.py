@@ -346,7 +346,10 @@ class Service:
         数据源是报告 payload 本身（同学习推荐口径），题库/评分口径变更零回归。
         """
         rows = await asyncio.to_thread(db.list_reports, self._settings.db_path, user_id=user_id)
-        return profile.build_profile(rows)
+        no_report = await asyncio.to_thread(  # 已完成但报告缺失的场次（P2-M3）：只在档案里作说明
+            db.count_finished_without_report, self._settings.db_path, user_id=user_id
+        )
+        return profile.build_profile(rows, no_report=no_report)
 
     async def list_interviews(self, user_id: str, limit: int = 50) -> list[dict]:
         rows = await asyncio.to_thread(

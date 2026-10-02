@@ -231,20 +231,63 @@ export function weaknessRows(
 }
 
 /**
- * 未计入场次的说明（P1-M11 D4）：行为面场次不进技术能力档案（维度与知识域体系都不同），
- * 但用户看得见自己跑过——空档案与混排时都要说清「为什么这里没有那几场」，不静默。
+ * 未计入场次的说明（P1-M11 D4 / P2-M3）：这些场次用户看得见自己跑过，档案里却没有——
+ * 空档案与混排时都要说清「为什么这里没有那几场」，不静默。
  *
- * 返回一行说明文案；没有排除场次时返回 null（页面不渲染）。
+ * 两种原因：行为面（不进技术能力档案，维度与知识域体系都不同）、报告缺失（没有分数可画）。
+ * 顺序固定（行为面在前）；计数为 0 的不产出条目（不误报），全为 0 时返回空数组（页面不渲染）。
  */
-export function excludedNote(excluded: Record<string, number> | undefined): string | null {
+export function excludedNotes(excluded: Record<string, number> | undefined): string[] {
+  const notes: string[] = [];
   const behavioral = excluded?.behavioral ?? 0;
-  if (behavioral <= 0) return null;
-  return `另有 ${behavioral} 场行为面，不计入技术能力档案`;
+  if (behavioral > 0) notes.push(`另有 ${behavioral} 场行为面，不计入技术能力档案`);
+  const noReport = excluded?.no_report ?? 0;
+  if (noReport > 0) {
+    notes.push(
+      `另有 ${noReport} 场面试已完成，但报告没有生成，没有分数可分析——这些场次仍在仪表盘的面试记录里`,
+    );
+  }
+  return notes;
 }
 
-/** 空档案的成因：区分「一场没跑」与「只跑了行为面」（两者的引导文案不同）。 */
+/** 空档案的成因（引导文案不同）：两种原因都有时行为面优先（缺失的报告在说明里单独列出）。 */
 export function emptyProfileKind(
   excluded: Record<string, number> | undefined,
-): "none" | "behavioral-only" {
-  return (excluded?.behavioral ?? 0) > 0 ? "behavioral-only" : "none";
+): "none" | "behavioral-only" | "no-report-only" {
+  if ((excluded?.behavioral ?? 0) > 0) return "behavioral-only";
+  if ((excluded?.no_report ?? 0) > 0) return "no-report-only";
+  return "none";
+}
+
+/** 空档案的完整文案（标题 / 正文段落 / CTA）：纯数据放 lib，页面只渲染不判断。 */
+export function emptyProfileCopy(excluded: Record<string, number> | undefined): {
+  title: string;
+  paragraphs: string[];
+  cta: string;
+} {
+  const kind = emptyProfileKind(excluded);
+  const paragraphs = excludedNotes(excluded);
+  if (kind !== "no-report-only") {
+    // no-report-only 时用户明明跑过场次，说「完成第一场……」是错的——那态只解释缺报告
+    paragraphs.push(
+      kind === "behavioral-only"
+        ? "完成一场技术面后，这里会记录总分、五维能力与各知识域的走向，并把每场暴露的短板变化连起来看。"
+        : "完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，并把每场暴露的短板变化连起来看。",
+    );
+  }
+  return {
+    title:
+      kind === "behavioral-only"
+        ? "只跑过行为面"
+        : kind === "no-report-only"
+          ? "有场次，但报告没有生成"
+          : "还没有可分析的面试记录",
+    paragraphs,
+    cta:
+      kind === "none"
+        ? "开始第一场面试"
+        : kind === "behavioral-only"
+          ? "开始第一场技术面"
+          : "开始新的一场",
+  };
 }

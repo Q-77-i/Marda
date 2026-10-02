@@ -216,17 +216,16 @@ export function difficultyLabel(value: string): string {
 }
 
 /**
- * 顶层导航（P1-M6 拍板：顶栏 tab 而非侧边栏）。
+ * 顶层导航（P1-M6 拍板：顶栏 tab 而非侧边栏）。五项均为已上线页面。
  *
- * `ready: false` 的项**渲染成不可点的灰文本**（不是 `<a>`，也没有 href）——
- * 这是给后续页面的占位机制（M6 起沿用至今，P1-M10 后五项全部就绪）；
- * 灰度即路线图，但绝不给出会 404 的链接。
+ * M6 起有个 `ready` 开关（未上线页渲染成不可点的灰文本、绝不发 404 链接）——
+ * P1-M10 后五项全部就绪、开关再没被翻动过，P2-M3 随顶栏改动一并清掉。
  */
 export const NAV_ITEMS = [
-  { href: "/", label: "仪表盘", ready: true },
-  { href: "/bank", label: "题库", ready: true },
-  { href: "/bank/private", label: "我的题库", ready: true },
-  { href: "/profile", label: "能力档案", ready: true },
-  { href: "/learn", label: "学习推荐", ready: true },
+  { href: "/", label: "仪表盘" },
+  { href: "/bank", label: "题库" },
+  { href: "/bank/private", label: "我的题库" },
+  { href: "/profile", label: "能力档案" },
+  { href: "/learn", label: "学习推荐" },
 ] as const;
 

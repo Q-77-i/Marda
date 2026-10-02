@@ -275,6 +275,23 @@ def list_reports(db_path: Path, *, user_id: str, limit: int = 200) -> list[dict]
     return out
 
 
+def count_finished_without_report(db_path: Path, *, user_id: str) -> int:
+    """本人**已完成但没有报告**的场次数（P2-M3）。
+
+    档案按 reports 表取数（M10 D5，口径不变）→ 这类场次不在曲线里。计数回给前端，
+    让档案页能说明「我明明跑了那场」——不补零、不画进曲线（它们没有分数）。
+    判据与列表页一致（`status='finished'`）：进行中的场次不算，用户也不会期待它出现在档案里。
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM interviews i"
+            " WHERE i.user_id=? AND i.status='finished'"
+            " AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.interview_id = i.id)",
+            (user_id,),
+        ).fetchone()
+    return int(row[0])
+
+
 def get_report(db_path: Path, interview_id: str) -> dict | None:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT * FROM reports WHERE interview_id=?", (interview_id,)).fetchone()

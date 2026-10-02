@@ -26,8 +26,8 @@ import {
   WEAKNESS_WINDOW,
   deltaLabel,
   dimensionStats,
-  emptyProfileKind,
-  excludedNote,
+  emptyProfileCopy,
+  excludedNotes,
   heatRows,
   heatmapWindow,
   insightLine,
@@ -115,15 +115,19 @@ export function ProfileClient() {
   const latest = sessions[sessions.length - 1];
   const labels = tickLabels(sessions);
   const insight = insightLine(sessions, WEIGHTED_DOMAINS);
-  const note = excludedNote(data.excluded);
+  const notes = excludedNotes(data.excluded);
   const labelOf = (interviewId: string) =>
     labels[sessions.findIndex((session) => session.interview_id === interviewId)] ?? "";
 
   return page(
     <>
       <SummaryTiles data={data} labelOf={labelOf} />
-      {/* 行为面场次不计入档案（P1-M11 D4）：混排时说一句，别让用户以为那几场丢了 */}
-      {note ? <p className="text-xs text-muted-foreground">{note}</p> : null}
+      {/* 未计入档案的场次（P1-M11 行为面 / P2-M3 报告缺失）：逐条说明，别让用户以为那几场丢了 */}
+      {notes.map((line) => (
+        <p key={line} className="text-xs text-muted-foreground">
+          {line}
+        </p>
+      ))}
 
       {stage === "single" ? (
         // 单场态没有曲线与短板变化，顺序仍是「先快照、后明细」
@@ -423,34 +427,22 @@ function WeaknessLine({
 /**
  * 空档案（M10 D4：空态要给出路）。
  *
- * P1-M11 D4：**只跑过行为面**时不能只说「还没有面试记录」——用户明明跑过，
- * 要说清行为面不计入技术能力档案，否则看起来像系统把他的场次弄丢了。
+ * P1-M11 D4 / P2-M3：**只跑过行为面**或**有场次但报告缺失**时不能只说「还没有面试记录」——
+ * 用户明明跑过，要说清那些场次去哪了，否则看起来像系统把场次弄丢了。
  */
 function EmptyProfile({ excluded }: { excluded?: Record<string, number> }) {
-  const behavioralOnly = emptyProfileKind(excluded) === "behavioral-only";
+  // 文案（标题/正文/CTA）在 lib/profile.ts 里按成因分态，页面只渲染不判断
+  const copy = emptyProfileCopy(excluded);
   return (
     <Card>
       <CardContent>
         <EmptyState
           className="py-12"
-          title={behavioralOnly ? "只跑过行为面" : "还没有可分析的面试记录"}
-          description={
-            behavioralOnly ? (
-              <>
-                你已完成 {excluded?.behavioral} 场行为面——行为面不计入技术能力档案（评分维度与
-                知识域体系都不同）。完成一场技术面后，这里会记录总分、五维能力与各知识域的走向，
-                并把每场暴露的短板变化连起来看。
-              </>
-            ) : (
-              <>
-                完成第一场模拟面试后，这里会记录你的总分、五维能力与各知识域的走向，
-                并把每场暴露的短板变化连起来看。
-              </>
-            )
-          }
+          title={copy.title}
+          description={copy.paragraphs.join("")}
           action={
             <Link href="/" className={cn(buttonVariants({ size: "sm" }))}>
-              {behavioralOnly ? "开始第一场技术面" : "开始第一场面试"}
+              {copy.cta}
             </Link>
           }
         />

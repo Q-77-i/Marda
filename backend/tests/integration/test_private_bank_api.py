@@ -138,6 +138,29 @@ async def test_上传校验_答案不足实质字符(client, bank_db):
     assert "过短" in r.json()["errors"][0]["reason"]
 
 
+async def test_私有题不开放行为面域(client, bank_db):
+    """P2-M3（D7 复核）：行为面不进私有题库——上传与编辑两条路都拒掉，不静默入库。
+
+    域集合本身由 unit(test_behavioral) 钉死；这里补接口层，防止「字典改了、校验没跟上」。
+    """
+    rejected = await client.post(
+        "/api/bank/private/upload",
+        files=_upload_files(TEMPLATE),
+        data={"domain": "behavioral", "difficulty": "L2"},
+    )
+    assert rejected.status_code == 400
+    assert (await client.get("/api/bank/private/questions")).json()["total"] == 0  # 一道都没进库
+
+    await client.post("/api/bank/private/upload", files=_upload_files(TEMPLATE),
+                      data={"domain": "rag", "difficulty": "L2"})
+    qid = (await client.get("/api/bank/private/questions")).json()["items"][0]["question_id"]
+
+    patched = await client.patch(f"/api/bank/private/questions/{qid}", json={"domain": "behavioral"})
+
+    assert patched.status_code == 422
+    assert (await client.get("/api/bank/private/questions")).json()["items"][0]["domain"] == "rag"
+
+
 async def test_隔离_A的私有题在B处四处不可见(client, login_as, bank_db):
     """FR-13 验收核心：列表 / 公共浏览 / 公共搜索 / 容量 全维不可见。"""
     alice = client  # 默认登录用户

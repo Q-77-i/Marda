@@ -14,8 +14,9 @@ import {
   deltaLabel,
   dimensionStats,
   domainStats,
+  emptyProfileCopy,
   emptyProfileKind,
-  excludedNote,
+  excludedNotes,
   heatLevel,
   heatRows,
   heatmapWindow,
@@ -306,16 +307,47 @@ describe("weaknessRows", () => {
   });
 });
 
-describe("行为面排除说明（P1-M11 D4）", () => {
+describe("未计入场次的说明（P1-M11 D4 / P2-M3）", () => {
   it("有行为面场次时给一行说明，让用户知道那几场去哪了", () => {
-    expect(excludedNote({ behavioral: 3 })).toBe("另有 3 场行为面，不计入技术能力档案");
-    expect(excludedNote({})).toBeNull();
-    expect(excludedNote(undefined)).toBeNull();
+    expect(excludedNotes({ behavioral: 3 })).toEqual(["另有 3 场行为面，不计入技术能力档案"]);
+    expect(excludedNotes({})).toEqual([]);
+    expect(excludedNotes(undefined)).toEqual([]);
   });
 
-  it("空档案区分「一场没跑」与「只跑了行为面」（引导文案不同）", () => {
+  it("报告缺失的场次也说明，并给出去处（不静默、不留死胡同）", () => {
+    const notes = excludedNotes({ no_report: 2 });
+
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("2 场面试已完成");
+    expect(notes[0]).toContain("仪表盘");
+    expect(excludedNotes({ no_report: 0 })).toEqual([]); // 0 不说（不误报）
+  });
+
+  it("两种原因都有时逐条给，顺序稳定", () => {
+    expect(excludedNotes({ behavioral: 1, no_report: 2 })).toHaveLength(2);
+  });
+
+  it("空档案区分「一场没跑」/「只跑了行为面」/「有场次但缺报告」", () => {
     expect(emptyProfileKind({ behavioral: 2 })).toBe("behavioral-only");
+    expect(emptyProfileKind({ no_report: 2 })).toBe("no-report-only");
+    expect(emptyProfileKind({ behavioral: 1, no_report: 2 })).toBe("behavioral-only"); // 两种都有时行为面优先
     expect(emptyProfileKind({})).toBe("none");
     expect(emptyProfileKind(undefined)).toBe("none");
+  });
+
+  it("空档案的三态文案：标题/正文/CTA 都说得清为什么是空的", () => {
+    const noReport = emptyProfileCopy({ no_report: 3 });
+    expect(noReport.title).toContain("报告");
+    expect(noReport.paragraphs.join("")).toContain("3 场");
+    expect(noReport.cta).toBe("开始新的一场");
+
+    const behavioral = emptyProfileCopy({ behavioral: 2 });
+    expect(behavioral.title).toBe("只跑过行为面");
+    expect(behavioral.paragraphs.join("")).toContain("2 场行为面");
+    expect(behavioral.cta).toBe("开始第一场技术面");
+
+    const none = emptyProfileCopy(undefined);
+    expect(none.title).toBe("还没有可分析的面试记录");
+    expect(none.cta).toBe("开始第一场面试");
   });
 });

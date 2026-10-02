@@ -7,6 +7,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+
+from app.config import get_settings
 
 # 同 test_api：一场 2 轮的完整轮次脚本
 TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……", "第一题深挖补充……",
@@ -111,6 +114,21 @@ async def test_未结束场次不进档案(client):
     data = (await client.get("/api/profile")).json()
 
     assert data["sessions"] == []  # 没有报告 → 没有分数可画
+
+
+async def test_已完成但缺报告的场次计入说明(client):
+    """P2-M3：报告落库失败的场次不该凭空消失——由 `excluded.no_report` 说明。
+
+    真库当前 0 例（全部场次都有报告），故删掉刚跑完那场的报告行来构造该状态。
+    """
+    interview_id = await _finish(client)
+    with sqlite3.connect(get_settings().db_path) as conn:
+        conn.execute("DELETE FROM reports WHERE interview_id=?", (interview_id,))
+
+    data = (await client.get("/api/profile")).json()
+
+    assert data["sessions"] == []
+    assert data["excluded"] == {"no_report": 1}
 
 
 async def test_只看得到自己的场次(login_as):

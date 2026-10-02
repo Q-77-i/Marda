@@ -49,6 +49,19 @@ def _row(
     }
 
 
+def test_缺报告的已完成场次进排除计数():
+    """P2-M3：finished 但报告缺失的场次不在曲线里（D5 口径不变），改由 excluded 说明。"""
+    profile = build_profile([], no_report=2)
+
+    assert profile["sessions"] == []
+    assert profile["excluded"] == {"no_report": 2}
+
+
+def test_没有缺报告场次时不带该键():
+    """不误报：没有这类场次就不该出现「另有 0 场……」的说明。"""
+    assert build_profile([])["excluded"] == {}
+
+
 def test_空输入给零态():
     profile = build_profile([])
 

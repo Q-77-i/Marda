@@ -26,19 +26,19 @@ export function AppHeader({
 }) {
   return (
     <header className="border-b">
+      {/* 窄屏（P2-M3）：品牌 + 右侧内容一行、导航独占一行——五个 tab 挤在一行会被压成
+          竖排单字。≥sm 换回原来的单行 h-14（order 只影响排布顺序，桌面上与 DOM 序一致）。 */}
       <div
-        className={`mx-auto flex h-14 items-center justify-between gap-4 px-4 sm:px-6 ${WIDTHS[width]}`}
+        className={`mx-auto flex min-h-14 flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2 sm:h-14 sm:flex-nowrap sm:gap-6 sm:px-6 sm:py-0 ${WIDTHS[width]}`}
       >
-        <div className="flex min-w-0 items-center gap-4 sm:gap-6">
-          <Link href="/" className="flex shrink-0 items-baseline gap-2">
-            <span className="text-sm font-semibold tracking-tight">Marda 码达</span>
-            <span className="hidden text-xs text-muted-foreground sm:inline">
-              Agent 智能面试
-            </span>
-          </Link>
-          {nav ? <MainNav /> : null}
-        </div>
-        {right}
+        <Link href="/" className="order-1 flex shrink-0 items-baseline gap-2">
+          <span className="text-sm font-semibold tracking-tight">Marda 码达</span>
+          <span className="hidden text-xs text-muted-foreground sm:inline">
+            Agent 智能面试
+          </span>
+        </Link>
+        {nav ? <MainNav /> : null}
+        {right ? <div className="order-2 ml-auto sm:order-3">{right}</div> : null}
       </div>
     </header>
   );
