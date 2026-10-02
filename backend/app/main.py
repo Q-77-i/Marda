@@ -8,6 +8,7 @@ from app.api.bank import router as bank_router
 from app.api.bank_private import router as bank_private_router
 from app.api.interviews import router as interviews_router
 from app.api.profile import router as profile_router
+from app.api.voice import router as voice_router
 from app.config import get_settings
 from app.service import Service
 
@@ -36,6 +37,7 @@ app.include_router(interviews_router)
 app.include_router(bank_router)
 app.include_router(bank_private_router)
 app.include_router(profile_router)
+app.include_router(voice_router)  # 语音（P2-M5 FR-24）：WS /api/asr + POST /api/tts
 
 
 @app.get("/healthz")

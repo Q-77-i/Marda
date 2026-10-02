@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     langfuse_secret_key: str = ""
     langfuse_base_url: str = "https://cloud.langfuse.com"
 
+    # 语音（P2-M5 FR-24）：ASR = 豆包流式语音识别（火山「语音控制台」签发的 key，
+    # **与方舟 Ark key 不通用**——探针实测：Ark key 走 X-Api-Key 一律 401）；
+    # 留空 = 语音通道整体降级（前端提示改走文字，面试链路零影响）
+    volcano_speech_api_key: str = ""
+    volcano_asr_url: str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
+    volcano_asr_resource_id: str = "volc.seedasr.sauc.duration"  # 豆包流式语音识别 2.0 小时版
+    tts_voice: str = "zh-CN-XiaoxiaoNeural"  # edge-tts 音色（免费，见 P2-M5 决策④）
+
     # 数据
     db_path: Path = REPO_ROOT / "data" / "marda.sqlite3"
     checkpoint_db_path: Path = REPO_ROOT / "data" / "checkpoints.sqlite3"

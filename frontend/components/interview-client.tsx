@@ -27,10 +27,25 @@ import {
   type Session,
   type SSEHandlers,
 } from "@/lib/api";
+import { AsrRecorder } from "@/lib/asr-client";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { progressLabel } from "@/lib/format";
 import { reconcile, type PendingTurn } from "@/lib/recovery";
-import { UnauthorizedError, redirectToLogin, setUnauthorizedHandler } from "@/lib/session";
+import {
+  UnauthorizedError,
+  notifyUnauthorized,
+  redirectToLogin,
+  setUnauthorizedHandler,
+} from "@/lib/session";
+import { Speaker } from "@/lib/tts";
+import {
+  EMPTY_TRANSCRIPT_HINT,
+  VOICE_MODE_KEY,
+  blocksSubmit,
+  mergeTranscript,
+  micDisabled,
+  micErrorMessage,
+} from "@/lib/voice";
 import {
   StreamBuffer,
   applyStreamAction,
@@ -63,6 +78,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [draft, setDraft] = useState("");
+  /* 语音通道（P2-M5 FR-24）：默认关，一键开启；记忆在 localStorage（不可用时仅本次有效） */
+  const [voiceMode, setVoiceMode] = useState(false);
+  const [recording, setRecording] = useState(false);
+  const [connecting, setConnecting] = useState(false);
 
   const queueRef = useRef(new TypewriterQueue());
   const composingRef = useRef(false);
@@ -75,7 +94,29 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const messagesRef = useRef<ChatItem[]>([]);
   const pendingRef = useRef<PendingTurn | null>(null);
 
+  /* 语音：voiceMode 走 ref——submit 是稳定回调（deps 只有 interviewId），
+     闭包里的 state 是旧的，而 delta 到达时要按「此刻」的开关决定播不播 */
+  const voiceModeRef = useRef(false);
+  const recorderRef = useRef<AsrRecorder | null>(null);
+  const draftBaseRef = useRef(""); // 开录时的草稿：转写整体替换它之后那一段
+  const ttsWarnedRef = useRef(false);
+  const speakerRef = useRef<Speaker | null>(null);
+  if (speakerRef.current === null) {
+    speakerRef.current = new Speaker((message) => {
+      // 播报失败只提示一次，不打断面试（三档降级：edge-tts → speechSynthesis → 纯文字）
+      if (ttsWarnedRef.current) return;
+      ttsWarnedRef.current = true;
+      setNotice(`语音播报不可用（${message}），题目请以文字为准。`);
+    });
+  }
+
   const nextId = useCallback(() => `m${idRef.current++}`, []);
+
+  /* 浏览器能力探测（只读，SSR 安全）：没有 getUserMedia / AudioWorklet 就不给麦克风按钮 */
+  const micSupported =
+    typeof navigator !== "undefined" &&
+    typeof navigator.mediaDevices?.getUserMedia === "function" &&
+    typeof AudioWorkletNode !== "undefined";
 
   /* 渲染列表的镜像：submit 是稳定回调（deps 只有 interviewId），要从里面数
      「发送前本地已有几条候选人气泡」只能读 ref */
@@ -105,6 +146,16 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   useEffect(() => {
     setUnauthorizedHandler(() => setExpired(true));
     return () => setUnauthorizedHandler(null);
+  }, []);
+
+  /* 语音模式偏好（默认关）：存储不可用（隐私模式）静默当没开过 */
+  useEffect(() => {
+    try {
+      voiceModeRef.current = window.localStorage.getItem(VOICE_MODE_KEY) === "1";
+      setVoiceMode(voiceModeRef.current);
+    } catch {
+      voiceModeRef.current = false;
+    }
   }, []);
 
   /* 恢复会话（验收 4：刷新后历史不丢）；已结束场次进只读回放（FR-25）。
@@ -203,11 +254,99 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     setMessages((prev) => applyStreamAction(prev, action, createAssistant));
   };
 
+  /** 新面试官消息终稿 → 播报（语音模式开着才播；TtsLayer 失败只提示一次）。 */
+  const speak = (text: string) => {
+    if (voiceModeRef.current) void speakerRef.current?.speak(text);
+  };
+
+  const persistVoiceMode = (next: boolean) => {
+    voiceModeRef.current = next;
+    setVoiceMode(next);
+    try {
+      window.localStorage.setItem(VOICE_MODE_KEY, next ? "1" : "0");
+    } catch {
+      // 隐私模式等存储不可用：只本次有效，不影响功能
+    }
+  };
+
+  const toggleVoiceMode = () => {
+    const next = !voiceModeRef.current;
+    persistVoiceMode(next);
+    if (!next) {
+      speakerRef.current?.stop();
+      return;
+    }
+    // 打开就播当前这道题：用户开语音模式，十有八九是想听正在问的题
+    const lastAssistant = messagesRef.current.filter((m) => m.role === "assistant").pop();
+    if (lastAssistant) speak(lastAssistant.content);
+  };
+
+  /**
+   * 语音作答（P2-M5 决策②：点击开始、再点结束）。
+   *
+   * 转写**实时落输入框、不自动发送**（PRD FR-24：发送前可编辑——ASR 错字不能让评分官背锅）。
+   * 开录时已有的草稿作底稿，转写整体替换其后那一段（partial 是累计文本，叠加会串片）。
+   */
+  const startRecording = useCallback(async () => {
+    if (recorderRef.current) return;
+    speakerRef.current?.stop(); // 开麦即停播（轻量打断）
+    setNotice(null);
+    draftBaseRef.current = draft;
+    setConnecting(true);
+    const recorder = new AsrRecorder({
+      onPartial: (text) => setDraft(mergeTranscript(draftBaseRef.current, text)),
+      onFinal: (text) => {
+        setDraft(mergeTranscript(draftBaseRef.current, text));
+        if (!text.trim()) setNotice(EMPTY_TRANSCRIPT_HINT);
+        recorderRef.current = null;
+        setRecording(false);
+        setConnecting(false);
+      },
+      onError: (message) => {
+        setNotice(message);
+        recorderRef.current = null;
+        setRecording(false);
+        setConnecting(false);
+      },
+    });
+    try {
+      await recorder.start();
+      recorderRef.current = recorder;
+      setRecording(true);
+    } catch (err) {
+      recorder.cancel();
+      if (err instanceof UnauthorizedError) notifyUnauthorized();
+      else setNotice(micErrorMessage(err));
+    } finally {
+      setConnecting(false);
+    }
+  }, [draft]);
+
+  const stopRecording = useCallback(async () => {
+    const recorder = recorderRef.current;
+    if (!recorder) return;
+    setConnecting(true); // 等末段转写回来（超时由客户端兜底）
+    await recorder.stop();
+    setConnecting(false);
+  }, []);
+
+  /* 离开页面时收摊：麦克风轨道、AudioContext、WS、正在播的音频一个都不留 */
+  useEffect(
+    () => () => {
+      recorderRef.current?.cancel();
+      speakerRef.current?.stop();
+    },
+    [],
+  );
+
   const handlers: SSEHandlers = {
     // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算
     delta_start: () => applyAction(streamBuf.start()),
     delta_chunk: ({ text }) => applyAction(streamBuf.chunk(text)),
-    delta: ({ text }) => applyAction(streamBuf.delta(text)),
+    delta: ({ text }) => {
+      applyAction(streamBuf.delta(text));
+      speak(text);
+    },
     question: (q) => {
       // 出题节点同一更新内先发 delta 再发 question → 挂到最后一条面试官消息上
       setMessages((prev) => {
@@ -386,6 +525,18 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             <span className="tabular-nums text-xs font-medium">
               {progressLabel(answered, total)}
             </span>
+            {!readonly && (
+              <Button
+                variant={voiceMode ? "default" : "outline"}
+                size="sm"
+                aria-pressed={voiceMode}
+                onClick={toggleVoiceMode}
+                disabled={loading || finished}
+                title="面试官消息用语音播报；作答可点下方「语音作答」"
+              >
+                语音模式
+              </Button>
+            )}
             {readonly ? (
               <Link
                 href={`/report/${interviewId}`}
@@ -398,7 +549,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                 variant="outline"
                 size="sm"
                 onClick={handleEnd}
-                disabled={busy || finished || loading}
+                disabled={busy || finished || loading || recording}
               >
                 结束面试
               </Button>
@@ -499,13 +650,43 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                 // 高度由 fitInput() 按内容算；rows=1 让"撑不高"的浏览器也和小框起步（下限交给 min-h-16）
                 className="max-h-[40dvh] resize-none overflow-y-auto"
               />
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-muted-foreground">
-                  {busy ? "面试官正在回应…" : "答案越具体，评分与点评越准确"}
+                  {connecting
+                    ? "正在连接语音…"
+                    : recording
+                      ? "正在听你说，说完点「结束录音」"
+                      : busy
+                        ? "面试官正在回应…"
+                        : "答案越具体，评分与点评越准确"}
                 </span>
-                <Button onClick={handleSend} disabled={busy || loading || !draft.trim()}>
-                  发送
-                </Button>
+                <div className="flex shrink-0 items-center gap-2">
+                  <Button
+                    variant={recording ? "default" : "outline"}
+                    onClick={recording ? () => void stopRecording() : () => void startRecording()}
+                    /* 录音中不禁用（否则用户按不停、录音收不了尾）——判据在 lib/voice.ts 里，有 vitest */
+                    disabled={micDisabled({
+                      recording,
+                      connecting,
+                      supported: micSupported,
+                      busy,
+                      finished,
+                    })}
+                    title={
+                      micSupported
+                        ? "点击开始录音，再点结束；转写会填进输入框，可修改后再发送"
+                        : "当前浏览器不支持录音，请用文字作答"
+                    }
+                  >
+                    {recording ? "结束录音" : "语音作答"}
+                  </Button>
+                  <Button
+                    onClick={handleSend}
+                    disabled={busy || loading || !draft.trim() || blocksSubmit(recording)}
+                  >
+                    发送
+                  </Button>
+                </div>
               </div>
             </>
           )}
