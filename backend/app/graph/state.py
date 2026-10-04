@@ -173,6 +173,9 @@ class InterviewState(BaseModel):
     consecutive_good: int = 0
     consecutive_bad: int = 0
     candidate_profile: str = ""
+    # 本场使用的简历 id（P2-M11 FR-28）：空串 = 没传简历——三个注入点（开场白/自我介绍
+    # 提炼/出题）都按它决定要不要追加那段话，无简历路径与接入前逐字一致。默认值兼容旧 checkpoint。
+    resume_id: str = ""
     answered_count: int = 0
     answered_questions: list[QuestionRecord] = []
     user_input: str = ""

@@ -18,6 +18,7 @@ from app.agents.prompts import (
     ASKED_PROJECT_HEADER,
     ASK_BANK_TEMPLATE,
     ASK_GENERATE_TEMPLATE,
+    ASK_RESUME_NOTE,
     ASK_SCENARIO_TEMPLATE,
     BEHAVIORAL_ASK_GENERATE_TEMPLATE,
     persona_for,
@@ -65,7 +66,7 @@ async def _last_answer_attachment(state: InterviewState) -> list[dict]:
 async def ask_node(state: InterviewState) -> dict:
     try:
         if state.interview_type == INTERVIEW_BEHAVIORAL:
-            question, hits = await _pick_behavioral(state)
+            question, hits = await _pick_pool(state, BEHAVIORAL_DOMAIN, QUESTION_TYPE_BEHAVIORAL)
             if question is None:
                 question, hits = await _generate_behavioral(state), 0
         elif state.phase is Phase.TECH_BASE:
@@ -73,8 +74,11 @@ async def ask_node(state: InterviewState) -> dict:
             if question is None:
                 question, hits = await _generate_tech(state), 0
         else:
-            # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
-            question, hits = await _generate_scenario(state), 0
+            # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题**题库优先**（P2-M11 第 2 步，
+            # project 域自第 0 步起有题库身份）——命中即用，池空/未命中再 LLM 生成
+            question, hits = await _pick_pool(state, PROJECT_DOMAIN, "scenario")
+            if question is None:
+                question, hits = await _generate_scenario(state), 0
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
         # 降级链最后一环（P2-M9）：题库没命中 + 生成也不可用 → 内置兜底题。
@@ -90,13 +94,18 @@ async def ask_node(state: InterviewState) -> dict:
         stream.begin(buffer)
         add_history(state, "assistant", buffer)
     preamble = transition_line(state, question)
+    # 简历（P2-M11 FR-28）：有简历时追加一段出题指引（点名其项目、几道项目题覆盖不同项目）；
+    # 无简历时 prompt 与接入前逐字一致
+    prompt = ASK_BANK_TEMPLATE.format(
+        persona=persona_for(state.interview_type),
+        question=question.text,
+        profile=state.candidate_profile or "（候选人未提供项目背景）",
+    )
+    if state.resume_id:
+        prompt += ASK_RESUME_NOTE
     try:
         text = await stream.speak(
-            [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
-                persona=persona_for(state.interview_type),
-                question=question.text,
-                profile=state.candidate_profile or "（候选人未提供项目背景）",
-            )}],
+            [{"role": "system", "content": prompt}],
             preamble=preamble,
             purpose="ask",  # 成本归因（P2-M10）
         )
@@ -137,14 +146,19 @@ async def ask_node(state: InterviewState) -> dict:
     return updates
 
 
-async def _pick_behavioral(state: InterviewState) -> tuple[QuestionRecord | None, int]:
-    """行为题整池随机（P1-M11）：不分域（只有一个域）、不分难度（L1-L3 是技术语义，D3）。
+async def _pick_pool(
+    state: InterviewState, domain: str, question_type: str
+) -> tuple[QuestionRecord | None, int]:
+    """单列出题池整池取题（行为面 P1-M11 / 项目深挖 P2-M11 共用）：不限难度。
 
-    私有题不参与：私有库不开放行为面域（D7），`difficulty=None` 的检索在
-    question_search 里本就跳过私有候选。
+    `difficulty=None` 的理由两池相同：L1-L3 是技术深度语义，挂行为题上没有意义（D3）；
+    项目深挖域里的叙事题，难度也只是历史标注。命中候选数进回放事件，未命中返回 (None, 0)。
+
+    私有题不参与：两个域都不在 `ENABLED_DOMAINS`（私有库不开放它们），
+    `difficulty=None` 的检索在 question_search 里本就跳过私有候选。
     """
     candidates = await question_search.search_questions(
-        domain=BEHAVIORAL_DOMAIN,
+        domain=domain,
         difficulty=None,
         exclude_ids=state.asked_ids,
         k=3,
@@ -158,10 +172,10 @@ async def _pick_behavioral(state: InterviewState) -> tuple[QuestionRecord | None
         text=item["question"],
         domain=item["domain"],
         topic=item["topic"],
-        difficulty=item["difficulty"],  # 只作记录（报告不展示、不参与出题，D3）
+        difficulty=item["difficulty"],  # 只作记录（不参与出题；报告也不展示行为面难度）
         key_points=item["key_points"],
-        follow_ups=item["follow_ups"],
-        question_type=QUESTION_TYPE_BEHAVIORAL,
+        follow_ups=item["follow_ups"],  # 题库题自带预置追问（项目/行为阶段的深挖素材）
+        question_type=question_type,
     ), len(candidates)
 
 
@@ -237,12 +251,16 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
     P1-M4.6-C 泛化：项目深挖前置、按轮出题——轮次号供 LLM 换切入点避免重复，
     难度随 state.difficulty（不再固定 L3）。
     """
+    prompt = ASK_SCENARIO_TEMPLATE.format(
+        project_round=state.answered_count + 1,
+        difficulty=state.difficulty,
+        profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）",
+        asked=_asked_project_block(state),
+    )
+    if state.resume_id:  # 简历（P2-M11）：生成题也要覆盖不同项目
+        prompt += ASK_RESUME_NOTE
     generated = await llm.chat_json(
-        [{"role": "system", "content": ASK_SCENARIO_TEMPLATE.format(
-            project_round=state.answered_count + 1,
-            difficulty=state.difficulty,
-            profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）",
-            asked=_asked_project_block(state))}, *await _last_answer_attachment(state)],
+        [{"role": "system", "content": prompt}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
         purpose="ask",  # 成本归因（P2-M10）

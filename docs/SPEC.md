@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步**：波 3 企业级收尾（P2-M9 可靠性 ✅ → **P2-M10 CI + MCP 题库查询 + 成本归因 ✅ 已完成**（CI 见 §10、MCP 见 §7「MCP 通道」、成本读回见 §3 与 `scripts/cost_report.py`）→ P2-M11 PG 迁移与部署上云一次切）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步**：波 4 收尾（**部署与 PG 迁移已取消**——面试现场共享屏幕演示 + 简历挂 GitHub 就够，单机 demo 下 PG 的价值不成立；修订注见 PRD §8.2）。**P2-M11 简历分析 ✅ 已完成**：第 0 步 8 道项目叙事题归位 `project` 域 + 第 1 步简历链路（`POST /api/resumes` → 预填 `candidate_profile`，见 §7「简历通道」）+ 第 2 步 PROJECT 阶段改**题库优先**（见 §4.4）。**波 3 已收官**：P2-M9 可靠性 ✅ → P2-M10 CI + MCP 题库查询 + 成本归因 ✅（CI 见 §10、MCP 见 §7「MCP 通道」、成本读回见 §3 与 `scripts/cost_report.py`）。**P2-M12 节点级 Trace 是下一件**（`aget_state_history` 零写入派生，回放页新增节点时间线）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -26,24 +26,24 @@ marda/
 │   │   ├── llm.py                # DeepSeek 统一封装（openai SDK + base_url）
 │   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级，P1-M4）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
-│   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice（SSE 在 interviews，WS 在 voice）
+│   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice / resumes（SSE 在 interviews，WS 在 voice）
 │   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接）
 │   │   ├── agents/               # prompts.py / schemas.py（出题与评分的提示词模板与结构化输出 schema）
-│   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）/ asr（火山 v3 二进制协议）/ tts（edge-tts，P2-M5）
+│   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）/ asr（火山 v3 二进制协议）/ tts（edge-tts，P2-M5）/ resumes（简历解析，P2-M11）
 │   │   ├── templates/            # report.html.j2（PDF 模板）
 │   │   ├── report_pdf.py         # 报告 PDF 渲染（jinja2 + weasyprint + 手绘雷达 SVG，P1-M8）
 │   │   ├── mcp_server/           # MCP 题库查询 server（P2-M10，**协议代码唯一住所**：server.py 三工具 + __main__.py stdio 入口）
 │   │   ├── security.py           # 密码哈希（scrypt）与 JWT（P1-M2）
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
-│   │   └── db.py                 # 业务库六表（questions / question_sources / users / interviews / answers / reports）
+│   │   └── db.py                 # 业务库七表（questions / question_sources / users / interviews / answers / reports / resumes）
 │   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import，P1-M12）
-│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice / smoke_vision / smoke_e2e（P2-M8 组合场）/ smoke_degraded（P2-M9 断 LLM）/ smoke_mcp（P2-M10 题库 MCP）+ eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate / eval_judge_vision / cost_report（P2-M10 按场次读回成本）
+│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice / smoke_vision / smoke_e2e（P2-M8 组合场）/ smoke_degraded（P2-M9 断 LLM）/ smoke_mcp（P2-M10 题库 MCP）/ smoke_resume（P2-M11 简历链路）+ eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate / eval_judge_vision / cost_report（P2-M10 按场次读回成本）
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
 │   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
 │   ├── components/               # 页面客户端组件 + 共享件（PageShell / PageHeader / EmptyState / ErrorState / StatusBanner / InlinePanel）+ ui/
 │   ├── public/asr-worklet.js     # 录音采集 worklet（AudioWorklet 只能加载独立文件，P2-M5）
-│   └── lib/                      # sse / typewriter / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice（音频数学与落框）/ asr-client / tts
+│   └── lib/                      # sse / typewriter / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice（音频数学与落框）/ asr-client / tts / resume（简历判据与文案，P2-M11）
 ├── data/
 │   ├── scripts/                  # bootstrap / mapping / bank（共享层）/ parse_md / parse_xmind / parse_open / combine / enrich / ingest / apply_overrides / enable_behavioral / check_redline
 │   ├── curation/                 # 人工改判表（question_overrides.json）
@@ -89,6 +89,7 @@ marda/
 | 出题（生成题：项目深挖/技术/行为） | **内置兜底题**（`agents/fallbacks.py`，自写通用题、不进题库、不涉语料红线；自带 key_points，模型恢复后照常可评分） |
 | 评分 | **不评分**：`score=None`（不造分数——能力评估宁可缺、不可假）；追问决策走 `Reason.DEGRADED` 直接换题，难度自适应自然停摆 |
 | 自我介绍提炼 | 跳过（只影响后续出题的个性化） |
+| 简历解析（API 层，非节点） | **不降级**：解析失败 502 + 明确出路（重试 / 改用粘贴文本）——读不懂就不假装读懂了（§7 简历通道） |
 | 报告文字 | 三段式：v4-pro → flash → 无文字（总评/点评/建议留空）；**分数与逐题记录是纯代码聚合，照常产出** |
 
 - **降级 ≠ 错误**：`retryable=True` 的失败走降级（面试继续、发 `degraded` 事件、进 `degraded_reasons`）；`retryable=False`（内容类/配置类）仍抛 `LLMError` → SSE error → 用户重试（`degrade.reraise_if_content` 是这条分界，重试能治好的不许静默降级）。
@@ -139,7 +140,8 @@ class InterviewState(BaseModel):
     difficulty: str = "L1"
     difficulty_locked: bool = False      # 固定难度场次（P1-M6 FR-14）：用户选了 L1/L2/L3 则全程不升降
     consecutive_good: int = 0; consecutive_bad: int = 0
-    candidate_profile: str = ""          # 自我介绍提炼
+    candidate_profile: str = ""          # 候选人背景（简历预填 + 自我介绍提炼合并，P2-M11）
+    resume_id: str = ""                  # P2-M11 FR-28：本场使用的简历（空串 = 没传；三个注入点按它决定追加）
     answered_count: int = 0
     answered_questions: list[QuestionRecord] = []  # 报告聚合数据来源
     user_input: str = ""                 # resume 消息（route 分发依据）
@@ -247,7 +249,7 @@ def update_difficulty(state) -> None:
 
 **项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
 
-**项目深挖域的题库身份（P2-M11 第 0 步）**：`project` 进 `ASKABLE_DOMAINS`（第二个单列出题池，`DOMAIN_WEIGHTS` 不含它、`pick_domain` 永不分给它配额），域 id 与「项目深挖」标签上移 `app/domain.py`（单一来源，MCP 域清单/题库分面/报告与 PDF 标签随之透出）；**8 道项目叙事题**（M9 从技术域改判到 behavioral 的那批）按改判表归位 `project` 域——题库第一次有这一域。**本步只改归属与集合常量：PROJECT 阶段仍走 `_generate_scenario` 生成**（题库优先检索是 M11 后续步骤）；私有题库不开放该域（`ENABLED_DOMAINS` 不含，同行为面）。
+**项目深挖域的题库身份 + 选题题库优先（P2-M11 第 0/2 步）**：`project` 进 `ASKABLE_DOMAINS`（第二个单列出题池，`DOMAIN_WEIGHTS` 不含它、`pick_domain` 永不分给它配额），域 id 与「项目深挖」标签在 `app/domain.py`（单一来源，MCP 域清单 / 题库分面 / 报告与 PDF 标签随之透出）；**8 道项目叙事题**（M9 从技术域改判到 behavioral 的那批）按改判表归位 `project` 域——题库第一次有这一域。**选题 = 题库优先**：PROJECT 阶段与首题先按域整池检索（`_pick_pool`，`difficulty=None`——项目题的 L1–L3 是技术深度语义，这批叙事题的难度也只是历史标注），命中即用（`from_bank=True`、题型仍 `scenario`、进 `asked_ids`），池空/未命中再走 `_generate_scenario` 生成。**真收益**：题库题自带 key_points 与**预置 follow_ups**——项目阶段的覆盖率追问 / 深挖追问第一次真正可用；降级时也能直发题面；出题成本下降。私有题库不开放该域（`ENABLED_DOMAINS` 不含，同行为面）。**⚠️ 这是行为变化不是回归**：无简历场次的项目题现在来自题库、措辞随之不同；「零回归」只指**消息构造**（无简历时 prompt 与接入前逐字一致，见 §7 简历通道）。
 
 **同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮是**独立调用**、只拿得到轮次号——不喂前情时「换个切入点」等于掷骰子（真链路实测三道题套同一个开头）。两条修法同时在位：① **喂回已问题目原文**——`_asked_project_block(state)` 把已问项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽，一道未问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型脑补前情；② **两层模板同禁复述背景**（场景题 + 口吻层）——题前衔接语（§4.8）已交代「结合你的项目」，题目再铺一句简历复述就是模板脸。措辞是否真不雷同属生成质量、靠真链路验收；单测只钉**接线**（第二道起 prompt 必带第一道原文）。
 
@@ -562,7 +564,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | POST /api/auth/register | `{username, password}`（username 3–32 位 `[A-Za-z0-9_]`，**统一小写存储**；password 6–72） | **201** `{token, username}`；重名（含大小写变体）409 |
 | POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（不泄露账号是否注册，文案一致） |
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
-| POST /api/interviews | `{position, question_count, difficulty, interview_type}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422；**interview_type ∈ `tech`/`behavioral`，默认 `tech`，行为面 question_count > 10 → 422**） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
+| POST /api/interviews | `{position, question_count, difficulty, interview_type, resume_id?}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422；**interview_type ∈ `tech`/`behavioral`，默认 `tech`，行为面 question_count > 10 → 422**；**resume_id 可选**——先经 `POST /api/resumes` 解析（P2-M11），非本人/不存在 404） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
 | POST /api/interviews/{id}/messages | `{content, images?}`（images = 已上传的 image_id 列表，**≤3**；文字仍必填——图是回答的补充证据，不单独成答） | SSE 流（见事件表）；带图时评分/追问/生成题/收尾反问的 LLM 调用会收到图附件（§7 图片通道） |
 | POST /api/interviews/{id}/images | multipart `file`（PNG/JPEG/WebP，**按 magic bytes 判定**不信任 Content-Type；≤8MB；每场 ≤30 张） | **201** `{image_id}`（服务端 uuid4 hex）；不存在/他人 404、已结束 409、非图片 400、超限 413 |
 | GET /api/interviews/{id}/images/{image_id} | — | 图片字节（`nosniff` + `private` 缓存头）；他人/不存在/坏 id 一律 404；**已结束场次仍可取**（回放要显示图） |
@@ -577,6 +579,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty`（`L1`\|`L2`\|`L3`）/ `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含 `question_id`/题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（来源明细，**主源排首位**） |
 | GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值——扩语料后新厂商/面次自动出现 |
 | GET /api/bank/capacity | `counts`（逗号分隔，默认 `5,10,15`；越界夹紧 2–20、去重升序） | `{options: [{difficulty, base, question_count, ok, shortfalls}]}`（FR-14；`shortfalls = [{domain, required, available}]`，基准档见 §4.3 capacity.py） |
+| POST /api/resumes | multipart：`file`（.pdf/.md/.txt，≤2MB）**或** `text`（粘贴文本，≤5 万字符）二选一 | **201** `{resume_id, filename, projects[], skills[], chars}`——**只回结构化结果、不回原文**（P2-M11）。二选一不满足 400、后缀/编码/空内容 400（文案指路粘贴框）、超限 413、模型不可用 502 |
 | POST /api/tts | `{text}`（1–4000 字，超长截断到 1000） | `audio/mpeg` 流（edge-tts 分片透传，P2-M5）；首块先取出来做错误映射 → 失败 502 + 中文文案；空白文本 422；未登录 401 |
 | WS /api/asr | 上行：二进制 = PCM 片段；文本 = `{"type":"stop"}` | 下行 JSON：`{type: partial\|final\|error, text, message?}`。**浏览器 WS 不能带请求头 → token 走 query**；失效一律 `close(4401)`。详见下「语音通道」 |
 
@@ -648,6 +651,29 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
   引用图内独有信息」的比率；**连续 3 场带图场次零引用 → 建议把决策①降级为「评分官不看图」**，
   由数据支撑、由人拍板。
 
+### 简历通道（P2-M11 FR-28）
+
+**两段式（同图片通道）**：`POST /api/resumes` 先解析出 `resume_id`（创建页显示「已读到 N 段项目经历」——
+**解析错要当场看得见**），`POST /api/interviews` 带 `resume_id` 开跑。
+
+- **文件与粘贴文本走同一端点、同一抽取管线**：`.pdf` 走 pypdf（与私有题库上传同一实现）、`.md/.txt` 按
+  UTF-8/GBK 解码；粘贴文本是**扫描版 / 图片版简历的兜底**（抽不出文字时明确报错并指路，绝不静默退化成
+  「没传简历」）。抽取走 flash + 关 thinking + `json_object`（`chat_json` 的固化路径），
+  schema = `summary / projects / skills`。
+- **只回结构化结果、不回原文**：原文留在 `resumes.text` 供重新解析；响应无 `text` 字段（集成测试钉死）。
+- **注入 = 预填 `candidate_profile`**（唯一候选人插槽，三处出题模板都在消费它）→ **出题侧零代码改动就变具体**：
+  `start_interview` 把 `resumes.format_profile(parsed)` 写进 state，`resume_id` 一并进 state 与 `interviews` 行。
+- **图内三处「有则追加、无则逐字一致」**（M6 同款零回归模式；集成测试**逐字**钉死无简历路径）：
+  `intro_node` 开场白追加「已看过简历」（只提一句、不复述）；`profile_node` 追加【已提交简历】块要求
+  **合并**（简历为骨架、自我介绍补充与更新，冲突以当场所说为准）；`ask_node` 在口吻层与项目生成题上追加
+  「**点名**其项目 / 技术点、几道项目题覆盖不同项目」。
+- **归属与生命周期**：他人简历一律 404（同 M7 口径）；简历是用户级资产、同一份可跑多场，
+  **按引用计数清理**——删场次时无引用才销毁，解析了没建场次的孤儿在下一次解析时清掉
+  （已知边界：多标签同时开着表单时，一边解析会清掉另一边尚未使用的简历）。
+- **如实交代**（前端）：表单写明「简历会发送给模型解析，仅用于本场出题与评分；不解析也可以开始面试」。
+- **验证**：`scripts/smoke_resume.py` 真链路——合成简历埋**只存在于简历**的标识串，开场白与项目题必须引用它
+  （「预填」不是纸面声明）；坏 PDF 报错指路；删场次后简历行按引用计数消失。
+
 ### MCP 通道：题库查询 server（P2-M10）
 
 p2-plan 里「仅 1 个 MCP server 作展示点」的落地：把**题库查询**能力按 MCP 暴露给任意客户端
@@ -685,19 +711,23 @@ question_sources(question_id TEXT, source TEXT, license TEXT, url TEXT,
 users(id TEXT PK, username TEXT NOT NULL UNIQUE COLLATE NOCASE,
   password_hash TEXT NOT NULL, created_at TEXT)
 interviews(id TEXT PK, thread_id TEXT UNIQUE, user_id TEXT, position TEXT, interview_type TEXT,
-  question_count INT, phase TEXT, difficulty TEXT, status TEXT, started_at TEXT, ended_at TEXT)
+  question_count INT, phase TEXT, difficulty TEXT, status TEXT, started_at TEXT, ended_at TEXT,
+  resume_id TEXT)
   -- interview_type（P1-M11）：tech/behavioral；老库补列后为 NULL，语义等同 tech，不做全表回填
+  -- resume_id（P2-M11）：本场使用的简历（NULL = 没传）；它同时是简历的**引用计数**（§7 简历通道）
 answers(id INTEGER PK AUTOINCREMENT, interview_id TEXT, question_id TEXT,
   domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT,
   skipped INT DEFAULT 0, score_json TEXT, created_at TEXT)
 reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
+resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created_at TEXT)
+  -- 简历原文 + 结构化抽取结果（P2-M11）：接口只回结构化结果、不回原文，原文留库供重新解析
 ```
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
 
 **账号与归属（FR-23）**：密码 `hashlib.scrypt`（n=2^14/r=8/p=1，存储串自描述 `scrypt$n$r$p$salt$digest`）；JWT HS256，7 天有效，密钥 `JWT_SECRET` 走 `.env`（长度下限 32，弱密钥启动即失败）。归属列是 `interviews.user_id`——**checkpointer 不需要隔离**（thread_id = 全局唯一 uuid），业务库才是归属权威；隔离实现 = 列表按 user_id 过滤 + 其余端点先校验归属（`service._require_owner`）。老库启动时轻量迁移补 `user_id` 列（`PRAGMA table_info` 探测，阶段 1 的库免手工处理），历史孤儿行（`user_id IS NULL`）由首个注册账号认领一次（`claim_orphan_interviews`，不依赖「用户数为 0」判断，免并发竞态）。
 
-**删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（逻辑删除的 `deleted_at` 过滤会污染所有查询）。
+**删除口径**：DELETE /api/interviews/{id} 物理删除——checkpointer 线程（`saver.adelete_thread`）与 interviews/answers/reports 三表一并清除，不做逻辑删除（逻辑删除的 `deleted_at` 过滤会污染所有查询）。**简历按引用计数清理**（P2-M11）：同一份简历可跑多场，删除场次时只在该简历已无任何场次引用时才一并删除；解析了却没建场次的孤儿在下一次解析时清掉（§7 简历通道）。
 
 ### 8.1 多源扩充口径（M5 会话 1 已落地拆表）
 
@@ -717,7 +747,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 - **导航（P1-M6 定调）**：**顶栏 tab**（`components/main-nav.tsx`），不用侧边栏。理由是这一层的页面性质：顶层页面是 3–4 个**平级工具页**（仪表盘 / 题库 / 能力档案 / 学习推荐），没有层级也没有分区，侧边栏是为「多层级 + 常驻切换」设计的，在这个规模上只是白占一条纵深；而面试页与报告页是**沉浸式**（导航必须隐藏），顶栏只要不渲染 `MainNav` 就干净了，侧边栏还得额外处理布局位移。**没做的页面现在就占位**：`NAV_ITEMS` 里 `ready: false` 的项渲染成不可点的灰字（`aria-disabled` + 「即将上线」），**绝不发出会 404 的 `<a href>`**——占位是让 M7/M9/M10 往里塞时不必重排导航，不是提前给用户一个坏链接。
 - **登录与路由守卫（FR-23）**：`lib/session.ts` 管 token（localStorage 优先，隐私模式等环境自动降级 sessionStorage，两者都禁用则明确提示而非静默失败），`lib/http.ts` 统一注入 Bearer 与 401 处置，`components/auth-guard.tsx` 拦未登录访问（判断完成前先渲染载入态，不闪受保护内容）。**401 默认直跳登录页，唯独面试页弹确认再跳**——答题答到一半被直接踢走体感太差；登录接口自身的 401/409 只当表单错误展示，绝不触发全局跳转；登录成功统一 `replace("/")`（demo 不做原页回跳）。
-- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + **面试类型**（P1-M11：技术面 / 行为面）+ 题量 5/10/15 轮 + **难度选择**（P1-M6 FR-14：自适应 / L1 / L2 / L3，四选二行网格 + 一行说明）+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口），meta 行显示题量与难度；行为面场次挂类型徽标且不显示难度）。
+- **仪表盘**：创建面试表单（方向固定 Agent/AI 工程师 + **面试类型**（P1-M11：技术面 / 行为面）+ 题量 5/10/15 轮 + **难度选择**（P1-M6 FR-14：自适应 / L1 / L2 / L3，四选二行网格 + 一行说明）+ **简历（可选，P2-M11）**：文件（.pdf/.md/.txt，≤2MB）或粘贴文本二选一 → 「解析简历」→ 摘要条（「已读到 N 段项目经历 · M 项技能 · 约 K 字」，**解析错当场看得见**，可移除重传；解析态与输入态互斥）+ 一行如实交代「简历会发送给模型解析，仅用于本场出题与评分；不解析也可以开始面试」+ 历史列表（进入报告，**每条带物理删除按钮**（确认弹窗后调 DELETE 接口），meta 行显示题量与难度；行为面场次挂类型徽标且不显示难度）。
 - **面试类型切换（P1-M11 FR-22）**：**选行为面后隐藏难度选择器与容量校验**（容量按「难度 × 域配额」算，与行为面题源无关），题量只给 5/10；出题与评分的两处口径见 §4.12。
 - **题库页**（`/bank`，P1-M6 FR-12）：顶部搜索框（关键词走混合检索，提交后与筛选叠加）+ 域 chips（值来自 `facets`，`aria-pressed` 表选中）+ 三个下拉（难度/厂商/面次，首项「全部」）+ 结果卡片（可展开：参考答案 / 关键点 / **来源合规四要素**，主源标注「答案主源」、`原文` 外链 `rel=noreferrer`）+ 分页。结果卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选/搜索任一项变更即回第一页**（否则在第 5 页改筛选会落到空页）——这条在 `lib/bank.ts` 的 `withFilter` 里，vitest 钉死。
 - **私有题库页**（`/bank/private`，P1-M7 FR-13）：上传卡（模板说明前置）→ 结果条给**三份明细**（导入 / 重复 / 失败，重复特意写明「未覆盖」——答案可能已被他手改过）→ 列表筛选 + **行内展开**编辑 / 归档恢复（与题库页展开看答案同一套交互，不引新 dialog 原语）；后端复用的 `enabled`/`draft` 在前端读作「使用中 / 已归档」。
@@ -753,7 +783,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（797 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（820 个，不需要任何密钥）· `cd frontend && pnpm test`（257 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（P2-M10，`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——
 三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。三条口径：
@@ -812,6 +842,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-05 | P2-M11 简历分析（FR-28） | §1 下一步改波 4（部署 + PG 取消）· §2 树补 `api/resumes` / `tools/resumes` / `smoke_resume` / 前端 `lib/resume` + db 七表 · §3 降级链补「简历解析不降级」 · §4.1 补 `resume_id` · §4.4 项目域补**题库优先** · **§7 新增「简历通道」** + 端点表简历行 + 建场次补 `resume_id` · §8 补 `resumes` 表与引用计数清理 · §9 创建页简历区 · §10 计数（pytest 797→820、vitest 249→257） |
 | 2026-10-05 | P2-M11 第 0 步（8 道项目叙事题归位） | §4.4 新增「项目深挖域的题库身份」（`project` 进 `ASKABLE_DOMAINS`、第二单列出题池） · §4.12 池子现状改 5 道 enabled + `project` 同款隔离 · §6.6 改判表补归位条目 + 入库 status 规则补 `project` · §10 计数（pytest 795→797） |
 | 2026-10-04 | P2-M10 CI + MCP 题库查询 + 成本归因 | §2 树补 `.github/workflows/ci.yml` / `app/mcp_server/` / `smoke_mcp` / `cost_report` + 依赖行补 `mcp`（dev 组可选组件）· §3 补调用命名（`purpose` → Langfuse `name`，仅启用时传）· **§7 新增「MCP 通道」** · §10 计数（pytest 772→795）+ 新增 **CI 小节**（三个 job / 假密钥兜底 84 个用例 / 红线门禁只跑得了的一半）· §11 新增风险 17/18 |
 | 2026-10-04 | P2-M9 可靠性（上游保护 + 降级链） | §3 新增「上游保护与降级链」小节（闸门/熔断/降级矩阵/不产假信号） · §7 SSE 事件表加 `degraded` + chat 端点补 `degraded_reasons` + error 行补分界 · §10 计数（pytest 733→772、vitest 239→249） · §11 新增风险 16 · §2 scripts 行补 `smoke_degraded` |

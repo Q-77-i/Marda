@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from app import llm
-from app.agents.prompts import PROFILE_TEMPLATE
+from app.agents.prompts import PROFILE_RESUME_BLOCK, PROFILE_TEMPLATE
 from app.agents.schemas import ProfileExtraction
 from app.config import get_settings
 from app.graph.rules import degrade
@@ -25,9 +25,15 @@ async def profile_node(state: InterviewState) -> dict:
     extra: list[dict] = (
         [image_store.attachment_message(parts, image_store.NOTE_PROFILE)] if parts else []
     )
+    # 简历（P2-M11 FR-28）：有简历时追加【已提交简历】块，要求把两份背景**合并**成一份
+    # （简历为骨架、自我介绍补充与更新）——否则提炼结果会盖掉简历里更完整的项目经历。
+    # 无简历时不追加，prompt 与接入前逐字一致。
+    prompt = PROFILE_TEMPLATE.format(content=state.user_input)
+    if state.resume_id and state.candidate_profile:
+        prompt += PROFILE_RESUME_BLOCK.format(resume=state.candidate_profile)
     try:
         extraction = await llm.chat_json(
-            [{"role": "system", "content": PROFILE_TEMPLATE.format(content=state.user_input)}, *extra],
+            [{"role": "system", "content": prompt}, *extra],
             schema=ProfileExtraction,
             purpose="profile",  # 成本归因（P2-M10）
             temperature=0.3,

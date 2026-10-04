@@ -10,7 +10,7 @@ import logging
 
 from app import llm
 from app.agents import fallbacks
-from app.agents.prompts import INTRO_TEMPLATE, persona_for
+from app.agents.prompts import INTRO_RESUME_NOTE, INTRO_TEMPLATE, persona_for
 from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules import degrade, stream
 from app.graph.rules.transition import estimated_minutes
@@ -32,9 +32,14 @@ async def intro_node(state: InterviewState) -> dict:
         "question_count": state.question_count,
         "duration": estimated_minutes(state.question_count),  # 时长插槽（P1-M4.7-D）
     }
+    # 简历（P2-M11 FR-28）：有简历时在开场白末尾追加一句「已看过简历」（有则追加、
+    # 无则逐字一致——无简历的 prompt 与接入前完全相同）
+    prompt = INTRO_TEMPLATE.format(**slots)
+    if state.resume_id:
+        prompt += INTRO_RESUME_NOTE
     try:
         text = await stream.speak(
-            [{"role": "system", "content": INTRO_TEMPLATE.format(**slots)}],
+            [{"role": "system", "content": prompt}],
             purpose="opening",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:

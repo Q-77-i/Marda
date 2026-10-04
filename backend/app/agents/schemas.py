@@ -17,6 +17,17 @@ class ProfileExtraction(BaseModel):
     tech_stack: list[str] = []
 
 
+class ResumeExtraction(BaseModel):
+    """简历抽取（P2-M11）：预填 candidate_profile 用——出题侧零改动就变具体。
+
+    只有结构化结果没有原文：原文留在 `resumes.text` 供重新解析，不随接口出行。
+    """
+
+    summary: str = ""
+    projects: list[str] = []
+    skills: list[str] = []
+
+
 class GeneratedQuestion(BaseModel):
     """LLM 生成题（题库未命中兜底 / 场景题，PRD §4.3「按同标准生成」）。"""
 

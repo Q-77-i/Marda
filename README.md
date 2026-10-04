@@ -181,7 +181,7 @@ CI 里跑的是这条红线的**另一半**（`test_repo_hygiene.py`）：语料
 
 ```bash
 cd backend
-uv run pytest -q                              # 795 个测试（不需要任何密钥）
+uv run pytest -q                              # 820 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
@@ -191,11 +191,12 @@ uv run python scripts/smoke_vision.py         # 图片通道：合成截图 → 
 uv run python scripts/smoke_e2e.py            # 组合场（P2-M8）：一场里语音进（TTS→WS 转写→作答）/语音出/截图/文字全跑通（需语音 key）
 uv run python scripts/smoke_degraded.py       # 降级链（P2-M9）：把 LLM 打断（本地假上游一律 503），一场面试仍能走完且如实标注（不需要密钥）
 uv run python scripts/smoke_mcp.py            # MCP 题库查询（P2-M10）：stdio 子进程 + 真握手，三个工具各调一次（只读真库）
+uv run python scripts/smoke_resume.py         # 简历链路（P2-M11）：解析 → 开场「已看过简历」→ 项目题必须引用简历里的标识串 → 报告 → 引用计数清理
 uv run python scripts/cost_report.py <场次id>  # 成本归因（P2-M10）：按场次读回 总成本/按模型/按环节/按轮次（需 LANGFUSE_*）
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 249 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 语音·摄像头·面试间判据 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 257 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 语音·摄像头·面试间判据 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -254,7 +255,7 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 | M11 | 行为面 / HR 面（同一状态机换能力模型与题源，deepen-only 追问） |
 | M12 | 评估体系（检索四变体基线 + RAGAS；评分一致性自研 harness + 门禁） |
 
-阶段 3 + 二期（P2，多模态与企业级收尾）进行中：
+阶段 3 + 二期（P2，多模态与企业级收尾）进行中（部署上云与 PG 迁移已取消，见文末部署说明）：
 
 | 里程碑 | 内容 |
 | --- | --- |
@@ -268,9 +269,14 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 | P2-M8 | 端到端验收 + 文档同步：组合场 smoke（`smoke_e2e.py`——语音进/语音出 + 截图 + 文字在**同一场次**跑通）+ 浏览器组合验收（闭合 M7 两条未覆盖面：结束即关画面、SPA 卸载收摊） |
 | P2-M9 | 可靠性（`reliability.py` 并发闸门 + 熔断 → `llm.py` 三条路径接线）+ **降级链**：断 LLM 时开场/出题/评分/报告全部走确定性兜底，面试照常走完并**如实标注**（未评分不产 0 分、档案排除）。验收 = `smoke_degraded.py`（假上游 503 下跑完整场） |
 | P2-M10 | CI（GitHub Actions 三 job：pytest / lint+vitest+build / **语料入库守卫 + 检查器自检**；真比对本机跑）+ MCP 题库查询 server（stdio、只公共题、规范 2026-07-28）+ 成本归因（调用按环节命名 + `cost_report.py` 按场次读回）|
+| P2-M11 | 简历分析（FR-28）：上传/粘贴简历 → flash 结构化抽取 → 预填 `candidate_profile`（出题侧零改动就变具体）+ 8 道项目叙事题归位 `project` 域 + PROJECT 阶段改**题库优先**（项目题自带预置追问素材）|
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
 ## 部署：本地一键起（Docker Compose）
+
+> **部署形态说明（2026-10-05 拍板）**：**不上云、不迁移 PG**——面试现场共享屏幕演示（下面这一条命令）+ 简历挂本仓库地址即可。
+> PG 的真实价值（多 worker 共享状态 / 并发写）在单机 demo 下不成立；真要多 worker 时，业务库与 checkpointer 按 `db.py` 的同步函数逐个换 PG 实现即可（**checkpointer 有官方 PG saver，业务库只有六表、无复杂查询**，替换面是可控的）。
+> 历史决策（PRD 原定「阶段 3 部署 + PG 一次切」）保留在 PRD §8.2 的修订注里。
 
 阶段 1 的部署形态就是这份编排 + 本地一键起（演示/验收即 `docker compose up -d --build`）；**服务器部署与部署方案随阶段 3 再定**，届时同一份编排直接复用。两条已记下的口径：**nginx 是唯一入口**（`/api` 段关 `proxy_buffering` —— SSE 流式推送的前提，最大的部署风险在本地就验证掉）；**镜像是分架构的**——Mac（arm64）本地构建的镜像在 amd64 服务器上跑不了，要么在服务器上构建，要么 `buildx --platform linux/amd64`。

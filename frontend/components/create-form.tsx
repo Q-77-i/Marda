@@ -6,8 +6,19 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBanner } from "@/components/ui/status-banner";
-import { createInterview, dispatcher, getBankCapacity, type CapacityOption } from "@/lib/api";
+import { Textarea } from "@/components/ui/textarea";
+import { createInterview, dispatcher, getBankCapacity, uploadResume, type CapacityOption } from "@/lib/api";
 import { capacityFor, shortfallMessage } from "@/lib/bank";
+import {
+  RESUME_ACCEPT,
+  RESUME_DISCLOSURE,
+  RESUME_PASTE_PLACEHOLDER,
+  RESUME_SUFFIX_HINT,
+  RESUME_TITLE,
+  resumeDigest,
+  resumeSource,
+  type ResumeParseResult,
+} from "@/lib/resume";
 import {
   BEHAVIORAL_MAX_QUESTIONS,
   DIFFICULTY_OPTIONS,
@@ -36,6 +47,13 @@ export function CreateForm() {
   const [busy, setBusy] = useState(false);
   const [opening, setOpening] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // 简历（P2-M11 FR-28）：解析成功才有 resumeId 随创建发出；改动输入即作废已解析结果
+  const [resumeFile, setResumeFile] = useState<File | null>(null);
+  const [resumeText, setResumeText] = useState("");
+  const [resume, setResume] = useState<ResumeParseResult | null>(null);
+  const [parsing, setParsing] = useState(false);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+  const [fileInputKey, setFileInputKey] = useState(0); // 移除后清空文件框（同文件重选也能触发）
 
   useEffect(() => {
     getBankCapacity([...QUESTION_COUNT_OPTIONS])
@@ -59,6 +77,41 @@ export function CreateForm() {
     setError(null);
     // 行为面题量上限 10：从技术面切过来时把 15 收回来，否则会撞 422
     if (isBehavioral(value) && count > BEHAVIORAL_MAX_QUESTIONS) setCount(BEHAVIORAL_MAX_QUESTIONS);
+  }
+
+  function pickResumeFile(file: File | null) {
+    setResumeFile(file);
+    setResume(null); // 输入变了，上次的解析结果作废（否则会带着旧简历开场）
+    setResumeError(null);
+  }
+
+  function editResumeText(value: string) {
+    setResumeText(value);
+    setResume(null);
+    setResumeError(null);
+  }
+
+  function clearResume() {
+    setResumeFile(null);
+    setResumeText("");
+    setResume(null);
+    setResumeError(null);
+    setFileInputKey((key) => key + 1);
+  }
+
+  async function handleParseResume() {
+    const source = resumeSource(resumeFile, resumeText);
+    if (!source) return;
+    setParsing(true);
+    setResumeError(null);
+    try {
+      setResume(await uploadResume(source === "file" ? resumeFile : null, resumeText));
+    } catch (err) {
+      // 解析失败明确报错（并把出路写在服务端 detail 里：重试 / 改用粘贴文本）
+      setResumeError(err instanceof Error ? err.message : "简历解析失败，请重试");
+    } finally {
+      setParsing(false);
+    }
   }
 
   async function handleStart() {
@@ -89,6 +142,7 @@ export function CreateForm() {
           error: ({ message }) => setError(message),
         }),
         interviewType,
+        resume?.resume_id ?? null,
       );
       router.push(`/interview/${interviewId}`);
     } catch (err) {
@@ -181,6 +235,55 @@ export function CreateForm() {
               {item.count} 题不可选 —— {item.reason}
             </span>
           ))}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <span className="text-xs font-medium text-muted-foreground">{RESUME_TITLE}</span>
+          {resume ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2">
+              <span className="text-sm">{resumeDigest(resume)}</span>
+              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={clearResume}>
+                移除
+              </Button>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <input
+                key={fileInputKey}
+                type="file"
+                accept={RESUME_ACCEPT}
+                disabled={busy || parsing}
+                aria-label="选择简历文件"
+                className="text-sm file:mr-3 file:rounded-md file:border file:bg-background file:px-3 file:py-1.5 file:text-sm"
+                onChange={(event) => pickResumeFile(event.target.files?.[0] ?? null)}
+              />
+              <Textarea
+                value={resumeText}
+                onChange={(event) => editResumeText(event.target.value)}
+                placeholder={RESUME_PASTE_PLACEHOLDER}
+                disabled={busy || parsing}
+                rows={2}
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busy || parsing || resumeSource(resumeFile, resumeText) === null}
+                  onClick={handleParseResume}
+                >
+                  {parsing ? "正在解析…" : "解析简历"}
+                </Button>
+                <span className="text-xs text-muted-foreground">{RESUME_SUFFIX_HINT}</span>
+              </div>
+            </div>
+          )}
+          <span className="text-xs text-muted-foreground">{RESUME_DISCLOSURE}</span>
+          {resumeError && (
+            <p className="text-sm text-destructive" role="alert">
+              {resumeError}
+            </p>
+          )}
         </div>
 
         <Button size="lg" disabled={busy || currentBlocked} onClick={handleStart}>
