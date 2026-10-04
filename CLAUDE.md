@@ -6,6 +6,7 @@
 
 - 只管本文件夹 /Users/zhouq/VibeCoding/Marda；同级姊妹项目不读、不动、不受影响
 - **Git 提交与推送前必须向用户确认**（SSH 已配置，无需密钥）**GitHub**公开仓库已搭建：https://github.com/Q-77-i/Marda
+- **main 已开分支保护（ruleset）：直推会被拒** —— 推法 = 推功能分支 → 用户在网页开 PR → CI 三个 job 全绿 → Merge（本机无 `gh` CLI、无 token，开/合 PR 只能网页操作；M10 那句「分支保护是仓库设置、手动开」已于此后开启）
 - **提交前跑语料红线反查**：`backend/.venv/bin/python data/scripts/check_redline.py`（查待提交改动，命中即非零退出；发布前用 `--all` 全量）。**规则靠记忆执行不了——明知规矩也要跑检查**：这条检查立起来的第一件事，就是在已入库文件里查出 15 处遗留的题库原文引用
 - 架构级决策依据：docs/规划报告.md（已确认，2026-09-15）。开发流程：规划 → 本文件 → PRD → SPEC → demo → 落地
 
