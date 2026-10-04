@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步（阶段 3 → 二期）**：视觉通道（FR-26，代码截图先行）、摄像头 UI 模拟（FR-27）、服务器部署与稳定性（限流/重试/熔断/降级链）、PG 迁移（业务库 + checkpointer 同步）。**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步（阶段 3 → 二期）**：摄像头 UI 模拟（FR-27）+ 面试间整合、服务器部署与稳定性（限流/重试/熔断/降级链）、PG 迁移（业务库 + checkpointer 同步）。**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -100,6 +100,7 @@ class QuestionRecord(BaseModel):
     follow_up_count: int = 0; clarify_used: int = 0; missing_used: int = 0
     followup_log: list[str] = []   # 评分节点需要追问记录（§4.5）
     answer: str | None = None      # 我的回答（含追问轮）：首答 + 「【追问补充】」标记追加（FR-25 复盘分段依据）
+    image_ids: list[str] = []      # P2-M6 FR-26：该题回答附带的截图 id（跨追问轮累积；只存 id，文件在磁盘）
     score: ScoreItem | BehavioralScoreItem | None = None   # 按字段集自动落到对应模型（两套维度的必填字段不重叠）
     skipped: bool = False; from_bank: bool = True
     question_type: str = "tech"    # 题型语义（tech/scenario/behavioral 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
@@ -118,6 +119,7 @@ class InterviewState(BaseModel):
     answered_count: int = 0
     answered_questions: list[QuestionRecord] = []  # 报告聚合数据来源
     user_input: str = ""                 # resume 消息（route 分发依据）
+    current_images: list[str] = []       # P2-M6 FR-26：本轮消息附带的截图 id（pause 节点写入，评分/追问消费后归并到题）
     closing_question_count: int = 0      # 反问计数（PRD §4.1 上限 1-2）
     chat_history: list[dict] = []        # 完整对话流水（回放 + SSE 差分的单一来源，不截断）
     report: dict | None = None
@@ -535,7 +537,9 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（不泄露账号是否注册，文案一致） |
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
 | POST /api/interviews | `{position, question_count, difficulty, interview_type}`（**2–20，默认 10**；question_count = 全场问答轮次，1 轮 = 0 技术 + 1 场景无意义；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422；**interview_type ∈ `tech`/`behavioral`，默认 `tech`，行为面 question_count > 10 → 422**） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
-| POST /api/interviews/{id}/messages | `{content}` | SSE 流（见事件表） |
+| POST /api/interviews/{id}/messages | `{content, images?}`（images = 已上传的 image_id 列表，**≤3**；文字仍必填——图是回答的补充证据，不单独成答） | SSE 流（见事件表）；带图时评分/追问/生成题/收尾反问的 LLM 调用会收到图附件（§7 图片通道） |
+| POST /api/interviews/{id}/images | multipart `file`（PNG/JPEG/WebP，**按 magic bytes 判定**不信任 Content-Type；≤8MB；每场 ≤30 张） | **201** `{image_id}`（服务端 uuid4 hex）；不存在/他人 404、已结束 409、非图片 400、超限 413 |
+| GET /api/interviews/{id}/images/{image_id} | — | 图片字节（`nosniff` + `private` 缓存头）；他人/不存在/坏 id 一律 404；**已结束场次仍可取**（回放要显示图） |
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
@@ -580,6 +584,42 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **前端**：`lib/voice.ts`（降采样/Int16/WS 地址/落框规则，纯逻辑 vitest）+ `lib/asr-client.ts`（getUserMedia + AudioWorklet 采集）+ `public/asr-worklet.js`（攒 2048 帧再送主线程）+ `lib/tts.ts`（blob 播放）。**转写进输入框、发送前可编辑**（ASR 错字不能让评分官背锅）；开录时已有的草稿是底稿，转写整体替换其后那段。
 - **红线**：音频**不落盘、不落库、不写日志**，内存转发即弃；转写文本与手打文字同等对待（沿用既有 answers 落库路径）。
 - **dev 与生产的连接口径**：容器/生产走同源（nginx 加 `Upgrade`/`Connection` 头转发）；`next dev` 的 rewrites **不代理 WS upgrade**（已查实）→ 3000 端口一律直连后端 8000（`lib/voice.ts::asrUrl` 纯函数钉死，vitest 覆盖）。
+
+### 图片通道（P2-M6 FR-26）
+
+候选人在面试中上传截图（代码截图先行、白板图实验后定），**出题与追问结合图内容**。
+与语音的「零改动通道」不同：图必须进 LLM 上下文，**节点内的消息构造有改动**；但
+图 / 状态机流转 / 落库结构 / SSE 事件表**仍一条不动**（不上新事件、不加新表）。
+
+- **核心设计——图独立成一条消息附件，不改任何既有 prompt 模板**：带图时在消息列表尾部
+  追加一条 user 消息（说明文字 + `image_url` data URI parts，`tools/images.attachment_message`）。
+  无图调用的消息列表与接入前**逐字一致**（`judge_messages` 缺省路径有单测钉死）——
+  「无图场次零回归」与「评分基线/评测门禁零漂移」由此在构造上成立。
+- **哪些节点看图**（2026-10-04 拍板）：评分官（judge）· 追问文案 · 自我介绍提炼 ·
+  收尾反问——即**候选人消息的每一个 LLM 消费点**；**出题**只给「LLM 现场生成」路径
+  （项目深挖/兜底生成题）带**上一题**的图，题库题不带（题面来自题库，带图是噪声）。
+  每处取**该题最近 3 张**（token 可控；更早的图不再进上下文，不拒收）。
+- **存储**：`data/uploads/{interview_id}/{image_id}.{ext}`（docker 走 `./data` 卷，零编排改动
+  除一行 `UPLOAD_DIR`）；**state/checkpoint 只存 id**（图字节进 checkpoint 是序列化爆炸坑）；
+  删除场次连带清理图片目录（best-effort，失败只记日志）。`.gitignore` 含 `data/uploads/`。
+- **视觉协议（探针实测 2026-10-04）**：deepseek-flash 走 OpenAI 式 `image_url` + base64
+  data URI；内容块**必须是 `{"type": ...}` 对象**（裸字符串 422）；与关 thinking / 流式 /
+  `json_object` 全部兼容。计费按像素：900px 截图 ≈ 209 token、1568px ≈ 560 token；
+  800px 会掉可读性 → **前端压缩目标 = 长边 ≤1568 的 JPEG**（Retina 2800px 降采样后仍可读）。
+- **前端**：`lib/vision.ts`（校验/压缩尺寸纯逻辑，vitest）+ `lib/image-client.ts`（canvas 压缩、
+  上传）；📎 选图 → 压缩 → 预览（可移除）→ **发送时先传图拿 id 再发消息**（上传失败不发送、
+  附件保留可重试）；重试复用同一批 id（`PendingTurn.images`），**不重复落盘**。气泡与只读回放
+  共用 `components/message-images.tsx`（鉴权 fetch → objectURL，图不会「刷新就没」）。
+- **风控与口径**：文件缺失/损坏 → 跳过该图 + warning、**退化为纯文字**（绝不因图丢文件拒答）；
+  图是面试内容组成部分、**必须落盘**（与语音「音频不落盘」刻意不同，否则回放/复盘丢证据）；
+  **报告页只显示逐题图片计数**（闭合信号），图本体在面试页回放看，PDF 不含图。
+- **Langfuse（探针实测）**：drop-in 自动把 base64 图转成**媒体引用**
+  （`@@@langfuseMedia:...@@@`），trace 零 base64、无需脱敏；usage/cost 读回照常
+  （`usage_details`）。含图调用成本 ≈ ¥0.0007/次。
+- **评分官用图监控**（2026-10-04 用户补充口径）：`scripts/eval_judge_vision.py`（手动跑，
+  **推荐在容器内跑**——checkpoints 是 WAL，宿主机直读会 malformed）统计「judge 输出是否
+  引用图内独有信息」的比率；**连续 3 场带图场次零引用 → 建议把决策①降级为「评分官不看图」**，
+  由数据支撑、由人拍板。
 
 ## 8. 数据库（SQLite，阶段 2 仍 SQLite，PG 迁移推阶段 3）
 
@@ -677,6 +717,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 10. 评分评测的输入统一是「单轮回答」（`followup_log` 恒「无」）：带追问的真实样本取**合并后的最终答案**，中间轮次的评分任务不入 golden——重建其输入需要 trace，代价不值。这点的后果是「追问过程中的评分」不在覆盖范围内，如实写进报告局限
 11. 流式（§3/§7）：**首块之后不重试**（已吐字重发 = 同一段说两遍）；展示类文案只走 `llm.chat` 一条路径（另起一套非流式实现会在关 thinking / 空输出重试 / 错误映射三处漂移）；**分片拼接 == 落 `chat_history` 的那条消息**——节点侧只经 `stream.speak()/begin()` 出口，别在节点里自己拼前缀（拼错 = 前端收终稿时文字跳变）；`include_usage` 不能摘（摘了 Langfuse 成本读回恒 0）
 12. 语音（§7 语音通道）：**音频不落盘、不落库、不写日志**（只在内存里过一遍）；ASR 的 token 走 query（浏览器 WS 不能带请求头）——会进 nginx access log，demo 接受、上线前要换一次性票据；**两把火山 key 不通用**（方舟 Bearer / 豆包语音 X-Api-Key），失败文案按状态码给出路（401 = key 拿错产品线、403 = 服务没开通）；edge-tts 是外部免费服务（微软端点），403 多为版本旧 → 升级 `edge-tts`，真不可用走三档降级；上游协议是**二进制帧**，改版本/换端点前先跑探针（`handshake_error_text` 已把三种握手失败形态分开报）
+13. 图片（§7 图片通道）：**图独立成消息附件、不改任何既有 prompt 模板**——无图调用的消息列表必须与接入前**逐字一致**（`judge_messages` 缺省路径单测钉死，评分基线与评测门禁靠它零漂移）；`state`/`checkpoint` **只存 image_id**（图字节进 checkpoint 是序列化爆炸坑）；内容块必须是 `{"type": ...}` 对象（DeepSeek 对裸字符串 422）；**图文件缺失/损坏 → 跳过 + warning、退化纯文字**，绝不因图丢文件拒答；**图必须落盘**（面试内容组成部分，与语音「不落盘」刻意相反——否则回放丢证据）；上传走 nginx，`client_max_body_size`（10m）必须 ≥ 后端上限（8MB），否则前端拿到的是 HTML 413 而不是业务文案
 
 ---
 
@@ -702,6 +743,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 2026-09-30 | 项目叙事题改判 + 入库护栏 | §6.6 补人工改判表与入库护栏口径 |
 | 2026-09-30 | P1-M9 | 新增 §4.10 · §7 补 `/recommendations` |
 | 2026-09-30 | P1-M8 | 新增 §4.9 · §7 补 `/report.pdf` · §2 补 `report_pdf.py` 与 `templates/` |
+| 2026-10-04 | P2-M6 | §4.1 补 `image_ids`/`current_images` · §7 新增「图片通道」（两端点 + 消息体 + 附件消息设计 + 视觉协议实测 + Langfuse 媒体引用 + 监控脚本） · §11 数据卷加 uploads |
 | 2026-09-29 | P1-M6 | §4.3 补 capacity.py 与 `difficulty_locked` · §5.2 补 filters 下推（`query_filter`） · §7 补题库三端点 · §9 补导航 IA 与容量口径 |
 | 2026-09-29 | P1-M5 会话 2 | 新增 §6.5（四源适配）/ §6.6（合并与零回归校验） · §1 补 `bank` 等 |
 | 2026-09-28 | P1-M5 会话 1 | §8 拆出 `question_sources` · §8.1 改写为已落地口径 · §6.1 补 `sources` 字段 |

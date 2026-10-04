@@ -179,6 +179,7 @@ uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一�
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
 SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块、难度曲线与结束陈词
 uv run python scripts/smoke_voice.py          # 语音通道：TTS 合成 → 喂回 ASR → 转写与原文对齐（需语音 key）
+uv run python scripts/smoke_vision.py         # 图片通道：合成截图 → 上传 → 带图一场跑通（收尾回答须引用图内标识串）
 ```
 
 ```bash
@@ -194,6 +195,8 @@ uv run python scripts/eval_retrieval_run.py            # 检索基线：四变�
 uv run python scripts/eval_ragas_context.py            # RAGAS：推荐内容对单条漏点的覆盖度
 uv run python scripts/eval_judge_run.py --label before   # 评分一致性 / 准确性 / 单调性基线
 uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈值非零退出（改评分 prompt 后必跑）
+# 评分官用图监控（P2-M6）：统计「judge 输出引用图内信息」比率；推荐容器内跑（checkpoints 是 WAL）
+docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 ```
 
 ## 文档
