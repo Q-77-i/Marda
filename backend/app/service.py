@@ -25,6 +25,7 @@ from app.domain import INTERVIEW_TECH
 from app.graph.graph import build_graph, make_serde, run_config
 from app.graph.rules.aggregate import dims_payload
 from app.graph.rules.capacity import ADAPTIVE, base_difficulty
+from app.graph.rules.timeline import node_timeline
 from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
 from app.tools import images, profile
@@ -139,6 +140,22 @@ def map_updates(
             events.append(_event("meta", data))
         snapshot.update(updates)
     return events, snapshot
+
+
+def _timeline_step(snapshot: Any, writes_by_id: dict[str, list[str]]) -> dict:
+    """一次 checkpoint 存档 + 它记录的写入通道 → node_timeline 的入参（纯数据）。
+
+    写入通道来自 `CheckpointTuple.pending_writes`（该存档上记录的实际写入），**不是值 diff**：
+    langgraph 默认异步落盘，节点对 Pydantic 对象的原地变更会渗进上一步的存储值
+    （rules/timeline.py 顶部有探针结论）。两路数据按 checkpoint_id 对齐。
+    """
+    checkpoint_id = ((snapshot.config or {}).get("configurable") or {}).get("checkpoint_id")
+    return {
+        "ts": snapshot.created_at,
+        "next": list(snapshot.next or []),
+        "writes": writes_by_id.get(checkpoint_id, []),
+        "values": _plain(snapshot.values or {}),
+    }
 
 
 def _answers_row(record: Any) -> dict:
@@ -371,11 +388,31 @@ class Service:
         await self._require_owner(interview_id, user_id)
         return await asyncio.to_thread(db.get_report, self._settings.db_path, interview_id)
 
+    async def _node_timeline(self, interview_id: str) -> list[dict]:
+        """节点时间线（P2-M12 / SPEC §4.7）：checkpoint 历史零写入派生。
+
+        两路数据按 checkpoint_id 对齐：`aget_state_history` 给 ts / next / 状态，
+        checkpointer 的 `alist` 给该存档上记录的写入通道（理由见 `_timeline_step`）。
+        `aget_state_history` 是**倒序**（最新在前），反转让派生函数吃时间升序。
+        """
+        config = {"configurable": {"thread_id": interview_id}}
+        history = [snap async for snap in self._g.aget_state_history(config)]
+        writes_by_id = {
+            ((tuple_.config or {}).get("configurable") or {}).get("checkpoint_id"): [
+                write[1] for write in (tuple_.pending_writes or [])
+            ]
+            async for tuple_ in self._g.checkpointer.alist(config)
+        }
+        return node_timeline([_timeline_step(snap, writes_by_id) for snap in reversed(history)])
+
     async def get_trace(self, interview_id: str, user_id: str) -> dict:
         """决策回放数据（FR-21）：checkpoint 是权威，逐场取事件流。
 
         未结束的场次同样可看（实时决策视图）；旧场次（P1-M4 之前的线程）无 trace_log
         → 空列表，前端提示「该场次未记录决策」。
+
+        `nodes`（P2-M12）：节点时间线——同样来自 checkpoint（每步的执行记录：节点、
+        时长、状态变化），补上 trace_log 没有的 intro/profile/pause 等节点。
         """
         await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
@@ -392,6 +429,7 @@ class Service:
             "answered_count": values.get("answered_count", 0),
             "question_count": values.get("question_count", 0),
             "events": values.get("trace_log", []),
+            "nodes": await self._node_timeline(interview_id),
         }
 
     async def get_profile(self, user_id: str) -> dict:

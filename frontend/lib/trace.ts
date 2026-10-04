@@ -35,6 +35,44 @@ export function groupTraceEvents(events: TraceEvent[]): GroupedTrace {
   };
 }
 
+/** 时间线柱条标尺：整套里最长的一步（毫秒）；没有有效时长给 0。 */
+export function maxDuration(nodes: { duration_ms: number | null }[]): number {
+  return nodes.reduce(
+    (max, node) =>
+      typeof node.duration_ms === "number" && node.duration_ms > max ? node.duration_ms : max,
+    0,
+  );
+}
+
+/**
+ * 柱条占比（相对最长一步，0-100）。**线性**标尺：报告/生成类节点动辄十几秒，
+ * 几毫秒的纯代码步本来就该看起来几乎为零——数字列给精确值，形状只负责「谁重谁轻」。
+ */
+export function durationPercent(durationMs: number | null, maxMs: number): number {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || maxMs <= 0) return 0;
+  return Math.max(0, Math.min(100, (durationMs / maxMs) * 100));
+}
+
+/**
+ * 时长文案：毫秒 / 一位小数秒 / 分秒 / 时分；缺失给 null（UI 显示占位符，不显示 undefined）。
+ *
+ * 有小时档是因为真实数据里就有——场次放着不管，「等待输入」能到 40 多小时
+ * （真库实测 165545s），写成 `2759m 05s` 谁也读不出来。
+ */
+export function durationLabel(durationMs: number | null): string | null {
+  if (typeof durationMs !== "number" || !Number.isFinite(durationMs)) return null;
+  if (durationMs < 1000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1000).toFixed(1)}s`;
+  if (durationMs < 3_600_000) {
+    const minutes = Math.floor(durationMs / 60_000);
+    const seconds = Math.round((durationMs % 60_000) / 1000);
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+  const hours = Math.floor(durationMs / 3_600_000);
+  const minutes = Math.round((durationMs % 3_600_000) / 60_000);
+  return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+}
+
 /** 覆盖率（0-1）转百分比整数；缺字段返回 null。 */
 export function coveragePercent(coverage: unknown): number | null {
   const value = asNumber(coverage);

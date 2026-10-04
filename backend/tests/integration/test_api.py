@@ -627,6 +627,52 @@ async def test_回放_整场事件流可查(client):
     assert judge["detail"]["coverage"] == 1.0
 
 
+async def test_回放_节点时间线覆盖全部节点_含没有决策事件的开场与等待(client):
+    """P2-M12：`nodes` 从 checkpoint 历史**零写入**派生（aget_state_history + alist）。
+
+    补上 trace_log 完全没有记录的节点（开场白/自我介绍提炼/等待输入）；节点名来自
+    「前一个存档的 next」，时长来自相邻存档间隔，写入摘要只认「该存档记录的写入 ∩
+    这一步真变了的通道」（两条边界各有单测，见 tests/unit/test_timeline.py）。
+    """
+    interview_id, _ = await _create(client)
+
+    # 仅开场：只有「开场白」一步——时间线记的是**已完成的步**，
+    # 此刻正卡在「等待输入」上（等自我介绍），那一步要等作答后才落定
+    first = (await client.get(f"/api/interviews/{interview_id}/trace")).json()["nodes"]
+    assert [n["node"] for n in first] == ["intro"]
+    assert first[0]["node_label"] == "开场白"
+    assert first[0]["round"] is None  # 还没题在手上
+    assert first[0]["seq"] == 0
+    assert first[0]["writes"] == ["对话记录", "阶段"]
+    assert first[0]["duration_ms"] is not None and first[0]["duration_ms"] >= 0
+
+    for turn in TURNS:
+        await _send(client, interview_id, turn)
+
+    nodes = (await client.get(f"/api/interviews/{interview_id}/trace")).json()["nodes"]
+    # 一场 2 轮（每题：出题 → 等待 → 评分 → 追问 → 等待 → 评分 → 换题）→ 反问 → 报告
+    assert [n["node"] for n in nodes] == [
+        "intro", "pause", "profile", "ask", "pause", "judge", "followup", "pause", "judge",
+        "advance", "ask", "pause", "judge", "followup", "pause", "judge", "advance",
+        "closing_invite", "pause", "answer_candidate", "pause", "answer_candidate", "report",
+    ]
+    assert all(n["duration_ms"] is not None and n["duration_ms"] >= 0 for n in nodes)
+    by_node: dict[str, list] = {}
+    for node in nodes:
+        by_node.setdefault(node["node"], []).append(node["round"])
+    assert by_node["ask"] == [1, 2]  # 出题服务「下一题」
+    assert by_node["judge"] == [1, 1, 2, 2]  # 每题首答 + 深挖补充各判一次
+    assert by_node["pause"] == [None, 1, 1, 2, 2, None, None]  # 开场那次没题；两次反问也没题
+    assert by_node["report"] == [None]
+    # 写入摘要：等待输入那步记的是「你的输入」，不混进下一步的原地变更（题目）
+    assert all(
+        node["writes"] == ["你的输入"] for node in nodes if node["node"] == "pause"
+    )
+    judged = next(n for n in nodes if n["node"] == "judge")
+    assert set(judged["writes"]) >= {"题目", "答题记录", "决策记录"}
+    assert "降级记录" not in judged["writes"]  # 健康场次：节点原样回传的字段不算变化
+
+
 async def test_回放_他人场次与不存在同为404(client, login_as):
     interview_id, _ = await _create(client)
     other = await login_as("bob")
@@ -700,6 +746,41 @@ async def test_创建时选定难度_出题与落库一致(client):
     assert await _ask_difficulty("L3") == ("L3", "L3")
     assert await _ask_difficulty("L2") == ("L2", "L2")
     assert await _ask_difficulty("adaptive") == ("L1", "adaptive")  # 默认值同款
+
+
+def _bank_item(qid: str, domain: str, difficulty: str = "L1") -> dict:
+    return {
+        "question_id": qid, "question": f"{domain} 方向的题目", "answer": "参考答案",
+        "key_points": ["k1"], "follow_ups": [], "domain": domain, "topic": "测试主题",
+        "difficulty": difficulty, "company": None, "round": "一面",
+    }
+
+
+async def test_单列出题池的记录难度取场次难度_题库标注不顶替(client, install_search):
+    """P2-M12 随行修：项目题改走题库整池取题后（M11 第 2 步），题库题自带的难度标注
+    会顶替锁定档位——L3 场次首题（项目深挖）显示 L1，与「叙事题的难度是死数据、
+    不参与出题与展示」的口径矛盾（真机表现为冒烟断言 1/8 概率通过）。
+
+    规则：**单列出题池（行为面 / 项目深挖）的记录难度 = 场次当前难度**，库里的标注不参与。
+    """
+    install_search({
+        ("agent-architecture", "L1"): [_bank_item("q_arch", "agent-architecture")],
+        ("project", "L1"): [_bank_item("q_proj", "project")],  # 库里标 L1，场次锁 L3
+    })
+    async with client.stream(
+        "POST", "/api/interviews",
+        json={"position": "Agent/AI 工程师", "question_count": 5, "difficulty": "L3"},
+    ) as r:
+        events = await _events(r)
+    interview_id = events[0]["data"]["interview_id"]
+    await _send(client, interview_id, TURNS[0])  # 自我介绍 → 出首题（项目深挖）
+
+    trace = (await client.get(f"/api/interviews/{interview_id}/trace")).json()
+    first_ask = [e for e in trace["events"] if e["type"] == "ask"][0]
+    assert first_ask["detail"]["domain"] == "project"
+    assert first_ask["detail"]["from_bank"] is True, "本题应命中题库（不是生成兜底）"
+    assert first_ask["detail"]["difficulty"] == "L3", \
+        f"锁定 L3 的场次，项目题应记 L3（实际 {first_ask['detail']['difficulty']}）"
 
 
 async def test_创建难度非法值422(client):

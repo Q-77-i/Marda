@@ -154,6 +154,9 @@ async def _pick_pool(
     `difficulty=None` 的理由两池相同：L1-L3 是技术深度语义，挂行为题上没有意义（D3）；
     项目深挖域里的叙事题，难度也只是历史标注。命中候选数进回放事件，未命中返回 (None, 0)。
 
+    **记录难度 = 场次当前难度，库里的标注不顶替**（同生成题的 D3 口径）：否则锁 L3 的场次
+    首题（项目深挖，走题库）会显示库里的 L1——真机实测过，冒烟断言也因此 1/8 概率通过。
+
     私有题不参与：两个域都不在 `ENABLED_DOMAINS`（私有库不开放它们），
     `difficulty=None` 的检索在 question_search 里本就跳过私有候选。
     """
@@ -172,7 +175,7 @@ async def _pick_pool(
         text=item["question"],
         domain=item["domain"],
         topic=item["topic"],
-        difficulty=item["difficulty"],  # 只作记录（不参与出题；报告也不展示行为面难度）
+        difficulty=state.difficulty,  # 死数据（见 docstring）：不参与出题，也只是记录口径
         key_points=item["key_points"],
         follow_ups=item["follow_ups"],  # 题库题自带预置追问（项目/行为阶段的深挖素材）
         question_type=question_type,

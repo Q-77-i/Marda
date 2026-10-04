@@ -169,6 +169,22 @@ export type TraceEvent = {
   detail: Record<string, unknown>;
 };
 
+/**
+ * 节点时间线的一步（P2-M12 / SPEC §4.7）：后端从 checkpoint 历史派生。
+ *
+ * `node_label` 是中文名（后端给，前端不维护节点表）；`duration_ms` 是相邻两次存档的
+ * 间隔（≈该步执行时间，「等待输入」含用户作答时间），缺失给 null；`writes` 是该步
+ * 真改了的状态字段（中文摘要）。
+ */
+export type TraceNode = {
+  seq: number;
+  node: string;
+  node_label: string;
+  round: number | null;
+  duration_ms: number | null;
+  writes: string[];
+};
+
 export type TraceResponse = {
   interview_id: string;
   position: string;
@@ -181,6 +197,8 @@ export type TraceResponse = {
   answered_count: number;
   question_count: number;
   events: TraceEvent[];
+  /** 节点时间线（P2-M12）：每步的节点/时长/状态变化；老后端无该字段 → 空数组 */
+  nodes?: TraceNode[];
 };
 
 export type SSEHandlers = {

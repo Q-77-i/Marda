@@ -427,6 +427,14 @@ def main() -> None:
             assert types[0] == "ask" and types[-1] == "report", f"事件流首尾异常：{types}"
             print(f"回放 OK：{len(trace['events'])} 个事件，轮次 1-{QUESTION_COUNT}")
 
+            # 节点时间线（P2-M12）：组合场（语音进/出 + 截图 + 文字）同样要派生出完整时间线
+            nodes = trace["nodes"]
+            assert nodes[0]["node"] == "intro" and nodes[-1]["node"] == "report", \
+                f"时间线首尾异常：{[n['node'] for n in nodes][:3]}…{nodes[-1]['node']}"
+            assert all(n["duration_ms"] is not None for n in nodes), "时间线有时长缺失"
+            print(f"节点时间线 OK：{len(nodes)} 步 / "
+                  f"{sum(n['duration_ms'] for n in nodes) / 1000:.1f}s")
+
             # ── 8. Langfuse：含图调用的 input 是媒体引用（零 base64）───────────
             inputs = langfuse_inputs(interview_id)
             if not inputs:
