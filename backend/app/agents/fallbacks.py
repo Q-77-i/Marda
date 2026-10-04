@@ -19,10 +19,10 @@ from app.domain import (
     BEHAVIORAL_DOMAIN,
     INTERVIEW_BEHAVIORAL,
     DOMAIN_LABELS,
+    PROJECT_DOMAIN,
     QUESTION_TYPE_BEHAVIORAL,
 )
 from app.graph.rules.quota import pick_domain
-from app.graph.rules.transition import PROJECT_DOMAIN
 from app.graph.state import InterviewState, Phase, QuestionRecord
 
 # 固定文案的 {persona} 插槽由调用方用 prompts.persona_for(...) 填——人设只有那一个

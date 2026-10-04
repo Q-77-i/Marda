@@ -119,9 +119,10 @@ def test_跨域衔接的中英混排空格(n, prev_domain, domain, expected):
 
 
 def test_域标签_项目题单列():
-    """domain="project" 不在 DOMAIN_LABELS（不参与域统计），衔接语里显示「项目深挖」。"""
+    """domain="project" 不在 DOMAIN_WEIGHTS（不参与域统计），衔接语里显示「项目深挖」。"""
     assert domain_label("project") == "项目深挖"
     assert domain_label("rag") == "RAG"
+    assert domain_label("没见过的域") == "没见过的域"  # 未知域原样，不猜
 
 
 def test_同输入同文案_可回放():

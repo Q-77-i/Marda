@@ -18,8 +18,6 @@ from app.domain import DOMAIN_LABELS, INTERVIEW_BEHAVIORAL
 from app.graph.state import InterviewState, Phase, QuestionRecord
 
 MINUTES_PER_QUESTION = 3  # 开场白时长插槽：每题按 3 分钟估（含追问）
-PROJECT_DOMAIN = "project"  # 项目深挖题域（不参与域统计，见 domain.project_count）
-PROJECT_DOMAIN_LABEL = "项目深挖"
 
 
 class TransitionKind(str, Enum):
@@ -73,10 +71,8 @@ def estimated_minutes(question_count: int) -> int:
 
 
 def domain_label(domain: str) -> str:
-    """域中文标签；项目深挖题（domain="project"）不在 DOMAIN_LABELS，单列。"""
-    return DOMAIN_LABELS.get(domain) or (
-        PROJECT_DOMAIN_LABEL if domain == PROJECT_DOMAIN else domain
-    )
+    """域中文标签（DOMAIN_LABELS 单一来源，含项目深挖）；未知域原样，不猜。"""
+    return DOMAIN_LABELS.get(domain, domain)
 
 
 def _needs_space(left: str, right: str) -> bool:

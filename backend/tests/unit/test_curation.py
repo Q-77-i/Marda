@@ -15,7 +15,13 @@ import pytest
 from apply_overrides import apply_to_sqlite
 from bank import apply_overrides, load_overrides
 
-from app.domain import ASKABLE_DOMAINS, DOMAIN_LABELS, DOMAIN_WEIGHTS
+from app.domain import (
+    ASKABLE_DOMAINS,
+    BEHAVIORAL_DOMAIN,
+    DOMAIN_LABELS,
+    DOMAIN_WEIGHTS,
+    PROJECT_DOMAIN,
+)
 
 REPO_CURATION = (
     Path(__file__).resolve().parents[3] / "data" / "curation" / "question_overrides.json"
@@ -205,22 +211,25 @@ def test_仓库改判表条目合法():
 
 
 def test_仓库改判表的换域方向各自守住不变量():
-    """两个方向的改判，各自的不变量不同（P2-M1 起）。
+    """每个改判目标域都要守住两条，方向不同、不变量不同（P2-M1 起，P2-M11 起三种目标）。
 
-    ① **移进 behavioral**（M9 整改，M11 修订）：技术域只放「不依赖候选人自述经历即可作答」的题。
-    这些叙事题该进行为面的池子；底线是它们**永不被技术面抽到**——behavioral 不在
-    DOMAIN_WEIGHTS，`pick_domain` 只在权重表的域里分配配额。
-    ② **移出 behavioral**（P2-M1：知识型问题误归行为面）：目标域必须**在技术配额里**，
-    否则改判等于把它藏起来——既不出技术题、也退不出行为池。
+    ① **移进单列出题池**（`project` / `behavioral`，均不在 DOMAIN_WEIGHTS）：叙事类题
+    该进这两个池子（项目深挖域 / 行为面域），底线是它们**永不被技术面按配额抽到**
+    ——`pick_domain` 只在权重表分配，且改判目标必须在 ASKABLE_DOMAINS（可出题），
+    否则改判等于把题藏起来（不出技术题、也没人抽它）。
+    ② **移出 behavioral**（P2-M1：知识型问题误归行为面）：目标域必须在技术配额里，
+    它要回去当技术题——改到配额外同样是藏起来。
     """
+    non_quota_pools = {BEHAVIORAL_DOMAIN, PROJECT_DOMAIN}  # 单列出题池：可出题、不占配额
+
     payload = json.loads(REPO_CURATION.read_text(encoding="utf-8"))
 
     for item in payload["overrides"]:
         target = item.get("domain")
         if target is None:  # 只置 draft 的（追问残片）不算换域
             continue
-        if target == "behavioral":
-            assert "behavioral" not in DOMAIN_WEIGHTS, "行为面进了技术配额，这些叙事题会被技术面抽到"
-            assert "behavioral" in ASKABLE_DOMAINS, "行为面可出题（M11）；不可出题时这些题等于下架"
+        assert target in ASKABLE_DOMAINS, f"改判到不可出题的域等于把题藏起来：{item}"
+        if target in non_quota_pools:
+            assert target not in DOMAIN_WEIGHTS, f"单列出题池进了技术配额，技术面会抽到它：{item}"
         else:
-            assert target in DOMAIN_WEIGHTS, f"改判到非配额域等于把题藏起来：{item}"
+            assert target in DOMAIN_WEIGHTS, f"改判到配额外的域，只有单列出题池收留它：{item}"

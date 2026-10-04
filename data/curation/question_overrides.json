@@ -3,43 +3,43 @@
   "overrides": [
     {
       "question_id": "q_acd842ef08fa",
-      "domain": "behavioral",
-      "reason": "项目叙事题：让候选人介绍自己项目的经历类问题，key_points 是讲述结构（怎么组织叙述），不是知识点"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：让候选人介绍自己项目的经历类问题，key_points 是讲述结构（怎么组织叙述），不是知识点"
     },
     {
       "question_id": "q_2cdd0a72529d",
-      "domain": "behavioral",
-      "reason": "项目叙事题：问的是候选人自己的项目，技术域只放不依赖自述经历即可作答的题"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：问的是候选人自己的项目，技术域只放不依赖自述经历即可作答的题"
     },
     {
       "question_id": "q_40bd2e5900a5",
-      "domain": "behavioral",
-      "reason": "项目叙事题：key_points 是面试技巧与讲述结构，不是知识点"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：key_points 是面试技巧与讲述结构，不是知识点"
     },
     {
       "question_id": "q_22fc2608d113",
-      "domain": "behavioral",
-      "reason": "项目叙事题：key_points 是五段式讲述结构（实测该题被推荐给刚被问过它的候选人）"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：key_points 是五段式讲述结构（实测该题被推荐给刚被问过它的候选人）"
     },
     {
       "question_id": "q_b375a5d9b302",
-      "domain": "behavioral",
-      "reason": "项目叙事题：漏点是叙事建议（怎么讲自己的角色分工），实测污染学习推荐查询"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：漏点是叙事建议（怎么讲自己的角色分工），实测污染学习推荐查询"
     },
     {
       "question_id": "q_a91a411f0db1",
-      "domain": "behavioral",
-      "reason": "项目叙事题：key_points 是讲述要求（说清问题为何无标准答案、列候选方案…），不是知识点"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：key_points 是讲述要求（说清问题为何无标准答案、列候选方案…），不是知识点"
     },
     {
       "question_id": "q_0adbfc491454",
-      "domain": "behavioral",
-      "reason": "项目叙事题：key_points 是选材与讲述结构，不是排查方法本身"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：key_points 是选材与讲述结构，不是排查方法本身"
     },
     {
       "question_id": "q_812c521f3125",
-      "domain": "behavioral",
-      "reason": "项目叙事题：题干预设候选人自有上线系统；评估指标框架已有独立知识题承载"
+      "domain": "project",
+      "reason": "项目叙事题（P2-M11 归位项目深挖域）：题干预设候选人自有上线系统；评估指标框架已有独立知识题承载"
     },
     {
       "question_id": "q_0d352a3968a7",
