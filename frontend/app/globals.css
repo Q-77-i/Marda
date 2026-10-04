@@ -35,6 +35,11 @@
   --muted: oklch(0.968 0.004 240);
   --muted-foreground: oklch(0.53 0.014 250);
 
+  /* 面试间舞台底色（P2-M7）：让舞台「住在」一块淡色区域里（底座），而不是靠一条分隔线。
+     亮色取 muted 同档（ΔL≈0.026 vs 页面底，与气泡在同一条感知线上），白卡 tile 因此浮起来；
+     暗色不能照搬——必须「比页面底亮、又比卡片暗」，否则 tile 会陷进底座（见下方 dark 块）。 */
+  --stage: oklch(0.968 0.004 240);
+
   --accent: oklch(0.958 0.014 240);
   --accent-foreground: oklch(0.34 0.06 240);
 
@@ -101,6 +106,9 @@
     --muted: oklch(0.262 0.009 250);
     --muted-foreground: oklch(0.69 0.012 250);
 
+    /* 舞台底色（暗色单独调值）：页面底 0.168 与卡片 0.212 之间取中——比底亮、比卡片暗 */
+    --stage: oklch(0.19 0.009 250);
+
     --accent: oklch(0.3 0.03 240);
     --accent-foreground: oklch(0.9 0.04 240);
 
@@ -145,6 +153,7 @@
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
   --color-muted-foreground: var(--muted-foreground);
+  --color-stage: var(--stage);
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);

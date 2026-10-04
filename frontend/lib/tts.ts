@@ -19,7 +19,14 @@ export class Speaker {
   private objectUrl: string | null = null;
   private controller: AbortController | null = null;
 
-  constructor(private readonly onError?: (message: string) => void) {}
+  /**
+   * `onSpeakingChange` 供面试间舞台用（P2-M7：面试官 tile 的「正在播报」徽标）——
+   * 只在**真的起了变化**时回调（空停不算），避免徽标无谓闪烁。
+   */
+  constructor(
+    private readonly onError?: (message: string) => void,
+    private readonly onSpeakingChange?: (speaking: boolean) => void,
+  ) {}
 
   /** 正在播报？（页面据此决定是否让位：开始录音时先停播） */
   get speaking(): boolean {
@@ -49,6 +56,7 @@ export class Speaker {
       this.audio = audio;
       audio.onended = () => this.cleanup();
       await audio.play();
+      this.onSpeakingChange?.(true);
     } catch (err) {
       this.cleanup();
       if (err instanceof DOMException && err.name === "AbortError") return; // 主动停播不是错误
@@ -64,8 +72,10 @@ export class Speaker {
   }
 
   private cleanup(): void {
+    const wasActive = this.audio !== null; // 空停（本来就没在播）不算变化，不回调
     if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
     this.objectUrl = null;
     this.audio = null;
+    if (wasActive) this.onSpeakingChange?.(false);
   }
 }
