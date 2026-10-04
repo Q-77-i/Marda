@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from app.tools import hybrid_search
+from app.tools import bank_query, hybrid_search
 from bank_fixture import create_tables, insert_questions, question_row
 
 TEMPLATE = """# 我的面试题
@@ -24,6 +24,24 @@ TEMPLATE = """# 我的面试题
 【题目】MCP 是什么？
 【答案】Model Context Protocol，模型与外部工具之间的协议。
 """
+
+
+@pytest.fixture
+def fake_hybrid_search(monkeypatch):
+    """关键词检索打桩：**这条腿验的是隔离，不是检索质量**。
+
+    真 `hybrid_search` 要嵌入容器 + Qdrant——本机 docker compose 起着时它能过，
+    CI 里没有这两个服务就 `httpx.ConnectError`（P2-M10 第三次 CI 跑就是这么红的：
+    本文件 import 了 `hybrid_search` 却从没打桩，注释里写着「fake」而 fake 并不存在）。
+    假的一路只回**公共题**，这正对应真实索引的形态（私有题不进 Qdrant）。
+    """
+
+    async def _search(query, *, k=5, db_path=None, **_kwargs):
+        items, _total = bank_query.browse_questions(db_path)
+        return items[:k]
+
+    monkeypatch.setattr(hybrid_search, "hybrid_search", _search)
+    return _search
 
 
 @pytest.fixture
@@ -161,7 +179,7 @@ async def test_私有题不开放行为面域(client, bank_db):
     assert (await client.get("/api/bank/private/questions")).json()["items"][0]["domain"] == "rag"
 
 
-async def test_隔离_A的私有题在B处四处不可见(client, login_as, bank_db):
+async def test_隔离_A的私有题在B处四处不可见(client, login_as, bank_db, fake_hybrid_search):
     """FR-13 验收核心：列表 / 公共浏览 / 公共搜索 / 容量 全维不可见。"""
     alice = client  # 默认登录用户
     await alice.post("/api/bank/private/upload", files=_upload_files(TEMPLATE),
@@ -180,9 +198,10 @@ async def test_隔离_A的私有题在B处四处不可见(client, login_as, bank
     browse = (await bob.get("/api/bank/questions")).json()
     assert browse["total"] == 1 and browse["items"][0]["question_id"] == "q_pub"
     assert all(f["count"] == 1 for f in (await bob.get("/api/bank/facets")).json()["difficulty"])
-    # 关键词检索（fake 混合检索）不含私有题
-    hits = (await bob.get("/api/bank/questions", params={"q": "Redis"})).json()["items"]
-    assert all(not item["question_id"].startswith("p_") for item in hits)
+    # 关键词检索（打桩）不含私有题
+    hits = (await bob.get("/api/bank/questions", params={"q": "Redis"})).json()
+    assert hits["mode"] == "search"  # 确实走的是混合检索这条路（打桩命中，没在空转）
+    assert hits["items"] and all(not item["question_id"].startswith("p_") for item in hits["items"])
 
 
 async def test_A本人看得到自己的题_公共浏览仍不含私有题(client, bank_db):
