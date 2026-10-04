@@ -718,6 +718,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 11. 流式（§3/§7）：**首块之后不重试**（已吐字重发 = 同一段说两遍）；展示类文案只走 `llm.chat` 一条路径（另起一套非流式实现会在关 thinking / 空输出重试 / 错误映射三处漂移）；**分片拼接 == 落 `chat_history` 的那条消息**——节点侧只经 `stream.speak()/begin()` 出口，别在节点里自己拼前缀（拼错 = 前端收终稿时文字跳变）；`include_usage` 不能摘（摘了 Langfuse 成本读回恒 0）
 12. 语音（§7 语音通道）：**音频不落盘、不落库、不写日志**（只在内存里过一遍）；ASR 的 token 走 query（浏览器 WS 不能带请求头）——会进 nginx access log，demo 接受、上线前要换一次性票据；**两把火山 key 不通用**（方舟 Bearer / 豆包语音 X-Api-Key），失败文案按状态码给出路（401 = key 拿错产品线、403 = 服务没开通）；edge-tts 是外部免费服务（微软端点），403 多为版本旧 → 升级 `edge-tts`，真不可用走三档降级；上游协议是**二进制帧**，改版本/换端点前先跑探针（`handshake_error_text` 已把三种握手失败形态分开报）
 13. 图片（§7 图片通道）：**图独立成消息附件、不改任何既有 prompt 模板**——无图调用的消息列表必须与接入前**逐字一致**（`judge_messages` 缺省路径单测钉死，评分基线与评测门禁靠它零漂移）；`state`/`checkpoint` **只存 image_id**（图字节进 checkpoint 是序列化爆炸坑）；内容块必须是 `{"type": ...}` 对象（DeepSeek 对裸字符串 422）；**图文件缺失/损坏 → 跳过 + warning、退化纯文字**，绝不因图丢文件拒答；**图必须落盘**（面试内容组成部分，与语音「不落盘」刻意相反——否则回放丢证据）；上传走 nginx，`client_max_body_size`（10m）必须 ≥ 后端上限（8MB），否则前端拿到的是 HTML 413 而不是业务文案
+14. checkpoints 库（WAL + macOS 绑定挂载）的访问纪律：**宿主机「只读」也会 malformed**（P1-M5 记的是写坏，读同样中招）——凡碰它的脚本（如 `eval_judge_vision.py`）**一律在容器内跑**，或先停 api 再动；真库 2026-10-04 发现并修复了历史损坏页（波及 4 个无主孤儿线程、12 场真实场次完好；修复前原件作 `bak-damaged-*` 保留至 M8 收尾）
 
 ---
 
