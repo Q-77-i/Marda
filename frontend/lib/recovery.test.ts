@@ -58,3 +58,12 @@ describe("reconcile", () => {
     expect(reconcile({ ...pending, baseline: 2 }, session([...自我介绍后], false))).toBe("resend");
   });
 });
+
+describe("reconcile · 图片通道（P2-M6）", () => {
+  it("带图的作答同样按文本对账（image_ids 不影响判据）", () => {
+    const 带图 = { role: "user" as const, content: "见截图", image_ids: ["a".repeat(32)] };
+    const turn: PendingTurn = { text: "见截图", baseline: 2, images: ["a".repeat(32)] };
+    const s = session([...自我介绍后, 带图], false);
+    expect(reconcile(turn, s)).toBe("resync"); // 已入账且没卡住 → 只重建列表，绝不重发
+  });
+});

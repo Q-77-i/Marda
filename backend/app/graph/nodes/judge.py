@@ -10,8 +10,11 @@ answered_questions 保持每题一条最终记录；回答则累加保留（首�
 
 from __future__ import annotations
 
+import asyncio
+
 from app import llm
 from app.agents.prompts import BEHAVIORAL_JUDGE_TEMPLATE, JUDGE_TEMPLATE
+from app.config import get_settings
 from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules.difficulty import update_difficulty
 from app.graph.state import (
@@ -22,6 +25,7 @@ from app.graph.state import (
     merge_answer,
     score_schema_for,
 )
+from app.tools import images as image_store
 
 JUDGE_TEMPERATURE = 0.3
 """评分官温度（生产值）。**离线评测（P1-M12 会话 2）以它为「生产臂」的基准**——
@@ -35,24 +39,34 @@ def judge_messages(
     answer: str,
     followup_log: list[str] | tuple[str, ...] = (),
     interview_type: str,
+    image_parts: list[dict] | tuple[dict, ...] = (),
 ) -> list[dict]:
     """评分官的对话消息（**生产与离线评测的唯一构造入口**）。
 
     评测 harness 若自己拼一遍 prompt，模板一改就会静默失配——量到的是旧口径。
     故这里抽成公共函数：`judge_node` 与 `evals.judge_run` 都从这里拿消息，
     「评测测的就是生产 prompt」由单测钉死。
+
+    image_parts（P2-M6）：候选人随回答上传的截图（已编码的 content parts）。**缺省为空
+    时返回的消息列表与接入前逐字一致**——评分基线/评测门禁零漂移；带图时只在末尾追加
+    一条附件消息（模板不动，见 tools/images.attachment_message）。
     """
     template = (
         BEHAVIORAL_JUDGE_TEMPLATE
         if interview_type == INTERVIEW_BEHAVIORAL
         else JUDGE_TEMPLATE
     )
-    return [{"role": "system", "content": template.format(
+    messages = [{"role": "system", "content": template.format(
         question=question,
         key_points="\n".join(f"- {k}" for k in key_points),
         followup_log="\n".join(f"- {line}" for line in followup_log) or "无",
         content=answer,
     )}]
+    if image_parts:
+        messages.append(
+            image_store.attachment_message(list(image_parts), image_store.NOTE_JUDGE)
+        )
+    return messages
 
 
 async def judge_node(state: InterviewState) -> dict:
@@ -62,6 +76,13 @@ async def judge_node(state: InterviewState) -> dict:
     # 先合并再评分（P1-M4.5-R1）：判官看到累计回答（首答+全部追问补充，按标记分段），
     # 「评分以当前掌握程度为准」的 prompt 口径才真正可执行；覆盖率允许下降，反映真实掌握程度
     question.answer = merge_answer(question.answer, state.user_input)
+    # 图归并到该题（P2-M6）：去重——节点重跑/重试不重复计；图跟随「题目」跨追问轮累积
+    for image_id in state.current_images:
+        if image_id not in question.image_ids:
+            question.image_ids.append(image_id)
+    image_parts = await asyncio.to_thread(
+        image_store.load_image_parts, get_settings().upload_dir, state.interview_id, question.image_ids
+    )
     score = await llm.chat_json(
         judge_messages(
             question=question.text,
@@ -69,12 +90,14 @@ async def judge_node(state: InterviewState) -> dict:
             answer=question.answer,
             followup_log=question.followup_log,
             interview_type=state.interview_type,
+            image_parts=image_parts,
         ),
         schema=score_schema_for(state.interview_type),
         temperature=JUDGE_TEMPERATURE,
     )
     question.score = score
-    add_history(state, "user", state.user_input)
+    # 本轮消息本身的图进 chat_history（回放渲染用）；无图时不带键，形状与接入前一致
+    add_history(state, "user", state.user_input, image_ids=state.current_images)
     updates: dict = {"current_question": question, "chat_history": state.chat_history}
     if is_first:
         state.answered_count += 1

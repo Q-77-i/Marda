@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.agents.prompts import ANSWER_CANDIDATE_TEMPLATE, CLOSING_INVITE_TEMPLATE, REFUSE_END_TEMPLATE
 from app.agents.prompts import persona_for
+from app.config import get_settings
 from app.graph.rules import stream
 from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules.advance import end_quota
 from app.graph.state import InterviewState, TraceEvent, add_history, add_trace
+from app.tools import images as image_store
 
 CLOSING_QUESTION_LIMIT = 2  # PRD §4.1：候选人提问 1-2 个后收尾
 
@@ -24,13 +28,21 @@ async def closing_invite_node(state: InterviewState) -> dict:
 
 
 async def answer_candidate_node(state: InterviewState) -> dict:
+    # 反问也可以带图（P2-M6）：「你能看看我这段代码吗」+ 截图是真实交互——不带图
+    # 等于面试官对着图的问题盲答（同一「传了白看」缺口的另一处）
+    parts = await asyncio.to_thread(
+        image_store.load_image_parts, get_settings().upload_dir, state.interview_id, state.current_images
+    )
+    extra: list[dict] = (
+        [image_store.attachment_message(parts, image_store.NOTE_CLOSING)] if parts else []
+    )
     text = await stream.speak(
         [{"role": "system", "content": ANSWER_CANDIDATE_TEMPLATE.format(
             persona=persona_for(state.interview_type), content=state.user_input,
-        )}]
+        )}, *extra]
     )
     state.closing_question_count += 1
-    add_history(state, "user", state.user_input)
+    add_history(state, "user", state.user_input, image_ids=state.current_images)
     add_history(state, "assistant", text)
     return {"closing_question_count": state.closing_question_count, "chat_history": state.chat_history}
 

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     db_path: Path = REPO_ROOT / "data" / "marda.sqlite3"
     checkpoint_db_path: Path = REPO_ROOT / "data" / "checkpoints.sqlite3"
     qdrant_url: str = "http://localhost:6333"
+    # 面试图片通道（P2-M6 FR-26）：图存磁盘、state 只存 id（容器内由 compose 覆盖到 /app/data）
+    upload_dir: Path = REPO_ROOT / "data" / "uploads"
 
     # 面试默认值
     default_question_count: int = 10

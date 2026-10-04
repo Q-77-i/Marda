@@ -26,6 +26,8 @@ def _test_env(monkeypatch, tmp_path):
     monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
     monkeypatch.setenv("DB_PATH", str(tmp_path / "marda.sqlite3"))
     monkeypatch.setenv("CHECKPOINT_DB_PATH", str(tmp_path / "ckpt.sqlite3"))
+    # 图片通道（P2-M6）：上传目录也必须进 tmp——碰真库目录会污染 data/uploads
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     llm.get_settings.cache_clear()
     yield
     llm.get_settings.cache_clear()
@@ -70,9 +72,26 @@ def install_search(monkeypatch):
 
 
 @pytest.fixture
-async def anon_client(monkeypatch, install_search):
+def fake_llm(monkeypatch):
+    """共享的 FakeLLM 实例（挂在 `_get_client` 上）：用例可断言 `fake.calls`。
+
+    P2-M6 起独立成 fixture：图附件断言要看「节点实际发出去的消息列表」，
+    原先 inline 构造的实例用例够不着。
+    """
+    fake = FakeLLMClient()
+    monkeypatch.setattr(llm, "_get_client", lambda: fake)
+    return fake
+
+
+@pytest.fixture
+def upload_dir():
+    """本用例的上传目录（随 _test_env 的 UPLOAD_DIR 走，绝不碰 data/uploads）。"""
+    return llm.get_settings().upload_dir
+
+
+@pytest.fixture
+async def anon_client(fake_llm, install_search):
     """未登录客户端（鉴权用例用）；lifespan 内管理 service 起停。"""
-    monkeypatch.setattr(llm, "_get_client", lambda: FakeLLMClient())
     install_search(question_bank())
     transport = httpx.ASGITransport(app=app)
     async with app.router.lifespan_context(app):

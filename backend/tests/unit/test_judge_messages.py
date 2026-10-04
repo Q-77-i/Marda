@@ -129,3 +129,65 @@ async def test_行为面评分节点走行为面_schema(monkeypatch):
     state = _state(INTERVIEW_BEHAVIORAL)
     await judge_mod.judge_node(state)
     assert state.current_question.score.logic_structure == 3
+
+
+# ---- 图附件（P2-M6）：模板零改动 + 附件独立成条 ----
+
+
+def test_无图时消息列表与接入前一致_只有_system():
+    messages = judge_mod.judge_messages(
+        question="题", key_points=["a"], answer="答", interview_type=INTERVIEW_TECH)
+    assert len(messages) == 1 and messages[0]["role"] == "system"
+
+
+def test_带图时追加附件消息_system_逐字不动():
+    plain = judge_mod.judge_messages(
+        question="题", key_points=["a"], answer="答", interview_type=INTERVIEW_TECH)
+    part = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+
+    with_images = judge_mod.judge_messages(
+        question="题", key_points=["a"], answer="答", interview_type=INTERVIEW_TECH,
+        image_parts=[part])
+
+    assert with_images[0] == plain[0]  # 模板/评分口径零漂移（评测门禁不受影响）
+    assert len(with_images) == 2
+    assert with_images[1]["role"] == "user"
+    assert with_images[1]["content"][0]["type"] == "text"
+    assert with_images[1]["content"][1] == part
+
+
+@pytest.mark.asyncio
+async def test_评分节点带图_发出附件_并归并到题记录(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from app.tools import images as image_store
+
+    client = _CapturingClient(TECH_SCORE)
+    monkeypatch.setattr(llm, "_get_client", lambda: client)
+    monkeypatch.setattr(judge_mod, "get_settings", lambda: SimpleNamespace(upload_dir=tmp_path))
+    image_id = image_store.save_image(tmp_path, "iv1", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+
+    state = _state(INTERVIEW_TECH)
+    state.current_images = [image_id]
+    await judge_mod.judge_node(state)
+
+    sent = client.calls[0]["messages"]
+    assert sent[-1]["role"] == "user" and sent[-1]["content"][1]["type"] == "image_url"
+    assert state.current_question.image_ids == [image_id]  # 归并到题记录（跨追问轮累积）
+    assert state.chat_history[-1]["image_ids"] == [image_id]  # 回放数据源
+
+
+@pytest.mark.asyncio
+async def test_评分节点图文件丢失_降级纯文字不崩(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    client = _CapturingClient(TECH_SCORE)
+    monkeypatch.setattr(llm, "_get_client", lambda: client)
+    monkeypatch.setattr(judge_mod, "get_settings", lambda: SimpleNamespace(upload_dir=tmp_path))
+
+    state = _state(INTERVIEW_TECH)
+    state.current_images = ["a" * 32]  # 指向不存在的文件
+    await judge_mod.judge_node(state)
+
+    assert len(client.calls[0]["messages"]) == 1  # 无附件消息，按纯文字继续
+    assert state.current_question.score is not None  # 评分照常完成

@@ -139,7 +139,8 @@ class FakeLLMClient:
 
     def _content(self, **kwargs) -> str:
         system = kwargs["messages"][0]["content"]
-        self.calls.append({"system": system})
+        # messages 全量留档（P2-M6）：图附件断言要看得到整条消息列表，不只 system
+        self.calls.append({"system": system, "messages": kwargs.get("messages", [])})
         if "评分官" in system:
             raw = self._behavioral_score if "行为面" in system else self._score
             return json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)

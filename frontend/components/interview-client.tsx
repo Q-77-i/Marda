@@ -30,7 +30,9 @@ import {
 import { AsrRecorder } from "@/lib/asr-client";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { progressLabel } from "@/lib/format";
+import { compressImage, uploadImage } from "@/lib/image-client";
 import { reconcile, type PendingTurn } from "@/lib/recovery";
+import { ATTACH_HINT, ATTACH_TITLE, IMAGE_ACCEPT, pickError } from "@/lib/vision";
 import {
   UnauthorizedError,
   notifyUnauthorized,
@@ -63,6 +65,9 @@ const createAssistant = (id: string, content: string): ChatItem => ({
   content,
 });
 
+/** 待发送的截图（P2-M6）：压缩后的 blob（要上传的那个）与预览 objectURL。 */
+type Attachment = { blob: Blob; url: string };
+
 export function InterviewClient({ interviewId }: { interviewId: string }) {
   const router = useRouter();
   const [messages, setMessages] = useState<ChatItem[]>([]);
@@ -82,6 +87,9 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [voiceMode, setVoiceMode] = useState(false);
   const [recording, setRecording] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  /* 图片通道（P2-M6 FR-26）：选择的截图先压缩（预览即上传物），发送时上传拿 id 再发消息 */
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [attaching, setAttaching] = useState(false);
 
   const queueRef = useRef(new TypewriterQueue());
   const composingRef = useRef(false);
@@ -90,6 +98,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const idRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const nearBottomRef = useRef(true);
   const messagesRef = useRef<ChatItem[]>([]);
   const pendingRef = useRef<PendingTurn | null>(null);
@@ -112,6 +121,46 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
   const nextId = useCallback(() => `m${idRef.current++}`, []);
 
+  /** 释放附件预览的 objectURL（移除 / 发送成功 / 卸载时都要收）。 */
+  const releaseAttachments = (items: Attachment[]) => {
+    for (const item of items) URL.revokeObjectURL(item.url);
+  };
+
+  /** 选择截图 → 逐张校验 + 压缩 → 进预览（压缩后即上传物，预览所见即所传）。 */
+  const handlePick = useCallback(
+    async (files: FileList | null) => {
+      if (!files || files.length === 0) return;
+      setError(null);
+      let count = attachments.length;
+      const added: Attachment[] = [];
+      for (const file of Array.from(files)) {
+        const problem = pickError(file, count);
+        if (problem) {
+          setNotice(problem);
+          break;
+        }
+        try {
+          const blob = await compressImage(file);
+          added.push({ blob, url: URL.createObjectURL(blob) });
+          count += 1;
+        } catch {
+          setNotice("这张图片读不出来，请换一张（支持 PNG / JPEG / WebP）。");
+          break;
+        }
+      }
+      if (added.length > 0) setAttachments((prev) => [...prev, ...added]);
+    },
+    [attachments.length],
+  );
+
+  const removeAttachment = useCallback((index: number) => {
+    setAttachments((prev) => {
+      const target = prev[index];
+      if (target) URL.revokeObjectURL(target.url);
+      return prev.filter((_, i) => i !== index);
+    });
+  }, []);
+
   /* 浏览器能力探测（只读，SSR 安全）：没有 getUserMedia / AudioWorklet 就不给麦克风按钮 */
   const micSupported =
     typeof navigator !== "undefined" &&
@@ -132,6 +181,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
           id: nextId(),
           role: m.role,
           content: m.content,
+          // 图片通道（P2-M6）：刷新恢复/只读回放同一条渲染路径——图不会「刷新就没」
+          images: m.image_ids,
         })),
       );
       setPhase(session.phase);
@@ -330,11 +381,18 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     setConnecting(false);
   }, []);
 
-  /* 离开页面时收摊：麦克风轨道、AudioContext、WS、正在播的音频一个都不留 */
+  /* 附件镜像：卸载清理要读「此刻」的附件列表（卸载回调闭包里读不到 state） */
+  const attachmentsRef = useRef<Attachment[]>([]);
+  useEffect(() => {
+    attachmentsRef.current = attachments;
+  }, [attachments]);
+
+  /* 离开页面时收摊：麦克风轨道、AudioContext、WS、正在播的音频、附件预览 URL 一个都不留 */
   useEffect(
     () => () => {
       recorderRef.current?.cancel();
       speakerRef.current?.stop();
+      for (const item of attachmentsRef.current) URL.revokeObjectURL(item.url);
     },
     [],
   );
@@ -401,7 +459,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   );
 
   const submit = useCallback(
-    async (content: string, appendUser: boolean) => {
+    async (content: string, appendUser: boolean, images: string[] = []) => {
       const text = content.trim();
       if (!text || busyRef.current) return;
       // 发送前本地已有的候选人气泡数 = 服务端用户消息条数的下限（对账基准）
@@ -411,11 +469,15 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setError(null);
       applyPending(null);
       if (appendUser) {
-        setMessages((prev) => [...prev, { id: nextId(), role: "user", content: text }]);
+        setMessages((prev) => [
+          ...prev,
+          { id: nextId(), role: "user", content: text, images: images.length > 0 ? images : undefined },
+        ]);
       }
       const failed = (message: string) => {
         setError(message);
-        const turn = { text, baseline };
+        // images 入 pending：重试重发同一批 id（图已上传，不重复落盘）
+        const turn: PendingTurn = { text, baseline, images: images.length > 0 ? images : undefined };
         applyPending(turn);
         void reconcileFailure(turn);
       };
@@ -431,6 +493,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                重发同一文本不会重复计分：图停在失败节点上，重发 = 从断点续跑该节点 */
             error: (e) => failed(e.message),
           }),
+          images,
         );
       } catch (err) {
         // 401 由全局确认框接管，不再重复提示（重试也只会再 401）
@@ -464,9 +527,41 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const flushPending = (noticeText: string): boolean => {
     const stuck = pendingRef.current;
     if (!stuck) return false;
-    void submit(stuck.text, false);
+    void submit(stuck.text, false, stuck.images ?? []);
     setNotice(noticeText);
     return true;
+  };
+
+  /**
+   * 发送（P2-M6 起可附截图）：**先传图拿 id，再提交消息**。
+   *
+   * 上传失败 → 错误提示 + 附件与草稿都保留（不静默丢图、不把没图的回答发出去）；
+   * 上传成功但消息流失败/卡住 → 重试复用同一批 id（PendingTurn 带 images），不重复落盘。
+   */
+  const sendWithAttachments = async (text: string, files: Attachment[]) => {
+    if (attaching) return;
+    if (files.length === 0) {
+      setDraft("");
+      void submit(text, true, []);
+      return;
+    }
+    setAttaching(true);
+    setError(null);
+    try {
+      const ids: string[] = [];
+      for (const file of files) ids.push(await uploadImage(interviewId, file.blob));
+      releaseAttachments(files);
+      setAttachments([]);
+      setDraft("");
+      void submit(text, true, ids);
+    } catch (err) {
+      // 401 由全局确认框接管；其余（超限/网络）给文案，附件保留可重试
+      if (!(err instanceof UnauthorizedError)) {
+        setError(err instanceof Error ? err.message : "图片上传失败，请重试");
+      }
+    } finally {
+      setAttaching(false);
+    }
   };
 
   const handleSend = () => {
@@ -474,9 +569,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       return;
     }
     setNotice(null); // 提示语只服务它那一次动作，新一轮动作即收走
-    const text = draft;
-    setDraft("");
-    void submit(text, true);
+    void sendWithAttachments(draft, attachments);
   };
 
   const handleEnd = () => {
@@ -491,7 +584,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     const stuck = pendingRef.current;
     if (!stuck) return;
     setNotice(null);
-    void submit(stuck.text, false); // appendUser=false：气泡已经在列表里
+    void submit(stuck.text, false, stuck.images ?? []); // appendUser=false：气泡已经在列表里
   };
 
   const finished = reportReady;
@@ -575,6 +668,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
           {messages.map((item, index) => (
             <MessageBubble
               key={item.id}
+              interviewId={interviewId}
               item={{
                 ...item,
                 typing:
@@ -621,6 +715,32 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             </p>
           ) : (
             <>
+              {attachments.length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex flex-wrap gap-2">
+                    {attachments.map((item, index) => (
+                      <div key={item.url} className="relative">
+                        {/* eslint-disable-next-line @next/next/no-img-element -- 本地预览 blob */}
+                        <img
+                          src={item.url}
+                          alt={`待发送截图 ${index + 1}`}
+                          className="max-h-24 w-auto rounded-lg ring-1 ring-foreground/15"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeAttachment(index)}
+                          aria-label={`移除第 ${index + 1} 张截图`}
+                          className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-xs text-background"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  {/* 如实交代图的用途（用户口径 2026-10-04）：别让用户以为传了白传 */}
+                  <p className="text-xs text-muted-foreground">{ATTACH_HINT}</p>
+                </div>
+              )}
               <Textarea
                 ref={inputRef}
                 value={draft}
@@ -662,6 +782,25 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                 </span>
                 <div className="flex shrink-0 items-center gap-2">
                   <Button
+                    variant="outline"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={attaching || busy || loading || finished || recording}
+                    title={ATTACH_TITLE}
+                  >
+                    {attaching ? "上传中…" : "附截图"}
+                  </Button>
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept={IMAGE_ACCEPT}
+                    multiple
+                    hidden
+                    onChange={(e) => {
+                      void handlePick(e.target.files);
+                      e.target.value = ""; // 清空才能连选同一张
+                    }}
+                  />
+                  <Button
                     variant={recording ? "default" : "outline"}
                     onClick={recording ? () => void stopRecording() : () => void startRecording()}
                     /* 录音中不禁用（否则用户按不停、录音收不了尾）——判据在 lib/voice.ts 里，有 vitest */
@@ -682,7 +821,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                   </Button>
                   <Button
                     onClick={handleSend}
-                    disabled={busy || loading || !draft.trim() || blocksSubmit(recording)}
+                    disabled={attaching || busy || loading || !draft.trim() || blocksSubmit(recording)}
                   >
                     发送
                   </Button>

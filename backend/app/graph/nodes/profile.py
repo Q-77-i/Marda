@@ -2,20 +2,32 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app import llm
 from app.agents.prompts import PROFILE_TEMPLATE
 from app.agents.schemas import ProfileExtraction
+from app.config import get_settings
 from app.graph.state import InterviewState, add_history
+from app.tools import images as image_store
 
 
 async def profile_node(state: InterviewState) -> dict:
+    # 自我介绍也可能带图（P2-M6）：架构图/项目截图对「项目经历提炼」是有效输入
+    # （提炼结果喂给后续项目深挖题的定制）；无图时消息列表与接入前逐字一致
+    parts = await asyncio.to_thread(
+        image_store.load_image_parts, get_settings().upload_dir, state.interview_id, state.current_images
+    )
+    extra: list[dict] = (
+        [image_store.attachment_message(parts, image_store.NOTE_PROFILE)] if parts else []
+    )
     extraction = await llm.chat_json(
-        [{"role": "system", "content": PROFILE_TEMPLATE.format(content=state.user_input)}],
+        [{"role": "system", "content": PROFILE_TEMPLATE.format(content=state.user_input)}, *extra],
         schema=ProfileExtraction,
         temperature=0.3,
     )
     profile = extraction.summary
     if extraction.projects:
         profile += "；项目经历：" + "；".join(extraction.projects)
-    add_history(state, "user", state.user_input)
+    add_history(state, "user", state.user_input, image_ids=state.current_images)
     return {"candidate_profile": profile, "chat_history": state.chat_history}

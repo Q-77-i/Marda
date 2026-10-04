@@ -65,3 +65,37 @@ def test_决策日志_轮次可空_按序累积():
 
     assert [e["round"] for e in state.trace_log] == [2, None]
     assert [e["type"] for e in state.trace_log] == ["end_refused", "report"]
+
+
+# ---- 图片通道（P2-M6 FR-26）：state 形状与旧 checkpoint 兼容 ----
+
+
+def test_图片字段默认空_旧形状_dict_可校验():
+    """旧 checkpoint 的值里没有新字段 → 校验必须靠默认值补上，不许拒绝（T4 教训重验）。"""
+    old_state = {  # 模拟 P2-M6 之前写入的 checkpoint 值（无 current_images）
+        "interview_id": "iv1", "position": "Agent/AI 工程师", "question_count": 5,
+        "answered_questions": [{
+            "question_id": "q_1", "text": "题", "domain": "rag", "topic": "t",
+            "difficulty": "L1", "key_points": ["k"], "answer": "答",  # 无 image_ids
+        }],
+    }
+
+    state = InterviewState.model_validate(old_state)
+
+    assert state.current_images == []
+    assert state.answered_questions[0].image_ids == []
+
+
+def test_add_history_无图不带_image_ids_键():
+    """无图场次的 chat_history 条目与接入前逐字一致（键都不多一个）。"""
+    state = InterviewState()
+    add_history(state, "user", "普通回答")
+
+    assert state.chat_history == [{"role": "user", "content": "普通回答"}]
+
+
+def test_add_history_带图写入_image_ids():
+    state = InterviewState()
+    add_history(state, "user", "见截图", image_ids=["a" * 32])
+
+    assert state.chat_history[0]["image_ids"] == ["a" * 32]

@@ -54,6 +54,13 @@ export function ReviewCard({
               </p>
             </div>
           ))}
+          {/* 图片计数（P2-M6，2026-10-04 用户补充的「闭合信号」）：报告不展示图，
+              但要让用户看到「传过的图没有丢」；图本体在面试页回放里 */}
+          {(item.image_count ?? 0) > 0 && (
+            <p className="text-xs text-muted-foreground">
+              本题回答含 {item.image_count} 张截图
+            </p>
+          )}
         </div>
       )}
 

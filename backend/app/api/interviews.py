@@ -21,6 +21,7 @@ from app.api.auth import get_current_user
 from app.config import get_settings
 from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
 from app.service import InterviewFinishedError, InterviewNotFoundError
+from app.tools import images
 from app.tools import recommend
 
 router = APIRouter(
@@ -55,6 +56,9 @@ class CreateRequest(BaseModel):
 
 class MessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
+    # 图片通道（P2-M6 FR-26）：随消息附带的 image_id 列表（先经 POST /images 上传）；
+    # 文字仍必填——图是回答的补充证据，不单独成答（避免空回答进评分）
+    images: list[str] = Field(default_factory=list, max_length=images.MAX_IMAGES_PER_MESSAGE)
 
 
 @router.post("")
@@ -97,8 +101,17 @@ async def send_message(
         raise HTTPException(status_code=404, detail="面试不存在") from exc
     except InterviewFinishedError as exc:
         raise HTTPException(status_code=409, detail="面试已结束") from exc
+    if req.images:
+        # 图必须已上传且属于本场（id 只从本场目录解析）：失效/伪造一律 400，不静默丢图
+        settings = get_settings()
+        for image_id in req.images:
+            path = await asyncio.to_thread(
+                images.image_path, settings.upload_dir, interview_id, image_id
+            )
+            if path is None:
+                raise HTTPException(status_code=400, detail="图片不存在或已失效，请重新上传")
     return EventSourceResponse(
-        service.send_message(interview_id, req.content.strip(), user["id"]),
+        service.send_message(interview_id, req.content.strip(), user["id"], images=req.images),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),

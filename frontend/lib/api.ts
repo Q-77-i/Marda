@@ -41,7 +41,8 @@ export type QuestionEvent = {
 export type DoneEvent = { interview_id: string; report_ready: boolean };
 export type ErrorEvent = { code: string; message: string; retryable?: boolean };
 
-export type ChatMessage = { role: "user" | "assistant"; content: string };
+/** 图片通道（P2-M6）：user 条目可带 image_ids（无图时该键不出现，老场次天然兼容）。 */
+export type ChatMessage = { role: "user" | "assistant"; content: string; image_ids?: string[] };
 
 export type Session = {
   interview_id: string;
@@ -99,6 +100,8 @@ export type PerQuestionComment = {
   number?: number | null;
   question_type?: string;
   candidate_answer?: string | null;
+  /** 本题附带的截图数（P2-M6）：报告页只显示计数做闭合信号，图本体在面试页回放看 */
+  image_count?: number;
   score?: ScoreDimensions | null;
   covered_key_points?: string[];
   missed_key_points?: string[];
@@ -223,10 +226,12 @@ export async function sendMessage(
   interviewId: string,
   content: string,
   onEvent: (event: SSEEvent) => void,
+  /** 图片通道（P2-M6）：随消息附带的 image_id 列表（先经 uploadImage 上传）；无图不带键 */
+  images: string[] = [],
 ): Promise<void> {
   await postSSE(
     `/api/interviews/${interviewId}/messages`,
-    { content },
+    images.length > 0 ? { content, images } : { content },
     onEvent,
   );
 }

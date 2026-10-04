@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.agents.prompts import (
     FOLLOWUP_CLARIFY_TEMPLATE,
     FOLLOWUP_DEEPEN_BEHAVIORAL_TEMPLATE,
@@ -9,6 +11,7 @@ from app.agents.prompts import (
     FOLLOWUP_MISSING_TEMPLATE,
     persona_for,
 )
+from app.config import get_settings
 from app.domain import QUESTION_TYPE_BEHAVIORAL
 from app.graph.rules import stream
 from app.graph.rules.follow_up import (
@@ -18,6 +21,7 @@ from app.graph.rules.follow_up import (
     unasked_missed,
 )
 from app.graph.state import InterviewState, TraceEvent, add_history, add_trace
+from app.tools import images as image_store
 
 
 def _deepen_only(question) -> bool:
@@ -39,12 +43,20 @@ async def followup_node(state: InterviewState) -> dict:
         deepen_only=_deepen_only(question),
     )
     persona = persona_for(state.interview_type)
+    # 图附件（P2-M6）：追问基于「该题累积的图」（首答+追问补充），取最近 N 张；
+    # 文件缺失/损坏由 load_image_parts 跳过降级（不因图丢文件而拒答）
+    parts = await asyncio.to_thread(
+        image_store.load_image_parts, get_settings().upload_dir, state.interview_id, question.image_ids
+    )
+    extra: list[dict] = (
+        [image_store.attachment_message(parts, image_store.NOTE_FOLLOWUP)] if parts else []
+    )
     if decision is Decision.CLARIFY:
         question.clarify_used += 1
         prompt = FOLLOWUP_CLARIFY_TEMPLATE.format(
             persona=persona, question=question.text, answer=question.answer
         )
-        text = await stream.speak([{"role": "system", "content": prompt}])
+        text = await stream.speak([{"role": "system", "content": prompt}, *extra])
     elif decision is Decision.MISSING:
         question.missing_used += 1
         # 只问没问过的漏点（同一 key_point 只追问一次），并写入 asked 集合
@@ -56,7 +68,7 @@ async def followup_node(state: InterviewState) -> dict:
             answer=question.answer,
             missed_points="；".join(unasked),
         )
-        text = await stream.speak([{"role": "system", "content": prompt}])
+        text = await stream.speak([{"role": "system", "content": prompt}, *extra])
     else:  # DEEPEN
         question.deepen_used += 1
         # 题库题直接发 follow_ups 元数据（P1-M4.5 拍板：零 LLM 调用，确定性可回放）；
@@ -74,7 +86,7 @@ async def followup_node(state: InterviewState) -> dict:
             prompt = template.format(
                 persona=persona, question=question.text, answer=question.answer
             )
-            text = await stream.speak([{"role": "system", "content": prompt}])
+            text = await stream.speak([{"role": "system", "content": prompt}, *extra])
     question.follow_up_count += 1
     question.followup_log.append(text)
     add_history(state, "assistant", text)

@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.auth import router as auth_router
 from app.api.bank import router as bank_router
 from app.api.bank_private import router as bank_private_router
+from app.api.images import router as images_router
 from app.api.interviews import router as interviews_router
 from app.api.profile import router as profile_router
 from app.api.voice import router as voice_router
@@ -38,6 +39,7 @@ app.include_router(bank_router)
 app.include_router(bank_private_router)
 app.include_router(profile_router)
 app.include_router(voice_router)  # 语音（P2-M5 FR-24）：WS /api/asr + POST /api/tts
+app.include_router(images_router)  # 图片通道（P2-M6 FR-26）：上传 / 取回面试截图
 
 
 @app.get("/healthz")

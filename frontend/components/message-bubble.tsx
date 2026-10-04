@@ -2,6 +2,7 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 
+import { MessageImages } from "@/components/message-images";
 import { BEHAVIORAL_DOMAIN, domainLabel } from "@/lib/constants";
 
 export type ChatItem = {
@@ -10,12 +11,14 @@ export type ChatItem = {
   content: string;
   /** 题目元数据：由 question 事件挂到刚到达的面试官消息上 */
   tag?: { index: number; domain: string; difficulty: string };
+  /** 候选人消息附带的截图（P2-M6）：image_id 列表，渲染走鉴权端点 */
+  images?: string[];
   /** 正在逐字吐出（显示光标） */
   typing?: boolean;
 };
 
 /** 单条消息：面试官左侧中性底，候选人右侧强调色底。 */
-export function MessageBubble({ item }: { item: ChatItem }) {
+export function MessageBubble({ item, interviewId }: { item: ChatItem; interviewId: string }) {
   const reduce = useReducedMotion();
   const isUser = item.role === "user";
 
@@ -43,6 +46,9 @@ export function MessageBubble({ item }: { item: ChatItem }) {
             {/* 行为题不显示难度（P1-M11 D3）：难度不参与行为面出题，是死数据 */}
             {item.tag.domain !== BEHAVIORAL_DOMAIN && <span>{item.tag.difficulty}</span>}
           </div>
+        )}
+        {item.images && item.images.length > 0 && (
+          <MessageImages interviewId={interviewId} imageIds={item.images} />
         )}
         <p className="whitespace-pre-wrap">
           {item.content}

@@ -36,6 +36,7 @@ services:
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
       QDRANT_URL: http://qdrant:6333
       EMBEDDING_URL: http://embedding:8091
+      UPLOAD_DIR: /app/data/uploads
     volumes:
       - ./data:/app/data      # 业务库 + checkpointer 落宿主机，容器重建不丢
     depends_on:

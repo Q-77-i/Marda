@@ -27,7 +27,7 @@ from app.graph.rules.aggregate import dims_payload
 from app.graph.rules.capacity import ADAPTIVE, base_difficulty
 from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
-from app.tools import profile
+from app.tools import images, profile
 
 
 class InterviewNotFoundError(Exception):
@@ -195,6 +195,10 @@ class Service:
         if row is None or row["user_id"] != user_id:
             raise InterviewNotFoundError(interview_id)
 
+    async def require_owner(self, interview_id: str, user_id: str) -> None:
+        """归属校验的公开入口（图片取回这类「只需归属、不限进行中」的端点用）。"""
+        await self._require_owner(interview_id, user_id)
+
     async def check_can_send(self, interview_id: str, user_id: str) -> None:
         """发消息前置校验（route 层调用，保证 4xx 在流开始前返回）。"""
         await self._require_owner(interview_id, user_id)
@@ -236,8 +240,18 @@ class Service:
         async for event in self._run(state, config, state.model_dump(), user_id=user_id):
             yield event
 
-    async def send_message(self, interview_id: str, content: str, user_id: str) -> AsyncIterator[dict]:
-        """resume 图到下一 interrupt 或结束；防御性复查（route 已查过）。"""
+    async def send_message(
+        self,
+        interview_id: str,
+        content: str,
+        user_id: str,
+        images: list[str] | None = None,
+    ) -> AsyncIterator[dict]:
+        """resume 图到下一 interrupt 或结束；防御性复查（route 已查过）。
+
+        图片通道（P2-M6）：带图时 resume 载荷是 `{content, images}`；**无图仍是裸字符串**
+        ——接入前的形状逐字不变（parse_resume 两种都接）。
+        """
         await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
         if not values:
@@ -245,7 +259,8 @@ class Service:
         if values.get("status") == "finished":
             raise InterviewFinishedError(interview_id)
         config = run_config(interview_id, values["question_count"])
-        async for event in self._run(Command(resume=content), config, values, user_id=user_id):
+        payload: Any = {"content": content, "images": list(images)} if images else content
+        async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
             yield event
 
     async def _run(
@@ -295,14 +310,18 @@ class Service:
         await asyncio.to_thread(db.finish_interview, self._settings.db_path, interview_id)
 
     async def delete_interview(self, interview_id: str, user_id: str) -> None:
-        """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表。
+        """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表 + 图片目录（P2-M6）。
 
         checkpointer 先删（线程是会话权威，删后 resume 即 404），业务库三表再删；
         任一失败抛异常（500），保证不出现「列表没了但线程还在」的半删状态。
+        图片清理放最后且**只记日志不抛**——图是附属产物，不能因为它挡住场次删除。
         """
         await self._require_owner(interview_id, user_id)
         await self._g.checkpointer.adelete_thread(interview_id)
         await asyncio.to_thread(db.delete_interview, self._settings.db_path, interview_id)
+        await asyncio.to_thread(
+            images.remove_interview_images, self._settings.upload_dir, interview_id
+        )
 
     async def get_session(self, interview_id: str, user_id: str, *, reconnect: bool = False) -> dict:
         """UI 恢复数据（SPEC §7）：checkpoint 为权威，归属以业务库为准。

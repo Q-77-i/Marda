@@ -137,6 +137,8 @@ class QuestionRecord(BaseModel):
     asked_key_points: list[str] = []  # 已追问过的 key_points（P1-M4.5-R1：同一漏点只追问一次）
     followup_log: list[str] = []
     answer: str | None = None
+    # 该题回答附带的图（P2-M6 FR-26）：image_id 列表，跨追问轮累积；只存 id 不存路径/字节
+    image_ids: list[str] = []
     score: ScoreItem | BehavioralScoreItem | None = None
     skipped: bool = False
     from_bank: bool = True
@@ -174,6 +176,9 @@ class InterviewState(BaseModel):
     answered_count: int = 0
     answered_questions: list[QuestionRecord] = []
     user_input: str = ""
+    # 本轮用户消息附带的图（P2-M6）：pause 节点从 resume 载荷写入，评分/追问消费；
+    # 下一条消息到达时被整体覆盖，不需要显式清空
+    current_images: list[str] = []
     closing_question_count: int = 0
     chat_history: list[dict] = []
     report: dict | None = None
@@ -181,7 +186,9 @@ class InterviewState(BaseModel):
     trace_log: list[dict] = []  # 决策回放事件流（P1-M4 / FR-21）：只增不改，见 add_trace
 
 
-def add_history(state: InterviewState, role: str, content: str) -> None:
+def add_history(
+    state: InterviewState, role: str, content: str, *, image_ids: list[str] | None = None
+) -> None:
     """追加对话历史（原地，节点显式返回该字段）。**不截断**。
 
     chat_history 是回放（GET /interviews/{id}）与 SSE delta 差分的唯一来源，
@@ -189,8 +196,14 @@ def add_history(state: InterviewState, role: str, content: str) -> None:
     长度差分就算不出新增 → 面试官文案漏发；回放也会丢掉开场。别在这里砍。
     （面试官与 LLM 的记忆来自结构化 state——answered_questions / candidate_profile，
     chat_history 不参与 prompt 组装。）
+
+    image_ids（P2-M6）：用户消息附带的图（回放页按它渲染缩略图）。**只在有图时才出现
+    这个键**——无图场次的 chat_history 与接入前逐字一致（旧读取侧天然兼容）。
     """
-    state.chat_history.append({"role": role, "content": content})
+    entry: dict = {"role": role, "content": content}
+    if image_ids:
+        entry["image_ids"] = list(image_ids)
+    state.chat_history.append(entry)
 
 
 def add_trace(

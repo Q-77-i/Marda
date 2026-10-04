@@ -173,6 +173,9 @@ def build_per_question_comments(
             "text": q.text,
             "comment": comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
             "candidate_answer": q.answer,
+            # 本题附带的截图数（P2-M6）：报告页复盘卡给一行计数做「闭合信号」——
+            # 图本体不在报告 payload 里（回放在面试页看），老 payload 无此键、前端容忍
+            "image_count": len(q.image_ids),
             "score": _score_dims(q.score),
             "covered_key_points": list(q.score.covered_key_points) if q.score else [],
             "missed_key_points": list(q.score.missed_key_points) if q.score else [],

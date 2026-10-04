@@ -31,10 +31,23 @@ from app.graph.rules.follow_up import Decision, decide_follow_up, remedy_used_to
 from app.graph.state import InterviewState, Phase
 
 
+def parse_resume(payload: Any) -> tuple[str, list[str]]:
+    """resume 载荷 → (文本, 图片 id 列表)（纯函数，可单测）。
+
+    P2-M6：无图消息仍是裸字符串（与接入前逐字同形），带图消息是
+    `{"content": ..., "images": [...]}`——两种形状都要接住。
+    """
+    if isinstance(payload, dict):
+        content = str(payload.get("content") or "")
+        images = [item for item in (payload.get("images") or []) if isinstance(item, str)]
+        return content, images
+    return (str(payload) if payload else ""), []
+
+
 def pause_node(state: InterviewState) -> dict:
     """单 interrupt 点：resume 时拿到用户输入写入 state，供 route 分发。"""
-    user_input = interrupt({"waiting": "user_input"})
-    return {"user_input": str(user_input) if user_input else ""}
+    content, images = parse_resume(interrupt({"waiting": "user_input"}))
+    return {"user_input": content, "current_images": images}
 
 
 def route(state: InterviewState) -> str:

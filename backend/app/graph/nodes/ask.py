@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app import llm
 from app.agents.prompts import (
     ASKED_BEHAVIORAL_EMPTY,
@@ -19,6 +21,7 @@ from app.agents.prompts import (
     persona_for,
 )
 from app.agents.schemas import GeneratedQuestion
+from app.config import get_settings
 from app.domain import (
     BEHAVIORAL_DOMAIN,
     DOMAIN_LABELS,
@@ -30,7 +33,28 @@ from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
 from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
 from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
+from app.tools import images as image_store
 from app.tools import question_search
+
+
+async def _last_answer_attachment(state: InterviewState) -> list[dict]:
+    """上一轮问答的图附件（P2-M6）：出题结合图内容。
+
+    **只给 LLM 现场生成题目的路径用**（项目深挖 / 兜底生成）——题库题的题面来自题库，
+    出题官对它只做口吻改写、改不了考察点，带图是噪声（PRD FR-26 的「出题结合图内容」
+    落在生成路径上）。取上一题的图（最近 N 张），无图返回空列表（不多做任何 IO）。
+    """
+    if not state.answered_questions:
+        return []
+    last = state.answered_questions[-1]
+    if not last.image_ids:
+        return []
+    parts = await asyncio.to_thread(
+        image_store.load_image_parts, get_settings().upload_dir, state.interview_id, last.image_ids
+    )
+    if not parts:
+        return []
+    return [image_store.attachment_message(parts, image_store.NOTE_ASK)]
 
 
 async def ask_node(state: InterviewState) -> dict:
@@ -160,7 +184,7 @@ async def _generate_tech(state: InterviewState) -> QuestionRecord:
             domain_label=DOMAIN_LABELS[domain],
             difficulty=state.difficulty,
             profile=state.candidate_profile or "（候选人未提供项目背景）",
-        )}],
+        )}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
     )
@@ -194,7 +218,7 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
             project_round=state.answered_count + 1,
             difficulty=state.difficulty,
             profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的架构设计题）",
-            asked=_asked_project_block(state))}],
+            asked=_asked_project_block(state))}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
     )
@@ -222,7 +246,7 @@ async def _generate_behavioral(state: InterviewState) -> QuestionRecord:
     generated = await llm.chat_json(
         [{"role": "system", "content": BEHAVIORAL_ASK_GENERATE_TEMPLATE.format(
             profile=state.candidate_profile or "（候选人未提供项目经历，出一道通用的行为面题目）",
-            asked=_asked_behavioral_block(state))}],
+            asked=_asked_behavioral_block(state))}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
     )
