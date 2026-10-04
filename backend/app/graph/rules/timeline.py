@@ -11,11 +11,14 @@
 - **duration_ms**：相邻存档的 `ts` 间隔（≈ 该步执行时间 + 落盘开销；`pause` 步天然
   包含用户思考与作答时间，页面上如实说明）。
 - **writes**：**该存档上记录的写入通道 ∩ 这一步真的变了的通道**。两者缺一不可——
-  只取值 diff：langgraph 默认 `durability="async"`（异步落盘），节点对 Pydantic 对象的
-  原地变更（如 judge 合并回答到 `current_question`）会渗进上一步的存储值，diff 会把
-  下一步的改动记在上一步头上（真库实测：每个 pause 步都凭空多出「题目」）；
-  只取记录：节点会把 `degraded_reasons`/未变的 `difficulty` 原样回传，摘要里会凭空
-  多出「降级记录」（健康场次也一样）。交集两头都滤掉。
+  只取记录：节点会把 `degraded_reasons` / 未变的 `difficulty` 原样回传，摘要里会凭空
+  多出「降级记录」（健康场次也一样）；只取值 diff：受落盘时序影响，见下。
+
+**落盘必须是同步的（交付后修，首跑 CI 红定位）**：服务层用 `astream(..., durability="sync")`。
+langgraph 默认的 `async` 是异步落盘，节点对 Pydantic 对象的**原地变更**（judge 把回答并进
+`current_question`）可能被刷进**相邻那一个**存档——值 diff 因此少认或多认一个通道，而落在
+哪一侧取决于机器快慢：**同一个 commit，本机绿、容器红、CI 的 PR 绿而 push 红**。集成测试
+连跑 12 次 4 绿 8 红即此竞态，改 sync 后 12/12 绿（每步一次 SQLite 写，单机形态可忽略）。
 
 本函数只吃纯数据（service 层把 StateSnapshot / CheckpointTuple 拍平），故可单测。
 """

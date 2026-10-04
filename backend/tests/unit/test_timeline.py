@@ -2,8 +2,8 @@
 
 判据都贴着「数据从哪来」写：node 来自**前一个存档的 next**、duration 来自**相邻时间戳间隔**、
 writes 来自**该存档记录的写入 ∩ 这一步真变了的通道**——两者缺一不可，理由见
-`rules/timeline.py` 顶部（异步落盘会把原地变更渗进上一步的值；节点又会把
-`degraded_reasons` 这类字段原样回传）。
+`rules/timeline.py` 顶部（节点会把 `degraded_reasons` 这类字段原样回传；而改 sync 之前落的
+**历史存档**里，原地变更还会渗进上一步的值）。
 """
 
 from __future__ import annotations
@@ -231,9 +231,10 @@ def test_记录里写了但没真变_不进摘要():
 
 
 def test_值变了但不在记录写入里_不进摘要():
-    """异步落盘的原地变更会渗进上一步的存储值（真库实测：judge 合并回答到
-    current_question，每个 pause 步的值 diff 里都凭空多出「题目」）。
-    归属只认该存档记录的写入，diff 只用来去掉没真变的。"""
+    """历史存档（异步落盘时期落的）里，原地变更会渗进上一步的存储值（真库实测：judge 合并
+    回答到 current_question，每个 pause 步的值 diff 里都凭空多出「题目」）。服务层现已改成
+    `durability="sync"`，但这个形状在旧存档里仍存在——归属只认该存档记录的写入，diff 只用来
+    去掉没真变的。"""
     steps = [
         step(ts="2026-10-05T00:00:00+00:00", next=["__start__"]),
         step(
