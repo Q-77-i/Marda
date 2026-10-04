@@ -370,3 +370,113 @@ async def test_chat_json_不走流式(install):
     await llm.chat_json(MESSAGES, schema=Review)
 
     assert not client.calls[0].get("stream")
+
+
+# ---------- 上游保护（P2-M9）：闸门 + 熔断在 llm 三条路径上的接线 ----------
+
+
+def _reliability_env(monkeypatch, **values: str) -> None:
+    """改保护参数：settings 是 lru_cache 的，改完必须清缓存 + 重建保护器。"""
+    for key, value in values.items():
+        monkeypatch.setenv(key, value)
+    llm.get_settings.cache_clear()
+    llm.reset_reliability()
+
+
+async def test_上游连续失败触发熔断后快速失败(install, monkeypatch):
+    """一次 chat = 建连重试 3 次（一把全 429）→ 记 1 次上游失败；阈值 1 → 开路。"""
+    _reliability_env(monkeypatch, LLM_BREAKER_THRESHOLD="1", LLM_BREAKER_COOLDOWN_S="60")
+    client = install([_status_error(429)] * 3)
+
+    with pytest.raises(llm.LLMError):
+        await llm.chat(MESSAGES)
+    assert len(client.calls) == 3  # tenacity 建连重试照旧
+
+    with pytest.raises(llm.LLMError) as excinfo:
+        await llm.chat(MESSAGES)
+    assert excinfo.value.retryable is True  # 熔断 = 暂时不可用，按可重试处置
+    assert len(client.calls) == 3  # 开路期间一个上游请求都没发
+
+
+async def test_内容类失败不计入熔断(install, monkeypatch):
+    """400 这类「我方错」与 JSON 校验失败同族——上游活着时出的错，计入会误开熔断。"""
+    _reliability_env(monkeypatch, LLM_BREAKER_THRESHOLD="1")
+    client = install([_status_error(400)] * 4)
+
+    for _ in range(4):
+        with pytest.raises(llm.LLMError):
+            await llm.chat(MESSAGES)
+
+    assert len(client.calls) == 4  # 400 不重试，每次都真发了
+    from app.reliability import BreakerState
+
+    assert llm._guard_for(None).breaker.state is BreakerState.CLOSED
+
+
+async def test_闸门排队超时转可重试错误且不发上游调用(install, monkeypatch):
+    _reliability_env(
+        monkeypatch, LLM_MAX_CONCURRENCY_FLASH="1", LLM_ACQUIRE_TIMEOUT_S="0.05"
+    )
+    client = install([_response("不该被调用")])
+    guard = llm._guard_for(None)
+
+    async with guard.gate.slot():  # 占满唯一的槽
+        with pytest.raises(llm.LLMError) as excinfo:
+            await llm.chat(MESSAGES)
+
+    assert excinfo.value.retryable is True
+    assert client.calls == []
+    assert guard.gate.in_flight == 0  # 自己退出后槽位归零
+
+
+async def test_chat_json同样过保护器(install, monkeypatch):
+    """结构化路径与文案路径共用同一套保护（不是只包了 chat）。"""
+    _reliability_env(monkeypatch, LLM_MAX_CONCURRENCY_FLASH="1", LLM_ACQUIRE_TIMEOUT_S="0.05")
+    client = install([_response('{"technical_depth": 4, "comment": "好"}')])
+    guard = llm._guard_for(None)
+
+    async with guard.gate.slot():
+        with pytest.raises(llm.LLMError):
+            await llm.chat_json(MESSAGES, schema=Review)
+
+    assert client.calls == []
+
+
+async def test_流式期间闸门被持有到流结束(install, monkeypatch):
+    """流式响应体是长连接：只包住建连段等于没限流——分片到达时必须还占着槽。"""
+    _reliability_env(monkeypatch, LLM_MAX_CONCURRENCY_FLASH="1")
+    install([_response("你好世界")])
+    guard = llm._guard_for(None)
+    seen: list[int] = []
+
+    text = await llm.chat(MESSAGES, on_delta=lambda piece: seen.append(guard.gate.in_flight))
+
+    assert seen and all(value == 1 for value in seen)  # 每个分片到达时都占着槽
+    assert guard.gate.in_flight == 0  # 流结束后释放
+    assert text == "你好世界"
+
+
+async def test_中途断流计入熔断(install, monkeypatch):
+    """半路断流是真的上游故障（与内容类失败不同），必须计数。"""
+    _reliability_env(monkeypatch, LLM_BREAKER_THRESHOLD="1")
+    install([FakeStream(["半截"], error=_status_error(500))])
+
+    with pytest.raises(llm.LLMError):
+        await llm.chat(MESSAGES)
+
+    from app.reliability import BreakerState
+
+    assert llm._guard_for(None).breaker.state is BreakerState.OPEN
+
+
+async def test_断路器按模型隔离(install, monkeypatch):
+    """pro 熔断不影响 flash（报告降级为 flash 的前提）。"""
+    _reliability_env(monkeypatch, LLM_BREAKER_THRESHOLD="1")
+    client = install([_status_error(429)] * 3 + [_response("flash 正常")])
+
+    with pytest.raises(llm.LLMError):
+        await llm.chat(MESSAGES, model="deepseek-v4-pro")
+    assert llm._guard_for("deepseek-v4-pro").breaker.state.value == "open"
+
+    # flash 的断路器没被动过，照常出结果
+    assert await llm.chat(MESSAGES) == "flash 正常"

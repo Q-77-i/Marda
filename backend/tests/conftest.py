@@ -14,6 +14,15 @@ for extra in (TESTS_DIR.parents[1] / "data" / "scripts", TESTS_DIR / "fixtures")
 
 
 @pytest.fixture(autouse=True)
+def _fresh_reliability():
+    """清空上游保护器（P2-M9）：闸门/熔断是进程内单例，跨用例串味
+    （上一个用例把熔断打开，下一个用例全被快速失败）。"""
+    llm.reset_reliability()
+    yield
+    llm.reset_reliability()
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_langfuse(monkeypatch):
     """测试默认与 Langfuse 断连：断在 `enabled()` 这一层。
 

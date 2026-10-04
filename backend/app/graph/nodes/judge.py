@@ -11,11 +11,13 @@ answered_questions 保持每题一条最终记录；回答则累加保留（首�
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from app import llm
 from app.agents.prompts import BEHAVIORAL_JUDGE_TEMPLATE, JUDGE_TEMPLATE
 from app.config import get_settings
 from app.domain import INTERVIEW_BEHAVIORAL
+from app.graph.rules import degrade
 from app.graph.rules.difficulty import update_difficulty
 from app.graph.state import (
     InterviewState,
@@ -26,6 +28,8 @@ from app.graph.state import (
     score_schema_for,
 )
 from app.tools import images as image_store
+
+logger = logging.getLogger(__name__)
 
 JUDGE_TEMPERATURE = 0.3
 """评分官温度（生产值）。**离线评测（P1-M12 会话 2）以它为「生产臂」的基准**——
@@ -83,18 +87,28 @@ async def judge_node(state: InterviewState) -> dict:
     image_parts = await asyncio.to_thread(
         image_store.load_image_parts, get_settings().upload_dir, state.interview_id, question.image_ids
     )
-    score = await llm.chat_json(
-        judge_messages(
-            question=question.text,
-            key_points=question.key_points,
-            answer=question.answer,
-            followup_log=question.followup_log,
-            interview_type=state.interview_type,
-            image_parts=image_parts,
-        ),
-        schema=score_schema_for(state.interview_type),
-        temperature=JUDGE_TEMPERATURE,
-    )
+    try:
+        score = await llm.chat_json(
+            judge_messages(
+                question=question.text,
+                key_points=question.key_points,
+                answer=question.answer,
+                followup_log=question.followup_log,
+                interview_type=state.interview_type,
+                image_parts=image_parts,
+            ),
+            schema=score_schema_for(state.interview_type),
+            temperature=JUDGE_TEMPERATURE,
+        )
+    except llm.LLMError as exc:
+        degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
+        # 降级（P2-M9）：评分不可用 → **不评分**（不造一个假分数：能力评估宁可缺、
+        # 不可假）。没有 score 就没有覆盖率可依据 → 追问决策走 DEGRADED 分支直接换题
+        # （explain_decision 的 None 分支），难度自适应也自然停摆（update_difficulty
+        # 对 None 直接返回）。面试继续推进，报告如实标注未评分。
+        logger.warning("评分失败，本题按未评分记录（P2-M9 降级）：%s", exc)
+        degrade.mark(state, degrade.UNSCORED)
+        score = None
     question.score = score
     # 本轮消息本身的图进 chat_history（回放渲染用）；无图时不带键，形状与接入前一致
     add_history(state, "user", state.user_input, image_ids=state.current_images)
@@ -113,13 +127,15 @@ async def judge_node(state: InterviewState) -> dict:
     else:
         state.answered_questions[-1] = question  # 追问重评：覆盖该题最终记录
         updates["answered_questions"] = state.answered_questions
-    # 回放证据（FR-21）：输入 = 本轮回答原文，输出 = 五维/覆盖率，状态变化 = 难度
+    # 回放证据（FR-21）：输入 = 本轮回答原文，输出 = 五维/覆盖率（降级时为空），
+    # 状态变化 = 难度。score 为 None 是合法形态（P2-M9）——回放页按空渲染。
     add_trace(state, TraceEvent.JUDGE, {
         "answer": state.user_input,
-        "score": score.model_dump(),
-        "coverage": round(score.coverage, 4),
+        "score": score.model_dump() if score else None,
+        "coverage": round(score.coverage, 4) if score else None,
         "difficulty": state.difficulty,
         "difficulty_changed": state.difficulty != difficulty_before,
     }, round_no=state.answered_count)
     updates["trace_log"] = state.trace_log
+    updates["degraded_reasons"] = state.degraded_reasons
     return updates

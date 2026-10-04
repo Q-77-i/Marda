@@ -327,12 +327,34 @@ describe("未计入场次的说明（P1-M11 D4 / P2-M3）", () => {
     expect(excludedNotes({ behavioral: 1, no_report: 2 })).toHaveLength(2);
   });
 
-  it("空档案区分「一场没跑」/「只跑了行为面」/「有场次但缺报告」", () => {
+  it("降级未评分的场次也说明（P2-M9：没有分数可画，画进去就是 0 分假信号）", () => {
+    const notes = excludedNotes({ degraded: 1 });
+
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toContain("1 场");
+    expect(notes[0]).toContain("降级模式");
+    expect(notes[0]).toContain("逐题复盘");
+    expect(excludedNotes({ degraded: 0 })).toEqual([]); // 0 不说（不误报）
+  });
+
+  it("三种原因全有时逐条给", () => {
+    expect(excludedNotes({ behavioral: 1, no_report: 2, degraded: 3 })).toHaveLength(3);
+  });
+
+  it("空档案区分「一场没跑」/「只跑了行为面」/「有场次但缺报告」/「全是降级未评分」", () => {
     expect(emptyProfileKind({ behavioral: 2 })).toBe("behavioral-only");
     expect(emptyProfileKind({ no_report: 2 })).toBe("no-report-only");
+    expect(emptyProfileKind({ degraded: 2 })).toBe("degraded-only"); // P2-M9
     expect(emptyProfileKind({ behavioral: 1, no_report: 2 })).toBe("behavioral-only"); // 两种都有时行为面优先
     expect(emptyProfileKind({})).toBe("none");
     expect(emptyProfileKind(undefined)).toBe("none");
+  });
+
+  it("降级态空档案的标题说清「在降级模式下完成，没有分数」", () => {
+    const copy = emptyProfileCopy({ degraded: 1 });
+
+    expect(copy.title).toContain("降级");
+    expect(copy.paragraphs.join("")).toContain("降级模式");
   });
 
   it("空档案的三态文案：标题/正文/CTA 都说得清为什么是空的", () => {

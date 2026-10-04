@@ -166,6 +166,7 @@ export const REASON_LABELS: Record<string, string> = {
   missing_asked: "遗漏点均已追问",
   coverage_ok: "覆盖率达标",
   deepen_limit: "本题深挖已用过",
+  degraded: "评分服务不可用，本题未评分，直接换题", // P2-M9 降级链
 };
 
 export function traceEventLabel(type: string): string {

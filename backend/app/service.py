@@ -58,7 +58,12 @@ def _event(name: str, data: dict) -> dict:
 
 # custom 流事件（graph/rules/stream.py 的领域形状）→ SSE 事件名（P2-M4）。
 # 映射放在 transport 层：节点不认识 SSE 事件名，M5 的语音事件在这里登记即可。
-CUSTOM_EVENTS = {"message_start": "delta_start", "message_delta": "delta_chunk"}
+# degraded（P2-M9）：降级提示，与 message_* 同族（都来自 rules/stream.py 的出口）。
+CUSTOM_EVENTS = {
+    "message_start": "delta_start",
+    "message_delta": "delta_chunk",
+    "degraded": "degraded",
+}
 
 
 def map_custom(payload: Any) -> dict | None:
@@ -351,6 +356,9 @@ class Service:
             "chat_history": history,
             "report_ready": values.get("status") == "finished",
             "stalled": engine_stalled(snapshot),
+            # 降级原因（P2-M9）：SSE 的 degraded 事件同因只发一次（进页面时可能已经错过），
+            # 会话状态是权威——刷新/中途进入也能把横幅补上，不静默（同 stalled 的口径）
+            "degraded_reasons": values.get("degraded_reasons") or [],
         }
 
     async def get_report(self, interview_id: str, user_id: str) -> dict | None:

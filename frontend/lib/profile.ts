@@ -234,7 +234,8 @@ export function weaknessRows(
  * 未计入场次的说明（P1-M11 D4 / P2-M3）：这些场次用户看得见自己跑过，档案里却没有——
  * 空档案与混排时都要说清「为什么这里没有那几场」，不静默。
  *
- * 两种原因：行为面（不进技术能力档案，维度与知识域体系都不同）、报告缺失（没有分数可画）。
+ * 三种原因：行为面（不进技术能力档案，维度与知识域体系都不同）、报告缺失（没有分数可画）、
+ * 降级未评分（P2-M9：评分服务不可用，整场没有分数——画进去就是一条 0 分曲线，是假信号）。
  * 顺序固定（行为面在前）；计数为 0 的不产出条目（不误报），全为 0 时返回空数组（页面不渲染）。
  */
 export function excludedNotes(excluded: Record<string, number> | undefined): string[] {
@@ -247,15 +248,22 @@ export function excludedNotes(excluded: Record<string, number> | undefined): str
       `另有 ${noReport} 场面试已完成，但报告没有生成，没有分数可分析——这些场次仍在仪表盘的面试记录里`,
     );
   }
+  const degraded = excluded?.degraded ?? 0;
+  if (degraded > 0) {
+    notes.push(
+      `另有 ${degraded} 场在降级模式下完成（AI 服务暂时不可用、未评分），没有分数可分析——逐题复盘仍在报告里`,
+    );
+  }
   return notes;
 }
 
 /** 空档案的成因（引导文案不同）：两种原因都有时行为面优先（缺失的报告在说明里单独列出）。 */
 export function emptyProfileKind(
   excluded: Record<string, number> | undefined,
-): "none" | "behavioral-only" | "no-report-only" {
+): "none" | "behavioral-only" | "no-report-only" | "degraded-only" {
   if ((excluded?.behavioral ?? 0) > 0) return "behavioral-only";
   if ((excluded?.no_report ?? 0) > 0) return "no-report-only";
+  if ((excluded?.degraded ?? 0) > 0) return "degraded-only";
   return "none";
 }
 
@@ -281,7 +289,9 @@ export function emptyProfileCopy(excluded: Record<string, number> | undefined): 
         ? "只跑过行为面"
         : kind === "no-report-only"
           ? "有场次，但报告没有生成"
-          : "还没有可分析的面试记录",
+          : kind === "degraded-only"
+            ? "场次在降级模式下完成，没有分数"
+            : "还没有可分析的面试记录",
     paragraphs,
     cta:
       kind === "none"

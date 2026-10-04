@@ -184,6 +184,10 @@ class InterviewState(BaseModel):
     report: dict | None = None
     status: str = "running"  # running / finished
     trace_log: list[dict] = []  # 决策回放事件流（P1-M4 / FR-21）：只增不改，见 add_trace
+    # 降级原因（P2-M9，rules/degrade.py 是唯一写入口）：断 LLM 时各节点确定性兜底留下的
+    # 痕迹，去重累计。空 = 全程正常；有值 ≠ 面试失败——降级是「照常走完 + 如实标注」，
+    # 进报告 payload 供报告页/PDF/能力档案如实交代。默认值兼容旧 checkpoint。
+    degraded_reasons: list[str] = []
 
 
 def add_history(

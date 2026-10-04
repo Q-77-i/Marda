@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from app import llm
+from app.agents import fallbacks
 from app.agents.prompts import (
     ASKED_BEHAVIORAL_EMPTY,
     ASKED_BEHAVIORAL_HEADER,
@@ -28,13 +30,15 @@ from app.domain import (
     INTERVIEW_BEHAVIORAL,
     QUESTION_TYPE_BEHAVIORAL,
 )
-from app.graph.rules import stream
+from app.graph.rules import degrade, stream
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
 from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
 from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
 from app.tools import images as image_store
 from app.tools import question_search
+
+logger = logging.getLogger(__name__)
 
 
 async def _last_answer_attachment(state: InterviewState) -> list[dict]:
@@ -58,17 +62,25 @@ async def _last_answer_attachment(state: InterviewState) -> list[dict]:
 
 
 async def ask_node(state: InterviewState) -> dict:
-    if state.interview_type == INTERVIEW_BEHAVIORAL:
-        question, hits = await _pick_behavioral(state)
-        if question is None:
-            question, hits = await _generate_behavioral(state), 0
-    elif state.phase is Phase.TECH_BASE:
-        question, hits = await _pick_from_bank(state)
-        if question is None:
-            question, hits = await _generate_tech(state), 0
-    else:
-        # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
-        question, hits = await _generate_scenario(state), 0
+    try:
+        if state.interview_type == INTERVIEW_BEHAVIORAL:
+            question, hits = await _pick_behavioral(state)
+            if question is None:
+                question, hits = await _generate_behavioral(state), 0
+        elif state.phase is Phase.TECH_BASE:
+            question, hits = await _pick_from_bank(state)
+            if question is None:
+                question, hits = await _generate_tech(state), 0
+        else:
+            # PROJECT 阶段与首题（WARMUP 之后）：项目深挖题（P1-M4.6-C 前置）
+            question, hits = await _generate_scenario(state), 0
+    except llm.LLMError as exc:
+        degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
+        # 降级链最后一环（P2-M9）：题库没命中 + 生成也不可用 → 内置兜底题。
+        # 不做「重试一次」——断的是整条 LLM 链路，重试只是白等；出题不能停。
+        logger.warning("出题失败，改用内置兜底题（P2-M9 降级）：%s", exc)
+        degrade.mark(state, degrade.QUESTION_FALLBACK)
+        question, hits = fallbacks.fallback_question(state), 0
     # 人味层（P1-M4.7-D）：答错缓冲独立成条（它回应的是上一题），衔接语与题目同一条消息。
     # P2-M4：两条消息都走流式通道——分片先于 delta 到达，纯代码的那条若不发分片，
     # 前端就只能插在流式消息之后，用户会看到顺序倒过来。
@@ -76,14 +88,22 @@ async def ask_node(state: InterviewState) -> dict:
     if buffer:
         stream.begin(buffer)
         add_history(state, "assistant", buffer)
-    text = await stream.speak(
-        [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
-            persona=persona_for(state.interview_type),
-            question=question.text,
-            profile=state.candidate_profile or "（候选人未提供项目背景）",
-        )}],
-        preamble=transition_line(state, question),
-    )
+    preamble = transition_line(state, question)
+    try:
+        text = await stream.speak(
+            [{"role": "system", "content": ASK_BANK_TEMPLATE.format(
+                persona=persona_for(state.interview_type),
+                question=question.text,
+                profile=state.candidate_profile or "（候选人未提供项目背景）",
+            )}],
+            preamble=preamble,
+        )
+    except llm.LLMError as exc:
+        degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
+        # 口吻改写不可用 → 直接发原题面（题面来自题库/内置兜底题，本就不需要 LLM）
+        logger.warning("出题文案生成失败，直接发原题面（P2-M9 降级）：%s", exc)
+        degrade.mark(state, degrade.SCRIPT_FALLBACK)
+        text = await stream.speak_fallback(preamble, question.text)
     add_history(state, "assistant", text)
     state.current_question = question
     if question.question_id:
@@ -103,6 +123,7 @@ async def ask_node(state: InterviewState) -> dict:
         "asked_ids": state.asked_ids,
         "chat_history": state.chat_history,
         "trace_log": state.trace_log,
+        "degraded_reasons": state.degraded_reasons,
     }
     # 首次出题（WARMUP 之后）：进入问答段（行为面单段 / 技术面先项目深挖）
     if state.phase not in (Phase.TECH_BASE, Phase.PROJECT, Phase.BEHAVIORAL):

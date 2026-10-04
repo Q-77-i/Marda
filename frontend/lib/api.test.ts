@@ -22,6 +22,19 @@ describe("dispatcher（事件名 → handler 的分发表）", () => {
     expect(() => send(ev("delta_chunk", { text: "片" }))).not.toThrow();
   });
 
+  it("degraded 事件（P2-M9）带上原因且不误触发别的 handler", () => {
+    // 注册漏了 / 名字写错都会被 dispatcher 静默吞掉（未注册即丢弃）——
+    // 浏览器验收看得见横幅，但看不见「handler 其实没接上」这条，所以在这里钉死
+    const degraded = vi.fn();
+    const delta = vi.fn();
+    const send = dispatcher({ degraded, delta });
+
+    send(ev("degraded", { reason: "评分服务不可用，未评分的题目不计入能力评估" }));
+
+    expect(degraded).toHaveBeenCalledWith({ reason: "评分服务不可用，未评分的题目不计入能力评估" });
+    expect(delta).not.toHaveBeenCalled();
+  });
+
   it("预留的语音事件（M5）既不炸也不误触发别的 handler", () => {
     const meta = vi.fn();
     const delta = vi.fn();

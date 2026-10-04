@@ -62,6 +62,28 @@ def test_没有缺报告场次时不带该键():
     assert build_profile([])["excluded"] == {}
 
 
+def test_降级未评分场次排除在曲线外并计数():
+    """P2-M9：整场未评分（评分服务不可用）没有分数可画——画进去就是一条 0 分曲线。"""
+    row = _row("iv-degraded", started_at="2026-09-02T10:00:00Z", scores={})
+    row["payload"].update({"degraded": True, "degraded_reasons": ["评分服务不可用"]})
+
+    profile = build_profile([row])
+
+    assert profile["sessions"] == []
+    assert profile["excluded"] == {"degraded": 1}
+
+
+def test_部分未评分的降级场次照常计入():
+    """已评的分是真分：只缺几题不排除（报告页会标注未评分条数）。"""
+    row = _row("iv-partial", started_at="2026-09-02T10:00:00Z", overall=3.0)
+    row["payload"].update({"degraded": True, "unscored_count": 1})
+
+    profile = build_profile([row])
+
+    assert [s["interview_id"] for s in profile["sessions"]] == ["iv-partial"]
+    assert profile["excluded"] == {}
+
+
 def test_空输入给零态():
     profile = build_profile([])
 

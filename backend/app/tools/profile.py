@@ -32,9 +32,15 @@ def build_profile(rows: list[dict], *, no_report: int = 0) -> dict:
     """
     sessions, excluded = [], {}
     for row in rows:
-        interview_type = (row.get("payload") or {}).get("interview_type") or INTERVIEW_TECH
+        payload = row.get("payload") or {}
+        interview_type = payload.get("interview_type") or INTERVIEW_TECH
         if interview_type != INTERVIEW_TECH:
             excluded[interview_type] = excluded.get(interview_type, 0) + 1
+            continue
+        if _no_scores(payload):
+            # 降级场次（P2-M9）：整场未评分（评分服务不可用）——没有分数可画，
+            # 画进去就是一条 0 分曲线（假信号）。同「缺场不补零」口径，排除并说明。
+            excluded["degraded"] = excluded.get("degraded", 0) + 1
             continue
         sessions.append(_session(row))
     if no_report > 0:
@@ -45,6 +51,17 @@ def build_profile(rows: list[dict], *, no_report: int = 0) -> dict:
         "weakness_changes": _weakness_changes(sessions),
         "excluded": excluded,  # 未计入的场次（P1-M11 {"behavioral": N} / P2-M3 {"no_report": N}）
     }
+
+
+def _no_scores(payload: dict) -> bool:
+    """整场未评分判据：`degraded` 标记 + 一个分数都没有。
+
+    两个条件都要：只缺 scores 的老 payload 不该被误排除（老报告都有分数）；
+    有分数但部分题未评分的场次照常计入（已评的分是真分，报告页会标注未评分条数）。
+    """
+    return bool(payload.get("degraded")) and not any(
+        float(v or 0) for v in (payload.get("scores") or {}).values()
+    )
 
 
 def _session(row: dict) -> dict:

@@ -12,7 +12,10 @@
 - 失败统一抛 `LLMError`，`retryable` 供 API 层映射 SSE error 事件；
 - **文案类（`chat`）内部走流式**（P2-M4）：逐块回调 `on_delta`，由节点侧透传成 SSE；
   结构化类（`chat_json`）保持非流式（json_object + 整段 Pydantic 校验，无增量语义）；
-- 不做限流/熔断/成本统计（阶段 3，SPEC §3）。
+- **上游保护（P2-M9）**：每次调用都过 `reliability.UpstreamGuard`（按模型分组的
+  并发闸门 + 断路器）——闸门持有期 = 整条上游调用的生命周期（流式是整流，不是建连）；
+  **只有「上游不可用」类失败计入熔断**（内容类失败按定义就是上游活着时出的错）。
+  换模型档位（pro → flash）与换兜底内容**不在这里**——那是调用方（节点）的降级语义。
 
 用法：
     text = await chat([{"role": "user", "content": "出个题"}])
@@ -32,8 +35,9 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from app import observability
+from app import observability, reliability
 from app.config import get_settings
+from app.reliability import UpstreamBusy
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +86,36 @@ def _get_client() -> AsyncOpenAI:
 
         return TracingAsyncOpenAI(**kwargs)
     return AsyncOpenAI(**kwargs)
+
+
+_guards: dict[str, reliability.UpstreamGuard] = {}
+
+
+def _guard_for(model: str | None) -> reliability.UpstreamGuard:
+    """按模型名取（惰性建）保护器：flash / pro 各一组闸门 + 断路器（P2-M9）。
+
+    进程内单例——多 worker 不共享保护状态（SPEC §11 已写明，demo 单进程形态成立）。
+    """
+    settings = get_settings()
+    name = model or settings.deepseek_model
+    guard = _guards.get(name)
+    if guard is None:
+        pro = name == settings.deepseek_pro_model
+        guard = reliability.UpstreamGuard(
+            name,
+            limit=settings.llm_max_concurrency_pro if pro else settings.llm_max_concurrency_flash,
+            acquire_timeout=settings.llm_acquire_timeout_s,
+            threshold=settings.llm_breaker_threshold,
+            cooldown=settings.llm_breaker_cooldown_s,
+            counts_as_failure=_is_retryable,  # 只统计上游类失败，内容类不碰熔断
+        )
+        _guards[name] = guard
+    return guard
+
+
+def reset_reliability() -> None:
+    """清空保护器（测试隔离用：单例状态跨用例会串味）。"""
+    _guards.clear()
 
 
 @retry(
@@ -152,21 +186,29 @@ async def stream_chat(
 
     异常语义：建连失败已由 `_create_stream` 重试；**中途断流不重试**，
     统一抛 `LLMError`（`retryable` 反映错误性质，供前端提示）。
+    闸门/断路器不通过（`UpstreamBusy`）→ 同抛可重试的 `LLMError`，调用方按降级处置。
     """
+    guard = _guard_for(model)
     try:
-        response = await _create_stream(
-            messages, max_tokens=max_tokens, temperature=temperature, model=model
-        )
-        async for chunk in response:
-            if not chunk.choices:
-                continue  # usage 块（choices 为空是正常形态，不是空响应）
-            content = chunk.choices[0].delta.content
-            if content:
-                yield content
-    except LLMError:
-        raise
-    except Exception as exc:
-        raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
+        # 闸门持有期 = 整条流：流式响应体是长连接，只包住建连段等于没限流（P2-M9）
+        async with guard.acquire():
+            try:
+                response = await _create_stream(
+                    messages, max_tokens=max_tokens, temperature=temperature, model=model
+                )
+                async for chunk in response:
+                    if not chunk.choices:
+                        continue  # usage 块（choices 为空是正常形态，不是空响应）
+                    content = chunk.choices[0].delta.content
+                    if content:
+                        yield content
+            except Exception as exc:
+                guard.record_failure(exc)
+                raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
+            else:
+                guard.record_success()
+    except UpstreamBusy as exc:
+        raise LLMError(f"LLM 暂时不可用：{exc}", retryable=True) from exc
 
 
 async def _request(
@@ -177,15 +219,20 @@ async def _request(
     response_format: dict | None = None,
     model: str | None = None,
 ) -> str:
-    """发一次请求并取正文；网络层异常统一转 LLMError。"""
+    """发一次请求并取正文；网络层异常统一转 LLMError，并过保护器（P2-M9）。"""
+    guard = _guard_for(model)
     try:
-        response = await _create(
-            messages,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format=response_format,
-            model=model,
+        response = await guard.run(
+            lambda: _create(
+                messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                response_format=response_format,
+                model=model,
+            )
         )
+    except UpstreamBusy as exc:
+        raise LLMError(f"LLM 暂时不可用：{exc}", retryable=True) from exc
     except Exception as exc:
         raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
     choices = response.choices

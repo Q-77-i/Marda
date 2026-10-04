@@ -43,6 +43,7 @@ class Reason(str, Enum):
     MISSING_ASKED = "missing_asked"  # 有遗漏但遗漏点均已追问过 → 换题
     COVERAGE_OK = "coverage_ok"  # 覆盖达标但深挖已用尽/不可用 → 换题
     DEEPEN_LIMIT = "deepen_limit"  # 行为面：深挖已用过 → 换题（deepen-only 口径，P1-M11）
+    DEGRADED = "degraded"  # 评分不可用（P2-M9 降级链）→ 无评分依据，直接换题
 
 
 class FollowUpRules(BaseModel):
@@ -79,7 +80,7 @@ def unasked_missed(score: ScoreItem, asked_key_points: list[str]) -> list[str]:
 
 
 def explain_decision(
-    score: ScoreItem,
+    score: ScoreItem | None,
     *,
     question_count: int,
     clarify_used: int,
@@ -100,6 +101,10 @@ def explain_decision(
     HR 面被当场对质）。行为面追问的本质是**深挖细节**：单题至多一次深挖，用过即换题。
     """
     rules = rules or FollowUpRules()
+    if score is None:
+        # 降级链（P2-M9）：评分服务不可用 → 没有覆盖率/错误标记可依据。
+        # 追问的任何分支都要读 score，故这里**直接换题**——不猜、不造一个假 score。
+        return Decision.NEXT, Reason.DEGRADED
     if deepen_only:
         if deepen_used < rules.deepen_limit:
             return Decision.DEEPEN, Reason.DEEPEN_OK
@@ -126,7 +131,7 @@ def explain_decision(
 
 
 def decide_follow_up(
-    score: ScoreItem,
+    score: ScoreItem | None,
     *,
     question_count: int,
     clarify_used: int,

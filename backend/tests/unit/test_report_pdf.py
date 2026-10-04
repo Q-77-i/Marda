@@ -209,6 +209,42 @@ def test_旧payload缺新字段也能导出():
     assert "总评。" in _pdf_text(data)
 
 
+def test_降级场次PDF收起分数区并说明():
+    """P2-M9：整场未评分时分数区（均分/雷达/五维/知识域）整块收起——全 0 雷达是假信号。"""
+    payload = _payload()
+    payload.update({
+        "scores": {}, "domain_scores": {}, "weaknesses": [],
+        "degraded": True,
+        "degraded_reasons": ["评分服务不可用，未评分的题目不计入能力评估"],
+        "unscored_count": 2,
+        "total_comment": "",  # 报告文字服务也不可用 → 总评留空
+    })
+    payload.pop("overall", None)
+
+    text = _pdf_text(render_report_pdf(payload))
+
+    assert "本场在降级模式下完成" in text
+    assert "评分服务不可用" in text  # 原因逐条列出
+    assert "本场未生成能力评分" in text
+    assert "五维均分" not in text  # 分数区收起
+    assert "知识域均分" not in text
+    # 题目与作答照旧（复盘与参考答案是确定性内容）——题干在，作答在
+    assert "请说说RAG的检索与重排如何配合？" in text
+    assert "先召回再重排。" in text
+
+
+def test_部分未评分的场次分数照常_只挂说明():
+    """中途才降级：已评题目的分数是真分，照常展示，只标注有几题未评分。"""
+    payload = _payload()
+    payload.update({"degraded": True, "unscored_count": 1})
+
+    text = _pdf_text(render_report_pdf(payload))
+
+    assert "五维均分" in text  # 分数照常
+    assert "本场在降级模式下完成" in text
+    assert "有1题未评分" in text  # 读回文本里 CJK 与数字之间的空格会被吞掉
+
+
 def test_生成时间按东八区渲染():
     """报告落库是 UTC；PDF 是给人看的文档，按产品的东八区钟点渲染（同页面的本地时间）。"""
     assert format_created_at("2026-09-30T06:23:45.123456+00:00") == "2026-09-30 14:23"

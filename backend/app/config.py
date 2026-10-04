@@ -54,6 +54,15 @@ class Settings(BaseSettings):
     # 面试图片通道（P2-M6 FR-26）：图存磁盘、state 只存 id（容器内由 compose 覆盖到 /app/data）
     upload_dir: Path = REPO_ROOT / "data" / "uploads"
 
+    # 上游可靠性（P2-M9）：并发闸门 + 断路器，见 reliability.py / SPEC §3。
+    # DeepSeek 限流是**并发数**不是 QPS（账户级 flash 2500 / pro 500，CLAUDE.md 坑位 3）
+    # ——下面默认值是**自设的保守上限**（demo 形态保护上游 + M11 压测削峰），环境变量可调。
+    llm_max_concurrency_flash: int = 16
+    llm_max_concurrency_pro: int = 4
+    llm_acquire_timeout_s: float = 30.0
+    llm_breaker_threshold: int = 5  # 连续「上游不可用」次数（内容类失败不计）
+    llm_breaker_cooldown_s: float = 30.0
+
     # 面试默认值
     default_question_count: int = 10
 

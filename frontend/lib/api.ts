@@ -40,6 +40,8 @@ export type QuestionEvent = {
 };
 export type DoneEvent = { interview_id: string; report_ready: boolean };
 export type ErrorEvent = { code: string; message: string; retryable?: boolean };
+/** 降级提示（P2-M9）：AI 上游不可用时引擎切确定性兜底——**不是错误**，面试继续。 */
+export type DegradedEvent = { reason: string };
 
 /** 图片通道（P2-M6）：user 条目可带 image_ids（无图时该键不出现，老场次天然兼容）。 */
 export type ChatMessage = { role: "user" | "assistant"; content: string; image_ids?: string[] };
@@ -52,6 +54,11 @@ export type Session = {
   answered_count: number;
   question_count: number;
   chat_history: ChatMessage[];
+  /**
+   * 本场已发生的降级原因（P2-M9）：SSE 的 degraded 事件同因只发一次，会话状态才是权威——
+   * 刷新或中途进入页面时靠它把横幅补上（不许「错过了就一直不知道」）。
+   */
+  degraded_reasons?: string[];
   report_ready: boolean;
   /** 引擎是否卡在失败节点上（重试判据，见 lib/recovery.ts；后端 service.engine_stalled）。 */
   stalled: boolean;
@@ -130,6 +137,14 @@ export type ReportPayload = {
   weaknesses: string[];
   answered_count: number;
   question_count: number;
+  /**
+   * 降级交代（P2-M9）：本场是否发生过降级（AI 上游不可用 → 确定性兜底）、降级了什么、
+   * 有几题未评分。整场未评分时 `scores` 为空对象且无 `overall`——**空 ≠ 0 分**，
+   * 前端按「未评分」渲染，不许显示 0 分（缺数据与得零分是两件事）。
+   */
+  degraded?: boolean;
+  degraded_reasons?: string[];
+  unscored_count?: number;
   total_comment: string;
   per_question_comments: PerQuestionComment[];
   study_advice: StudyAdvice[];
@@ -176,6 +191,8 @@ export type SSEHandlers = {
   delta?: (event: DeltaEvent) => void;
   question?: (event: QuestionEvent) => void;
   done?: (event: DoneEvent) => void;
+  /** 降级提示（P2-M9）：同因去重由后端做，前端按需展示（横幅，可累计多条） */
+  degraded?: (event: DegradedEvent) => void;
   error?: (event: ErrorEvent) => void;
 };
 

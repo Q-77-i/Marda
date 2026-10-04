@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步（阶段 3 → 二期）**：P2-M8 端到端验收 + 文档同步，随后波 3 企业级收尾（限流/重试/熔断/降级链 → CI+MCP+成本归因 → PG 迁移与部署）。**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步**：波 3 企业级收尾（P2-M9 可靠性 ✅ 已完成 → P2-M10 CI + MCP + 成本归因 → P2-M11 PG 迁移与部署上云一次切）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -36,7 +36,7 @@ marda/
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
 │   │   └── db.py                 # 业务库六表（questions / question_sources / users / interviews / answers / reports）
 │   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import，P1-M12）
-│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice + eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate
+│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice / smoke_vision / smoke_e2e（P2-M8 组合场）/ smoke_degraded（P2-M9 断 LLM）+ eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate / eval_judge_vision
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
 │   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
@@ -68,9 +68,31 @@ marda/
 - 两个函数：
   - `chat(messages, *, max_tokens, temperature, model, on_delta) -> str`：文案类（开场/出题/追问/结束语）。**内部走流式**（P2-M4）：`stream=True` + `stream_options={"include_usage": True}`（usage 随末帧单发，**Langfuse 成本归因的硬前提**），逐块回调 `on_delta`（默认 None = 不回调，evals/脚本不受影响）。空输出重请求 1 次**只在一个字都没吐时**——已吐字的重发会把同一段说两遍
   - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分/提炼/报告），**非流式**（`json_object` + JSON Schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次）——结构化输出没有增量语义，展示类才有
-- 重试：429/5xx tenacity 指数退避（阶段 1 只做重试，限流/熔断阶段 3）。**流式的重试只覆盖建连段**（建立连接 + 拿到响应头）：一旦开始吐字，重试就是重复输出，中途断流直接抛（用户侧「重试」= 重跑失败节点，§7）。
+- 重试：429/5xx tenacity 指数退避。**流式的重试只覆盖建连段**（建立连接 + 拿到响应头）：一旦开始吐字，重试就是重复输出，中途断流直接抛（用户侧「重试」= 重跑失败节点，§7）。
 - 调用点全部走 `LLMError` 自定义异常 → API 层转 SSE error 事件。
 - **单一实现纪律**：展示类文案只有 `chat` 一条路径——流式与非流式若各写一套，关 thinking / 空输出重请求 / 错误映射三处会各自漂移（`overall_score` 三处消费的教训同款）。
+
+### 上游保护与降级链（P2-M9）
+
+三件套：**并发闸门 + 断路器 + 降级链**（原语在 `reliability.py`，接线在 `llm.py`，降级语义在节点层）。
+
+- **并发闸门**：按模型（flash / pro）各一个计数信号量 + 有界等待（默认 30s），超时抛 `UpstreamBusy` → 可重试 `LLMError`。DeepSeek 的限流维度是**并发数**不是 QPS（账户级 flash 2500 / pro 500），故形态是信号量而非速率桶；默认上限（flash 16 / pro 4）是**自设的保守值**，env 可调。**持有期 = 整条上游调用的生命周期**——流式响应体是长连接，只包住建连段等于没限流（单测钉死：分片到达时仍占着槽）。
+- **断路器**（每模型一个）：连续失败达阈值（默认 5）→ 开路（冷却 30s 内快速失败、不碰上游）→ 半开只放 **1 个**探针 → 成功闭合 / 失败重新开路。**只统计「上游不可用」类失败**（连接/超时/429/5xx，即 `retryable=True`）——内容类失败（JSON 校验、空输出、400/401）是上游活着时出的错，计入会误开熔断：**DeepSeek 偶发非法 JSON 是本项目已知抖动，把它算进熔断就会让正常场次被打成降级**。
+- **降级链**（判定与内容都在节点，`graph/rules/degrade.py` 是唯一标记出口）：v4-pro → flash（报告官）→ **确定性兜底**——
+
+| 节点 | 断 LLM 时的确定性兜底 |
+| --- | --- |
+| 开场 / 收尾三节点 / 反问作答 | 固定文案（模板插槽与 LLM 版同源：岗位/题量/时长/人称），`speak_fallback` 续在同一气泡里 |
+| 出题（题库题） | 直接发原题面（题面本就不需要 LLM）+ 代码衔接语 |
+| 出题（生成题：项目深挖/技术/行为） | **内置兜底题**（`agents/fallbacks.py`，自写通用题、不进题库、不涉语料红线；自带 key_points，模型恢复后照常可评分） |
+| 评分 | **不评分**：`score=None`（不造分数——能力评估宁可缺、不可假）；追问决策走 `Reason.DEGRADED` 直接换题，难度自适应自然停摆 |
+| 自我介绍提炼 | 跳过（只影响后续出题的个性化） |
+| 报告文字 | 三段式：v4-pro → flash → 无文字（总评/点评/建议留空）；**分数与逐题记录是纯代码聚合，照常产出** |
+
+- **降级 ≠ 错误**：`retryable=True` 的失败走降级（面试继续、发 `degraded` 事件、进 `degraded_reasons`）；`retryable=False`（内容类/配置类）仍抛 `LLMError` → SSE error → 用户重试（`degrade.reraise_if_content` 是这条分界，重试能治好的不许静默降级）。
+- **不产假信号**：整场未评分时报告 payload **不落 `scores`/`overall`**（缺数据 ≠ 0 分，同 §4.11「缺场不补零」口径）——报告页/PDF 收起分数区、能力档案按 `excluded.degraded` 排除并说明；部分未评分时分数照常展示，只标注未评分的题数。
+- **如实交代三处**：SSE `degraded` 事件（实时横幅）+ `GET /interviews/{id}` 的 `degraded_reasons`（刷新/中途进入也有横幅，不静默）+ 报告 payload 的 `degraded`/`degraded_reasons`/`unscored_count`（报告页与 PDF 的降级说明）。
+- **已知边界**：闸门与熔断状态是**进程内存**，多 worker 不共享（demo 单进程形态成立，同 §7 `engine_stalled` 的已知盲区口径）；**降级只覆盖 LLM**——Qdrant/嵌入/rerank 故障仍会卡出题（如实记入「已知不覆盖」）；不做 API 侧按用户限流，不做降级场次的事后补评分。
 
 ## 4. 面试状态机（LangGraph）
 
@@ -540,7 +562,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | POST /api/interviews/{id}/messages | `{content, images?}`（images = 已上传的 image_id 列表，**≤3**；文字仍必填——图是回答的补充证据，不单独成答） | SSE 流（见事件表）；带图时评分/追问/生成题/收尾反问的 LLM 调用会收到图附件（§7 图片通道） |
 | POST /api/interviews/{id}/images | multipart `file`（PNG/JPEG/WebP，**按 magic bytes 判定**不信任 Content-Type；≤8MB；每场 ≤30 张） | **201** `{image_id}`（服务端 uuid4 hex）；不存在/他人 404、已结束 409、非图片 400、超限 413 |
 | GET /api/interviews/{id}/images/{image_id} | — | 图片字节（`nosniff` + `private` 缓存头）；他人/不存在/坏 id 一律 404；**已结束场次仍可取**（回放要显示图） |
-| GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled`；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
+| GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled` + `degraded_reasons`（P2-M9：本场已发生的降级原因——SSE 同因只发一次，刷新/中途进入靠它补横幅）；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
 | GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传；**行为面报告直接返回空 `groups`**（P1-M11 D5，不做无效检索） |
@@ -564,7 +586,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | delta | `{text}` | 面试官消息**终稿全文**（语义未变）：兼三职——前端用它对账（替换累积文本）、失败半截的清算依据、旧前端兼容（不认识前两个事件的客户端照常渲染） |
 | question | `{index, question_id, domain, difficulty}` | 新题提示（只在新题时发一次：追问/评分重传同题不发；生成题无 question_id 不发） |
 | done | `{interview_id, report_ready}` | 面试结束 |
-| error | `{code, message, retryable}` | 流内错误（LLM 失败 / 步数超限）：**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义）。**流式下多一条口径**：错误时未收敛到终稿的气泡按「从未落 checkpoint」丢弃（节点抛错则状态不提交），重试会重新流一遍 |
+| degraded | `{reason}` | **降级提示**（P2-M9）：AI 上游不可用、引擎已切确定性兜底——**不是错误**，面试继续、输入不清空。同因去重只发一次（状态里也只留一条）；前端渲染警示横幅，不弹错误态 |
+| error | `{code, message, retryable}` | 流内错误（**只有「重试能治好」的内容类失败 / 配置类 / 步数超限**——上游不可用类走 degraded 而非 error，见 §3 降级链）；**HTTP 仍是 200、场次仍有效**，图停在失败节点上——客户端「重试」= 重发同一文本，从该节点续跑（已入账的回答不重复计分；集成测试 `test_节点失败后重发同一文本_从断点续跑不重复计分` 钉死语义）。**流式下多一条口径**：错误时未收敛到终稿的气泡按「从未落 checkpoint」丢弃（节点抛错则状态不提交），重试会重新流一遍 |
 | ~~asr_partial / tts_chunk~~ | — | **未采用**（P2-M4 预留、P2-M5 决定不用）：ASR 需要双向（SSE 是单向的）、TTS 需要独立于面试流的生命周期 → M5 改走 `WS /api/asr` 与 `POST /api/tts`。名字留在表里做记录；前端分发层「未注册事件名静默丢弃」的机制本身不变（`lib/api.test.ts` 钉死） |
 
 **`stalled`（P1-M4.7 后续）**：`true` = 图卡在失败节点上（`next` 指向该节点且无中断载荷），区别于正常停在 `pause` 中断点（`next == ("pause",)` 且 tasks 带 interrupts）；已结束（`next` 为空）恒为 `false`。它是**服务端给的**判据，不是让前端从「末条消息是不是 assistant」这类外部特征反推——报告节点失败恰恰也表现为「末条是 assistant」，猜错就是面试永久卡死。
@@ -702,7 +725,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（733 个，不需要任何密钥）· `cd frontend && pnpm test`（232 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（772 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 ## 11. 风险注意点（实现时强制）
 
@@ -719,8 +742,10 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 11. 流式（§3/§7）：**首块之后不重试**（已吐字重发 = 同一段说两遍）；展示类文案只走 `llm.chat` 一条路径（另起一套非流式实现会在关 thinking / 空输出重试 / 错误映射三处漂移）；**分片拼接 == 落 `chat_history` 的那条消息**——节点侧只经 `stream.speak()/begin()` 出口，别在节点里自己拼前缀（拼错 = 前端收终稿时文字跳变）；`include_usage` 不能摘（摘了 Langfuse 成本读回恒 0）
 12. 语音（§7 语音通道）：**音频不落盘、不落库、不写日志**（只在内存里过一遍）；ASR 的 token 走 query（浏览器 WS 不能带请求头）——会进 nginx access log，demo 接受、上线前要换一次性票据；**两把火山 key 不通用**（方舟 Bearer / 豆包语音 X-Api-Key），失败文案按状态码给出路（401 = key 拿错产品线、403 = 服务没开通）；edge-tts 是外部免费服务（微软端点），403 多为版本旧 → 升级 `edge-tts`，真不可用走三档降级；上游协议是**二进制帧**，改版本/换端点前先跑探针（`handshake_error_text` 已把三种握手失败形态分开报）
 13. 图片（§7 图片通道）：**图独立成消息附件、不改任何既有 prompt 模板**——无图调用的消息列表必须与接入前**逐字一致**（`judge_messages` 缺省路径单测钉死，评分基线与评测门禁靠它零漂移）；`state`/`checkpoint` **只存 image_id**（图字节进 checkpoint 是序列化爆炸坑）；内容块必须是 `{"type": ...}` 对象（DeepSeek 对裸字符串 422）；**图文件缺失/损坏 → 跳过 + warning、退化纯文字**，绝不因图丢文件拒答；**图必须落盘**（面试内容组成部分，与语音「不落盘」刻意相反——否则回放丢证据）；上传走 nginx，`client_max_body_size`（10m）必须 ≥ 后端上限（8MB），否则前端拿到的是 HTML 413 而不是业务文案
-14. checkpoints 库（WAL + macOS 绑定挂载）的访问纪律：**宿主机「只读」也会 malformed**（P1-M5 记的是写坏，读同样中招）——凡碰它的脚本（如 `eval_judge_vision.py`）**一律在容器内跑**，或先停 api 再动；真库 2026-10-04 发现并修复了历史损坏页（波及 4 个无主孤儿线程、12 场真实场次完好；修复前原件作 `bak-damaged-*` 保留至 M8 收尾）
+14. checkpoints 库（WAL + macOS 绑定挂载）的访问纪律：**宿主机「只读」也会 malformed**（P1-M5 记的是写坏，读同样中招）——凡碰它的脚本（如 `eval_judge_vision.py`）**一律在容器内跑**，或先停 api 再动；真库 2026-10-04 发现并修复了历史损坏页（波及 4 个无主孤儿线程、12 场真实场次完好；修复前原件作 `bak-damaged-*`，**已于 P2-M8 收尾（验收全过、修复被证明稳定）经用户确认删除**）
 15. 摄像头（§9 面试间，P2-M7 FR-27）：**帧不上传是结构性约束**——画面只许经 `video.srcObject` 进 DOM，谁都不许加 canvas 抓帧 / 把帧发出去的代码路径（浏览器验收用 CDP Network 域钉死：画面播放期间零新增请求）；`stopStream` 是收摊唯一出口（关闭 / 卸载 / 面试结束三处共用，漏一处 = 摄像头灯常亮）；取流约束用 `ideal` 不用 `exact`（exact 给不支持的设备抛 OverconstrainedError）、`audio` 显式 false（只开画面不偷开麦）。**浏览器验收的权限注入有顺序要求**：同一浏览器会话里先授权过再 `Browser.setPermission(denied)` **不生效**（探针实测）——拒绝分支必须全新进程先 deny；假摄像头用 `--use-fake-device-for-media-stream`（本机可用，与 M5 音频假设备的不生效形成对照）
+
+16. 上游保护与降级链（P2-M9，§3）：**断路器只计「上游不可用」类失败**（`retryable=True`）——内容类失败（JSON 校验 / 空输出 / 4xx）计入会把已知的偶发非法 JSON 误判成上游故障，正常场次被打成降级；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口，不许单独写一处 = 静默降级），且**未评分不产 0 分**（报告 payload 不落 `scores`/`overall`，能力档案按 `excluded.degraded` 排除并说明）；降级内容全部是确定性兜底（固定文案 / 原题面 / 内置兜底题 / 不评分），**不许在其中调 LLM**（最后一环依赖任何外部服务就不叫兜底）；闸门与熔断状态在**进程内存**（多 worker 不共享，demo 单进程成立）
 
 ---
 
@@ -730,6 +755,8 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-04 | P2-M9 可靠性（上游保护 + 降级链） | §3 新增「上游保护与降级链」小节（闸门/熔断/降级矩阵/不产假信号） · §7 SSE 事件表加 `degraded` + chat 端点补 `degraded_reasons` + error 行补分界 · §10 计数（pytest 733→772、vitest 239→249） · §11 新增风险 16 · §2 scripts 行补 `smoke_degraded` |
+| 2026-10-04 | P2-M8 端到端验收 + 文档同步 | §1 下一步改波 3（波 2 收官）· §2 scripts 行补 `smoke_vision` / `smoke_e2e` / `eval_judge_vision` · §10 计数勘误（vitest 232 → 239）+ 组合场口径 · §11 风险 14 补备份去向（已删） |
 | 2026-10-02 | P2-M5 语音面试（FR-24） | §2 补 voice/asr/tts 与 `public/asr-worklet.js` · §7 新增「语音通道」（WS 契约 / 两把火山 key 不通用 / 三档降级 / dev 直连口径）+ 端点表两行 + `asr_partial`/`tts_chunk` 标为未采用 · §9 面试页语音作答与语音模式 · §10 计数 · §11 风险 12 |
 | 2026-10-02 | P2-M4 模态层 + 真 token 流 | §3 `chat` 改流式（重试只覆盖建连段 / 单一实现纪律） · §7 事件表补 `delta_start`/`delta_chunk` 与语音事件预留 + 工程要求改写（custom 流）+ 流式不变量 · §9 流式与打字机并存 · §10 计数 · §11 风险 11 |
 | 2026-10-02 | P2-M3 前端小修包 | §9 补窄屏顶栏口径 · §4.11 `excluded.no_report` 与空态三态 · §4.12 D7 复核（私有题不开放行为面域，接口层断言） |

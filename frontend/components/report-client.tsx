@@ -17,6 +17,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
 import { DIMENSIONS, domainLabel, isBehavioral, reportLabel } from "@/lib/constants";
+import { reportDegradedNotice } from "@/lib/degrade";
 import { downloadBlob, reportFileName } from "@/lib/download";
 import { commentLabels, completedCount, formatScore, formatTime } from "@/lib/format";
 
@@ -100,6 +101,10 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
   // 老报告没有 dims → 退回技术面常量
   const dims = report.dims?.length ? report.dims : DIMENSIONS;
   const behavioral = isBehavioral(report.interview_type);
+  // 降级态（P2-M9）：整场未评分时报告端不落 scores（**空 ≠ 0 分**）——分数区整块收起，
+  // 页头挂说明；部分未评分（degraded 但仍有分数）照常展示，只多一行提示
+  const hasScores = Object.keys(report.scores ?? {}).length > 0;
+  const degradedNotice = reportDegradedNotice(report);
   // 总分以后端为准（P1-M10 D1：与能力档案曲线同一个数）；FR-19 之前的历史 payload
   // 没有 overall 字段 → 按同一公式（各维等权均值）现算兜底
   const overall =
@@ -150,7 +155,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           description={report.position}
           right={
             <>
-              <Stat label="五维均分" value={formatScore(overall)} suffix="/ 5" />
+              {hasScores && <Stat label="五维均分" value={formatScore(overall)} suffix="/ 5" />}
               <Stat
                 label="完成题量"
                 value={`${completedCount(report.answered_count, report.question_count)}`}
@@ -160,6 +165,10 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </>
           }
         />
+
+        {/* 降级交代（P2-M9）：原因逐条列出——用户必须知道哪些内容不是 AI 产出的。
+            文案在 lib/degrade.ts（页面分支进不了 vitest，做成数据才测得到） */}
+        {degradedNotice && <StatusBanner tone="warning">{degradedNotice}</StatusBanner>}
 
         {exportError ? (
           <StatusBanner
@@ -179,6 +188,8 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           </StatusBanner>
         ) : null}
 
+        {/* 未评分（P2-M9 降级）：整块分数区收起——全 0 雷达是假信号，不是「得 0 分」 */}
+        {hasScores && (
         <div className={cn("grid gap-6", !behavioral && "lg:grid-cols-2")}>
           <Card>
             <CardHeader>
@@ -246,17 +257,20 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </Card>
           )}
         </div>
+        )}
 
-        <Card>
-          <CardHeader>
-            <CardTitle>总评</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">
-              {report.total_comment}
-            </p>
-          </CardContent>
-        </Card>
+        {report.total_comment ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>总评</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">
+                {report.total_comment}
+              </p>
+            </CardContent>
+          </Card>
+        ) : null}
 
         {/* 逐题复盘与学习建议各占一行：两者长度差一个量级，并排会让短的一侧空一大片 */}
         <Card>
@@ -277,6 +291,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           </CardContent>
         </Card>
 
+        {report.study_advice.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle>学习建议</CardTitle>
@@ -296,6 +311,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </ul>
           </CardContent>
         </Card>
+        )}
 
         {/* 学习推荐（FR-20）：短板域 → 该域新材料。跟着「学习建议」走（建议给方向、推荐给题），
             独立请求 + 懒加载；跳学习页时带上本场次，页面上不会串到别的场次去。

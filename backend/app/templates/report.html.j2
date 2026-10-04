@@ -53,6 +53,15 @@
   .stat .v { font-size: 14pt; font-weight: 600; }
   .stat .v em { font-size: 8.5pt; font-weight: 400; font-style: normal; color: #6a7280; }
 
+  /* ---- 降级提示（P2-M9）：与前端 StatusBanner 的警示色同源（#ba7917 家族） ---- */
+  .notice {
+    border: 1px solid #e8d5ae; background: #fdf7ea; border-radius: 6px;
+    padding: 9px 12px; margin-bottom: 12px;
+  }
+  .notice-title { font-size: 9.5pt; font-weight: 600; color: #ba7917; }
+  .notice-list { margin: 4px 0 0; padding-left: 16px; font-size: 9pt; color: #6a7280; }
+  .notice-note { margin: 5px 0 0; font-size: 9pt; }
+
   /* ---- 卡片 ---- */
   .card { border: 1px solid #e3e7ea; border-radius: 6px; padding: 12px 14px; margin-bottom: 12px; }
   .cols { display: table; width: 100%; border-collapse: separate; border-spacing: 0; }
@@ -140,10 +149,12 @@
   <div class="brand">码达 Marda · 能力评估报告</div>
   <h1>{{ position }}</h1>
   <div class="stats">
+    {% if has_scores %}
     <div class="stat">
       <span class="k">五维均分</span>
       <span class="v">{{ overall }}<em> / 5</em></span>
     </div>
+    {% endif %}
     <div class="stat">
       <span class="k">完成题量</span>
       <span class="v">{{ answered_count }}<em> / {{ question_count }}</em></span>
@@ -157,6 +168,23 @@
   </div>
 </header>
 
+{#- 降级交代（P2-M9）：本场在降级模式下完成，原因逐条列出——不许让用户以为这就是全部 -#}
+{% if degraded %}
+<section class="notice">
+  <div class="notice-title">本场在降级模式下完成</div>
+  <ul class="notice-list">
+    {% for reason in degraded_reasons %}<li>{{ reason }}</li>{% endfor %}
+  </ul>
+  {% if not has_scores %}
+  <p class="notice-note">本场未生成能力评分：分数与雷达图留空，逐题复盘与参考答案仍完整。</p>
+  {% elif unscored_count %}
+  <p class="notice-note">本场 {{ answered_count }} 题中有 {{ unscored_count }} 题未评分，分数与曲线只统计已评分的题目。</p>
+  {% endif %}
+</section>
+{% endif %}
+
+{#- 未评分（P2-M9 降级）：整张分数卡收起——空雷达/全 0 五维是假信号，不是「得 0 分」 -#}
+{% if has_scores %}
 <section class="card">
   {#- 行为面（P1-M11）没有知识域：右栏整个收起，维度与雷达同栏展示（不留半张空白） -#}
   {% if has_domains %}
@@ -213,11 +241,14 @@
   {% endif %}
   {% endif %}
 </section>
+{% endif %}
 
+{% if total_comment %}
 <section class="card">
   <h2>总评</h2>
   <p class="prose">{{ total_comment }}</p>
 </section>
+{% endif %}
 
 {% if questions %}
 <section class="card">

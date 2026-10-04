@@ -176,17 +176,19 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 
 ```bash
 cd backend
-uv run pytest -q                              # 733 个测试（不需要任何密钥）
+uv run pytest -q                              # 772 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
 SMOKE_QUESTION_COUNT=10 uv run python scripts/smoke_api.py   # 长场次：看同域成块、难度曲线与结束陈词
 uv run python scripts/smoke_voice.py          # 语音通道：TTS 合成 → 喂回 ASR → 转写与原文对齐（需语音 key）
 uv run python scripts/smoke_vision.py         # 图片通道：合成截图 → 上传 → 带图一场跑通（收尾回答须引用图内标识串）
+uv run python scripts/smoke_e2e.py            # 组合场（P2-M8）：一场里语音进（TTS→WS 转写→作答）/语音出/截图/文字全跑通（需语音 key）
+uv run python scripts/smoke_degraded.py       # 降级链（P2-M9）：把 LLM 打断（本地假上游一律 503），一场面试仍能走完且如实标注（不需要密钥）
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 239 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 语音·摄像头·面试间判据 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 249 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 语音·摄像头·面试间判据 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -240,6 +242,8 @@ docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 | P2-M5 | 语音面试（FR-24）：`WS /api/asr` 中继豆包流式识别 + `POST /api/tts`（edge-tts）；转写可编辑、语音/文字双通道随时切 |
 | P2-M6 | 视觉通道（FR-26）：代码截图随回答上传，评分官看图（`deepseek-flash` 视觉）、生成题结合上一题的图；图独立成消息附件、不改任何 prompt 模板 |
 | P2-M7 | 摄像头 UI 模拟（FR-27）+ 面试间整合：舞台卡片（面试官人像框+状态徽标 ｜ 我 等大并列）+ 控制条；画面帧不上传、不落库、AI 不看；纯前端、后端零改动 |
+| P2-M8 | 端到端验收 + 文档同步：组合场 smoke（`smoke_e2e.py`——语音进/语音出 + 截图 + 文字在**同一场次**跑通）+ 浏览器组合验收（闭合 M7 两条未覆盖面：结束即关画面、SPA 卸载收摊） |
+| P2-M9 | 可靠性（`reliability.py` 并发闸门 + 熔断 → `llm.py` 三条路径接线）+ **降级链**：断 LLM 时开场/出题/评分/报告全部走确定性兜底，面试照常走完并**如实标注**（未评分不产 0 分、档案排除）。验收 = `smoke_degraded.py`（假上游 503 下跑完整场） |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 

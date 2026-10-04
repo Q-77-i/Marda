@@ -264,6 +264,9 @@ function JudgeSection({ event, dims }: { event: TraceEvent; dims: Dim[] }) {
       label="评分"
       chips={
         <>
+          {/* 降级（P2-M9）：评分服务不可用 → 本题 score 为空。回放忠实：显示「未评分」
+              而不是一个空白的评分小节（missing 与 0 分是两件事） */}
+          {!score && <Badge variant="outline">未评分（AI 服务不可用）</Badge>}
           {coverage !== null && (
             <Badge variant="outline" className="tabular-nums">
               覆盖率 {coverage}%

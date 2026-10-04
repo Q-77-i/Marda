@@ -236,6 +236,10 @@ def _build_context(payload: dict, created_at: str) -> dict:
     behavioral = interview_type == INTERVIEW_BEHAVIORAL
     dims = tuple(dims_for(interview_type))
     answered, total = payload.get("answered_count") or 0, payload.get("question_count") or 0
+    # 降级场次（P2-M9）：整场未评分时报告端不落 scores（缺数据 ≠ 0 分）——PDF 据此收起
+    # 分数区（雷达/五维/总分），只留题干、作答与复盘；`unscored_count > 0` 但仍有分数时
+    # 分数照常展示，只在页头挂一条说明。
+    has_scores = bool(scores)
     weaknesses = set(payload.get("weaknesses") or [])
     # 总分走 aggregate.overall_score 单一来源（P1-M10 D1）：新 payload 直接取报告端算好的值，
     # 老 payload 用同一函数现算（_clamp 是对存量脏数据的防御，正常数据上是恒等）
@@ -249,6 +253,10 @@ def _build_context(payload: dict, created_at: str) -> dict:
         "font_stack": FONT_STACK,
         "position": payload.get("position") or "",
         "overall": overall,
+        "has_scores": has_scores,
+        "degraded": bool(payload.get("degraded")),
+        "degraded_reasons": list(payload.get("degraded_reasons") or []),
+        "unscored_count": int(payload.get("unscored_count") or 0),
         "answered_count": answered,
         "question_count": total,
         "created_at": format_created_at(created_at),

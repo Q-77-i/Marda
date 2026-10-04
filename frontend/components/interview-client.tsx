@@ -40,6 +40,7 @@ import {
 import { openCamera } from "@/lib/camera-client";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { interviewerChip } from "@/lib/interview-room";
+import { degradedNotice } from "@/lib/degrade";
 import { progressLabel } from "@/lib/format";
 import { compressImage, uploadImage } from "@/lib/image-client";
 import { reconcile, type PendingTurn } from "@/lib/recovery";
@@ -92,6 +93,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [expired, setExpired] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /* 降级原因（P2-M9）：服务端去重发出（同因只发一次），这里按序累积 */
+  const [degraded, setDegraded] = useState<string[]>([]);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [draft, setDraft] = useState("");
   /* 语音通道（P2-M5 FR-24）：默认关，一键开启；记忆在 localStorage（不可用时仅本次有效） */
@@ -266,6 +269,13 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setAnswered(session.answered_count);
       setTotal(session.question_count);
       setReadonly(session.status === "finished");
+      // 降级原因以会话状态为准（P2-M9）：刷新/中途进入也能看到横幅；
+      // 与实时事件按序去重合并（事件可能先到）
+      setDegraded((prev) => {
+        const merged = [...(session.degraded_reasons ?? [])];
+        for (const reason of prev) if (!merged.includes(reason)) merged.push(reason);
+        return merged;
+      });
     },
     [nextId],
   );
@@ -495,6 +505,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     [],
   );
 
+  const degradedBadge = degradedNotice(degraded);
+
   const handlers: SSEHandlers = {
     // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算
     delta_start: () => applyAction(streamBuf.start()),
@@ -522,6 +534,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setTotal(m.question_count);
     },
     done: () => setReportReady(true),
+    /// 降级提示（P2-M9）：不是错误、不清空输入——只把原因挂上横幅，面试继续
+    degraded: ({ reason }) => setDegraded((prev) => (prev.includes(reason) ? prev : [...prev, reason])),
   };
 
   /** pending 同时写 ref（submit 内联闭包要读）与 state（渲染要读）。 */
@@ -829,6 +843,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
       <div className="border-t bg-background">
         <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:px-6">
+          {degradedBadge && <StatusBanner tone="warning">{degradedBadge}</StatusBanner>}
           {notice && <StatusBanner>{notice}</StatusBanner>}
 
           {error && (
