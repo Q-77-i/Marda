@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步**：波 3 企业级收尾（P2-M9 可靠性 ✅ 已完成 → P2-M10 CI + MCP + 成本归因 → P2-M11 PG 迁移与部署上云一次切）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步**：波 3 企业级收尾（P2-M9 可靠性 ✅ → **P2-M10 CI + MCP 题库查询 + 成本归因 ✅ 已完成**（CI 见 §10、MCP 见 §7「MCP 通道」、成本读回见 §3 与 `scripts/cost_report.py`）→ P2-M11 PG 迁移与部署上云一次切）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -32,11 +32,12 @@ marda/
 │   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）/ asr（火山 v3 二进制协议）/ tts（edge-tts，P2-M5）
 │   │   ├── templates/            # report.html.j2（PDF 模板）
 │   │   ├── report_pdf.py         # 报告 PDF 渲染（jinja2 + weasyprint + 手绘雷达 SVG，P1-M8）
+│   │   ├── mcp_server/           # MCP 题库查询 server（P2-M10，**协议代码唯一住所**：server.py 三工具 + __main__.py stdio 入口）
 │   │   ├── security.py           # 密码哈希（scrypt）与 JWT（P1-M2）
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
 │   │   └── db.py                 # 业务库六表（questions / question_sources / users / interviews / answers / reports）
 │   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import，P1-M12）
-│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice / smoke_vision / smoke_e2e（P2-M8 组合场）/ smoke_degraded（P2-M9 断 LLM）+ eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate / eval_judge_vision
+│   ├── scripts/                  # smoke_llm / smoke_graph / smoke_api / smoke_voice / smoke_vision / smoke_e2e（P2-M8 组合场）/ smoke_degraded（P2-M9 断 LLM）/ smoke_mcp（P2-M10 题库 MCP）+ eval_build_golden / eval_retrieval_run / eval_ragas_context / eval_judge_golden / eval_judge_run / eval_judge_gate / eval_judge_vision / cost_report（P2-M10 按场次读回成本）
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
 │   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
@@ -50,12 +51,13 @@ marda/
 │   ├── parsed/                   # 解析产物（gitignore）
 │   ├── raw/                      # 开源语料原仓（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
+├── .github/workflows/ci.yml      # CI（P2-M10）：测试 / lint / build / 语料入库守卫，见 §10
 ├── docker/
 │   └── nginx.conf                # 唯一入口：/api → api，其余 → web（本地与阶段 3 同构）
 └── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
-- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、pyjwt（P1-M2）、python-multipart（P1-M7 上传）、weasyprint + jinja2（P1-M8 PDF）、langfuse==4.9.1（可观测，P1-M4）、edge-tts + websockets（语音，P2-M5）、sqlite3（内置）；评测依赖（ragas 等）在 dev 组，容器 `uv sync --no-dev` 不进镜像（§4.13）
+- 后端依赖：fastapi、uvicorn、sse-starlette、langgraph==1.2.11、langchain==1.4.0、langgraph-checkpoint-sqlite==3.1.1、openai（SDK）、pydantic、pydantic-settings、tenacity、httpx、qdrant-client、pypdf、pyjwt（P1-M2）、python-multipart（P1-M7 上传）、weasyprint + jinja2（P1-M8 PDF）、langfuse==4.9.1（可观测，P1-M4）、edge-tts + websockets（语音，P2-M5）、sqlite3（内置）；评测依赖（ragas 等）与 **mcp>=2,<3**（P2-M10 题库 MCP，**可选组件**）在 dev 组，容器 `uv sync --no-dev` 不进镜像（§4.13 / §7 MCP 通道）
 - 前端依赖：next@15、react 19、tailwindcss v4、shadcn/ui（@base-ui/react）、framer-motion、recharts、tw-animate-css、lucide-react
 - 阶段 1 存储：**SQLite 单文件**（业务库 + LangGraph checkpointer 两个文件），Qdrant 单容器（向量）；PG 阶段 2/3 引入
 - 嵌入：**本地 BGE-M3 独立容器**（M3 起，`backend/embedding_service/`，torch 不进 api 镜像）；SiliconFlow 只留 rerank
@@ -644,6 +646,30 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
   引用图内独有信息」的比率；**连续 3 场带图场次零引用 → 建议把决策①降级为「评分官不看图」**，
   由数据支撑、由人拍板。
 
+### MCP 通道：题库查询 server（P2-M10）
+
+p2-plan 里「仅 1 个 MCP server 作展示点」的落地：把**题库查询**能力按 MCP 暴露给任意客户端
+（Claude Code / Claude Desktop），验证「RAG 与题库能力不只服务自家前端」。
+
+- **协议版本锁定**：SDK `mcp>=2,<3`，与客户端协商出的规范修订 = **2026-07-28**（无状态核心：
+  无 initialize 握手 / 无 session id；探针实测协商结果）。**协议代码关在 `app/mcp_server/`
+  一个包里**（领域逻辑不重写：用的就是题库页那套 `bank_query` 与出题检索那套
+  `hybrid_search`），换规范版本只动这里；源码扫描有单测钉死「其余 app 代码不得 import mcp」。
+- **传输只做 stdio**：MCP 客户端在本机把它当子进程起（`python -m app.mcp_server`），题库
+  不经过网络。**不做 HTTP 传输**——无鉴权的 HTTP 会把题库（含个人来源的文本）暴露给任何
+  能连上的进程。
+- **三个只读工具**：`search_questions`（混合检索，短查询保留 rerank，需 Qdrant + 嵌入容器）·
+  `browse_questions`（SQL 浏览/分页，不依赖向量服务）· `get_question`（单题 + 来源四要素）。
+  出参是 Pydantic 模型（`output_schema` 随工具声明，客户端拿到结构化内容）。
+- **只公共题**：一律走带 `user_id IS NULL` 的查询；私有题与归档题连 `get_question` 也不可
+  探测（不区分「不存在 / 别人的私有题」，同 §7 的 404 口径）。
+- **错误如实回报（探针实测的 SDK 行为）**：工具内未捕获的异常会被 SDK 换成
+  「Error executing tool X」——原始信息只在服务端日志里、**模型看不到原因**。故工具边界统一
+  转 `ToolError("人话原因 + 出路")`（例：Qdrant 没起 → 报「检索服务不可用…可先用
+  browse_questions」）。
+- **验证**：集成测试用 in-memory 客户端（真协议、无进程）；`scripts/smoke_mcp.py` 起 **stdio
+  子进程**对真库只读跑三工具（「展示点可连」的机械证据）。
+
 ## 8. 数据库（SQLite，阶段 2 仍 SQLite，PG 迁移推阶段 3）
 
 ```sql
@@ -725,7 +751,25 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（772 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（795 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+
+**CI（P2-M10，`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——
+三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。三条口径：
+
+- **必须有假密钥兜底**：`config.Settings` 的 `deepseek_api_key` / `siliconflow_api_key` /
+  `jwt_secret` 是必填项，本地靠 `.env` 掩盖——CI 没有 `.env`，缺了它**单测层 84 个用例**
+  直接 ValidationError（实测）。故 workflow 顶层给三个假值（不触网）；集成层的 conftest
+  本来就自己注入，单测层没有，这是「本地绿、CI 红」的经典形态。
+- **红线门禁只能在 CI 跑一半，且如实标注**：**真比对**（文本里有没有题库原文）需要比对语料
+  ＝个人题库，而它按红线定义**不进仓库**——CI 里没有语料，跑不了，也不许假装跑得了（本地
+  提交前命令不变）。CI 跑的是**入库守卫 + 检查器自检**：① `git ls-files` 里不得出现语料/
+  密钥类路径（含 `git check-ignore` 覆盖：任何已跟踪文件命中 `.gitignore` 即失败）；② 检查器
+  的骨架/窗口/命中合并/语料取值逻辑用**合成语料**夹具单测（这个文件本身要进公开仓库，
+  写真题即自我违规）。**检查器自检当天就抓到一个真 bug**：`key_points` 在库里是 JSON 文本，
+  原实现把它当可迭代拆成了单字 → 关键点一条都没参与比对而检查全绿（详见 §11 风险 17）。
+- **不进 CI**：smoke（真 key / 真 Qdrant）· 评测与评分门禁（花钱，且门禁余量取自「同一
+  golden 连跑三次」的波动，CI 里跑会被上游抖动误伤）。**分支保护（require checks）是仓库
+  设置，一次性手动开**。
 
 ## 11. 风险注意点（实现时强制）
 
@@ -747,6 +791,17 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 16. 上游保护与降级链（P2-M9，§3）：**断路器只计「上游不可用」类失败**（`retryable=True`）——内容类失败（JSON 校验 / 空输出 / 4xx）计入会把已知的偶发非法 JSON 误判成上游故障，正常场次被打成降级；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口，不许单独写一处 = 静默降级），且**未评分不产 0 分**（报告 payload 不落 `scores`/`overall`，能力档案按 `excluded.degraded` 排除并说明）；降级内容全部是确定性兜底（固定文案 / 原题面 / 内置兜底题 / 不评分），**不许在其中调 LLM**（最后一环依赖任何外部服务就不叫兜底）；闸门与熔断状态在**进程内存**（多 worker 不共享，demo 单进程成立）
 
+17. MCP 与红线门禁（P2-M10，§7 MCP 通道 / §10）：MCP **只做 stdio、只暴露公共题**（私有题
+    连 id 都不可探测），工具内异常必须转 `ToolError`——未捕获异常会被 SDK 换成
+    「Error executing tool X」，**模型看不到原因**（探针实测）；`mcp` 只许 `app/mcp_server/`
+    import（有单测扫描钉死）。**红线检查器的语料取值要按列的存储形态取**：`key_points` 是
+    JSON **文本**，把它当可迭代（`*(key_points or [])`）不报错、只是静默少查一路（已改成
+    显式解析 + 单测）——「顺手展开字符串」这类写法是沉默的覆盖面漏洞。
+18. 上游调用命名（P2-M10，§3）：`llm.*(purpose=...)` → drop-in 的 `name` **只在 Langfuse
+    启用时传**——原生 openai SDK 会把 `name` 当未知参数塞进请求体（DeepSeek 侧 400）。
+    成本读回（`observability.fetch_trace_observations` / `summarize_observations`）是
+    smoke_api 与 `scripts/cost_report.py` 的**同一份实现**（别写第二份）。
+
 ---
 
 ## 12. Changelog
@@ -755,6 +810,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-04 | P2-M10 CI + MCP 题库查询 + 成本归因 | §2 树补 `.github/workflows/ci.yml` / `app/mcp_server/` / `smoke_mcp` / `cost_report` + 依赖行补 `mcp`（dev 组可选组件）· §3 补调用命名（`purpose` → Langfuse `name`，仅启用时传）· **§7 新增「MCP 通道」** · §10 计数（pytest 772→795）+ 新增 **CI 小节**（三个 job / 假密钥兜底 84 个用例 / 红线门禁只跑得了的一半）· §11 新增风险 17/18 |
 | 2026-10-04 | P2-M9 可靠性（上游保护 + 降级链） | §3 新增「上游保护与降级链」小节（闸门/熔断/降级矩阵/不产假信号） · §7 SSE 事件表加 `degraded` + chat 端点补 `degraded_reasons` + error 行补分界 · §10 计数（pytest 733→772、vitest 239→249） · §11 新增风险 16 · §2 scripts 行补 `smoke_degraded` |
 | 2026-10-04 | P2-M8 端到端验收 + 文档同步 | §1 下一步改波 3（波 2 收官）· §2 scripts 行补 `smoke_vision` / `smoke_e2e` / `eval_judge_vision` · §10 计数勘误（vitest 232 → 239）+ 组合场口径 · §11 风险 14 补备份去向（已删） |
 | 2026-10-02 | P2-M5 语音面试（FR-24） | §2 补 voice/asr/tts 与 `public/asr-worklet.js` · §7 新增「语音通道」（WS 契约 / 两把火山 key 不通用 / 三档降级 / dev 直连口径）+ 端点表两行 + `asr_partial`/`tts_chunk` 标为未采用 · §9 面试页语音作答与语音模式 · §10 计数 · §11 风险 12 |

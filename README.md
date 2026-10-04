@@ -4,6 +4,7 @@
 ![Next.js 15](https://img.shields.io/badge/Next.js-15-000000?logo=nextdotjs&logoColor=white)
 ![LangGraph 1.2](https://img.shields.io/badge/LangGraph-1.2-1C3C3C)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/Q-77-i/Marda/actions/workflows/ci.yml/badge.svg)](https://github.com/Q-77-i/Marda/actions/workflows/ci.yml)
 
 面向计算机学生的 **Agent 智能面试学习平台**。业务闭环：**模拟面试 → 发现短板 → 针对性学习**。
 
@@ -170,13 +171,17 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 ```
 
 判据是把两侧归一成「只留中文字」的骨架再滑 12 字窗口（数字/标点/英文不切碎片段，技术词不误报），命中即非零退出。
-**规则靠记忆执行不了**：这条检查立起来的第一件事，就是在已入库文件里查出 15 处遗留违规（均已改为抽象描述）。
+**规则靠记忆执行不了**：这条检查立起来的第一件事，就是在已入库文件里查出 15 处遗留违规（均已改为抽象描述）；
+P2-M10 又查出**覆盖面漏洞**——关键点那一列在库里是 JSON 文本、原实现把它拆成单字滑不出窗口，等于一条都没比对（已修，语料 53k → 61k 窗口）。
+
+CI 里跑的是这条红线的**另一半**（`test_repo_hygiene.py`）：语料与密钥类文件没有被 `git add` 进索引
+（真比对需要语料，而语料按红线定义不进仓库——CI 没有语料，不冒充跑得了）。
 
 ## 验证与评估
 
 ```bash
 cd backend
-uv run pytest -q                              # 772 个测试（不需要任何密钥）
+uv run pytest -q                              # 795 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
@@ -185,6 +190,8 @@ uv run python scripts/smoke_voice.py          # 语音通道：TTS 合成 → �
 uv run python scripts/smoke_vision.py         # 图片通道：合成截图 → 上传 → 带图一场跑通（收尾回答须引用图内标识串）
 uv run python scripts/smoke_e2e.py            # 组合场（P2-M8）：一场里语音进（TTS→WS 转写→作答）/语音出/截图/文字全跑通（需语音 key）
 uv run python scripts/smoke_degraded.py       # 降级链（P2-M9）：把 LLM 打断（本地假上游一律 503），一场面试仍能走完且如实标注（不需要密钥）
+uv run python scripts/smoke_mcp.py            # MCP 题库查询（P2-M10）：stdio 子进程 + 真握手，三个工具各调一次（只读真库）
+uv run python scripts/cost_report.py <场次id>  # 成本归因（P2-M10）：按场次读回 总成本/按模型/按环节/按轮次（需 LANGFUSE_*）
 ```
 
 ```bash
@@ -203,6 +210,22 @@ uv run python scripts/eval_judge_gate.py               # 评分门禁：超阈�
 # 评分官用图监控（P2-M6）：统计「judge 输出引用图内信息」比率；推荐容器内跑（checkpoints 是 WAL）
 docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 ```
+
+## MCP 题库查询（P2-M10）
+
+题库检索能力按 **MCP** 暴露给任意客户端（Claude Code / Claude Desktop 等）——不只是自家前端能查题。
+stdio 传输（本地子进程，题库不经过网络）、只读、**只暴露公共题**（私有上传连 id 都不可探测）：
+
+```bash
+cd backend && uv run python -m app.mcp_server        # 直接跑（stdio）
+claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server   # 接到 Claude Code
+```
+
+三个工具：`search_questions`（混合检索，短查询保留 rerank）· `browse_questions`（按域/难度/公司/面次浏览）·
+`get_question`（单题 + 参考答案 + 关键点 + 来源四要素）。前两个之外还需要 Qdrant 与嵌入容器在跑。
+
+协议代码关在 `app/mcp_server/` 一个包里（单测扫描钉死别的模块不许 import `mcp`），规范版本锁 **2026-07-28**
+（SDK `mcp>=2,<3`）；错误一律转 `ToolError("原因 + 出路")`——未捕获异常会被 SDK 换成「工具坏了」，模型看不到原因。
 
 ## 文档
 
@@ -244,6 +267,7 @@ docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 | P2-M7 | 摄像头 UI 模拟（FR-27）+ 面试间整合：舞台卡片（面试官人像框+状态徽标 ｜ 我 等大并列）+ 控制条；画面帧不上传、不落库、AI 不看；纯前端、后端零改动 |
 | P2-M8 | 端到端验收 + 文档同步：组合场 smoke（`smoke_e2e.py`——语音进/语音出 + 截图 + 文字在**同一场次**跑通）+ 浏览器组合验收（闭合 M7 两条未覆盖面：结束即关画面、SPA 卸载收摊） |
 | P2-M9 | 可靠性（`reliability.py` 并发闸门 + 熔断 → `llm.py` 三条路径接线）+ **降级链**：断 LLM 时开场/出题/评分/报告全部走确定性兜底，面试照常走完并**如实标注**（未评分不产 0 分、档案排除）。验收 = `smoke_degraded.py`（假上游 503 下跑完整场） |
+| P2-M10 | CI（GitHub Actions 三 job：pytest / lint+vitest+build / **语料入库守卫 + 检查器自检**；真比对本机跑）+ MCP 题库查询 server（stdio、只公共题、规范 2026-07-28）+ 成本归因（调用按环节命名 + `cost_report.py` 按场次读回）|
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
