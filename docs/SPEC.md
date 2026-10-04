@@ -10,7 +10,7 @@
 
 **读法**：正文各节内的 `P1-Mx` 标记 = 该口径由哪次会话落地；§12 是改动索引（一行一条），理由与踩坑过程在 CLAUDE.md 与 `docs/private/踩坑记录.md`。
 
-**下一步**：波 4 收尾（**部署与 PG 迁移已取消**——面试现场共享屏幕演示 + 简历挂 GitHub 就够，单机 demo 下 PG 的价值不成立；修订注见 PRD §8.2）。**P2-M11 简历分析 ✅ 已完成**：第 0 步 8 道项目叙事题归位 `project` 域 + 第 1 步简历链路（`POST /api/resumes` → 预填 `candidate_profile`，见 §7「简历通道」）+ 第 2 步 PROJECT 阶段改**题库优先**（见 §4.4）。**波 3 已收官**：P2-M9 可靠性 ✅ → P2-M10 CI + MCP 题库查询 + 成本归因 ✅（CI 见 §10、MCP 见 §7「MCP 通道」、成本读回见 §3 与 `scripts/cost_report.py`）。**P2-M12 节点级 Trace 是下一件**（`aget_state_history` 零写入派生，回放页新增节点时间线）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
+**下一步**：波 4 收尾（**部署与 PG 迁移已取消**——面试现场共享屏幕演示 + 简历挂 GitHub 就够，单机 demo 下 PG 的价值不成立；修订注见 PRD §8.2）。**P2-M11 简历分析 ✅ 已完成**：第 0 步 8 道项目叙事题归位 `project` 域 + 第 1 步简历链路（`POST /api/resumes` → 预填 `candidate_profile`，见 §7「简历通道」）+ 第 2 步 PROJECT 阶段改**题库优先**（见 §4.4）。**波 3 已收官**：P2-M9 可靠性 ✅ → P2-M10 CI + MCP 题库查询 + 成本归因 ✅（CI 见 §10、MCP 见 §7「MCP 通道」、成本读回见 §3 与 `scripts/cost_report.py`）。**P2-M12 节点级 Trace ✅ 已完成**（`aget_state_history` 零写入派生，回放页逐轮卡片之上新增节点时间线，见 §4.7）——**波 4 两项（M11 简历分析 / M12 节点级 Trace）至此全部交付**，部署与 PG 迁移已取消（理由与修订注见 PRD §8.2）。**P2-M9 可靠性已落地**（并发闸门 + 熔断 + 降级链，见 §3；验收「断 LLM 全链路降级仍可用」由 `scripts/smoke_degraded.py` 真链路证明）。**波 2 多模态已收官**（P2-M8 端到端验收 + 文档同步）：**组合场 smoke 已落地**（`scripts/smoke_e2e.py`——语音进/语音出/截图/文字在**同一场次**跑通，见 §10），**摄像头 UI 模拟（FR-27）+ 面试间整合已落地**（P2-M7，见 §9 面试间控制条；纯前端、零后端改动），**视觉通道（FR-26）已落地**（P2-M6，见 §7 图片通道），**语音（FR-24）已落地**（P2-M5，见 §7 语音通道），**真 token 流已落地**（P2-M4）。原「阶段 1 不做清单」（账号体系 / 混合检索 / reranker / 私有题库 / PDF 导出 / Trace 回放 / 行为面 / Langfuse / MCP）**已全部落地**，口径在 §4–§8。
 
 ## 2. 工程结构
 
@@ -27,7 +27,7 @@ marda/
 │   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级，P1-M4）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
 │   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice / resumes（SSE 在 interviews，WS 在 voice）
-│   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接）
+│   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接/节点时间线 timeline.py）
 │   │   ├── agents/               # prompts.py / schemas.py（出题与评分的提示词模板与结构化输出 schema）
 │   │   ├── tools/                # question_search（出题检索）/ hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text（实质答案判定的共享口径）/ asr（火山 v3 二进制协议）/ tts（edge-tts，P2-M5）/ resumes（简历解析，P2-M11）
 │   │   ├── templates/            # report.html.j2（PDF 模板）
@@ -251,6 +251,8 @@ def update_difficulty(state) -> None:
 
 **项目深挖域的题库身份 + 选题题库优先（P2-M11 第 0/2 步）**：`project` 进 `ASKABLE_DOMAINS`（第二个单列出题池，`DOMAIN_WEIGHTS` 不含它、`pick_domain` 永不分给它配额），域 id 与「项目深挖」标签在 `app/domain.py`（单一来源，MCP 域清单 / 题库分面 / 报告与 PDF 标签随之透出）；**8 道项目叙事题**（M9 从技术域改判到 behavioral 的那批）按改判表归位 `project` 域——题库第一次有这一域。**选题 = 题库优先**：PROJECT 阶段与首题先按域整池检索（`_pick_pool`，`difficulty=None`——项目题的 L1–L3 是技术深度语义，这批叙事题的难度也只是历史标注），命中即用（`from_bank=True`、题型仍 `scenario`、进 `asked_ids`），池空/未命中再走 `_generate_scenario` 生成。**真收益**：题库题自带 key_points 与**预置 follow_ups**——项目阶段的覆盖率追问 / 深挖追问第一次真正可用；降级时也能直发题面；出题成本下降。私有题库不开放该域（`ENABLED_DOMAINS` 不含，同行为面）。**⚠️ 这是行为变化不是回归**：无简历场次的项目题现在来自题库、措辞随之不同；「零回归」只指**消息构造**（无简历时 prompt 与接入前逐字一致，见 §7 简历通道）。
 
+**单列出题池的记录难度 = 场次当前难度（P2-M12 随行修）**：`_pick_pool` 命中题库题时，记的是 `state.difficulty` 而**不是题库题自带的标注**（同生成题的 D3 口径：L1–L3 是技术深度语义，挂行为题/项目叙事题上没有意义）。M11 第 2 步曾原样记下题库标注——锁 L3 的场次首题（项目深挖走题库）会显示库里的 L1，真机表现为冒烟断言只有 1/8 概率通过。两池同为死数据，只作记录、不参与出题。
+
 **同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮是**独立调用**、只拿得到轮次号——不喂前情时「换个切入点」等于掷骰子（真链路实测三道题套同一个开头）。两条修法同时在位：① **喂回已问题目原文**——`_asked_project_block(state)` 把已问项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽，一道未问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型脑补前情；② **两层模板同禁复述背景**（场景题 + 口吻层）——题前衔接语（§4.8）已交代「结合你的项目」，题目再铺一句简历复述就是模板脸。措辞是否真不雷同属生成质量、靠真链路验收；单测只钉**接线**（第二道起 prompt 必带第一道原文）。
 
 **出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
@@ -313,6 +315,13 @@ def update_difficulty(state) -> None:
 | report | null | answered_count / question_count / weaknesses | 收尾 |
 
 `round` 语义 = 事件所属问答轮次（1 起，与报告 `number` 同义）：首次评分后即为该题序号，追问重评不变 → 同一题的 ask/judge/followup/advance 同号，UI 可按轮聚合。事件自带展示数据（题干、回答原文、五维），故 `/trace` 单次请求自包含，**未结束的场次同样可看**（实时决策视图）。
+
+**节点时间线（P2-M12）**：`/trace` 另返回 `nodes` —— 每步的节点 / 时长 / 状态变化，**零写入**派生自 checkpoint 历史（`aget_state_history` + checkpointer 的 `alist`：不建表、不改 state、不改节点）。它补上 `trace_log` 里没有的节点（`intro` / `profile` / `pause`——那些步不产生决策，但真在跑、也真要花时间）。
+
+- **三个字段各有唯一来源**（探针实测 2026-10-05）：`node` = **前一个存档的 `next`**（checkpoint 的 `metadata` 里没有节点名，writes 表的 `task_id` 是 UUID）；`duration_ms` = 相邻存档的 `ts` 间隔（**≈该步执行时间**；`pause` 步天然含用户思考与作答时间——页面文案如实说明，不写成「精确节点耗时」）；`writes` = 该存档记录的写入 **∩ 这一步真变了的通道**。两个条件缺一不可：langgraph 默认 `durability="async"`（异步落盘），节点对 Pydantic 对象的**原地变更**（judge 把回答合并进 `current_question`）会渗进**上一步**的存储值——只看值 diff，每个「等待输入」都会凭空多出「题目」；只看记录，节点原样回传的 `degraded_reasons` 会让健康场次显示「降级记录」。
+- **轮次**：出题开启新一轮，评分/追问/换题服务当前轮，等待输入（与结束被挽留）沿用**手上那道题**——追问后的等待仍属同一轮（`answered_count` 只在首答判分时 +1）；`current_question` 在进入 CLOSING 时并不清空，故判据连阶段一起看。
+- **只列已完成的步**：正在等待的那一步要等作答落定才出现（进行中的场次因此比结束时少一行）。`__start__` 虚拟入口与无法归属到单一节点的步（`next` 为空/多个）不列。
+- 前端：回放页逐轮卡片**之上**的「节点时间线」区块——CSS grid 手绘柱条（`DomainHeatmap` 先例，不引图表库），线性标尺相对最慢一步，等待输入用弱色区分（那段是用户在思考，不是引擎在算）。
 
 **接口**：`GET /api/interviews/{id}/trace` → `{interview_id, position, status, answered_count, question_count, events}`（鉴权与 404 口径同 §7）。前端回放页（会话 2）只消费不推断。
 
@@ -572,7 +581,7 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 | GET /api/interviews/{id}/report | — | 报告 JSON（未结束 404） |
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF（FR-18）：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
 | GET /api/interviews/{id}/recommendations | — | 学习推荐（FR-20）：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**（未结束/不存在/越权），检索失败 500 透传；**行为面报告直接返回空 `groups`**（P1-M11 D5，不做无效检索） |
-| GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, dims, status, answered_count, question_count, events}`（**未结束场次同样可查**；事件模型见 §4.7）。`dims`（P1-M11）= 评分维度表 `[{key,label}]`：judge 事件的 detail 是评分模型裸 dump，键随会话类型变，标签由后端给（老场次无该字段 → 前端退回技术面五维常量） |
+| GET /api/interviews/{id}/trace | — | 决策回放事件流 `{interview_id, position, dims, status, answered_count, question_count, events, nodes}`（**未结束场次同样可查**；事件模型见 §4.7）。`dims`（P1-M11）= 评分维度表 `[{key,label}]`：judge 事件的 detail 是评分模型裸 dump，键随会话类型变，标签由后端给（老场次无该字段 → 前端退回技术面五维常量）。`nodes`（P2-M12）= 节点时间线 `[{seq, node, node_label, round, duration_ms, writes}]`，同样从 checkpoint 零写入派生（§4.7） |
 | GET /api/interviews | — | 面试历史列表（倒序） |
 | GET /api/profile | — | 能力档案（FR-19）：`{sessions, summary, weakness_changes, excluded}`（§4.11）。**无路径参数**（用户级），隔离由 user_id 过滤承担；**没有场次时返回零态结构（不是 404）**——`session_count=0` 是正常状态，前端据此渲染空态 + 引导；**行为面场次不计入**（按报告 payload 的 `interview_type` 过滤，P1-M11 D4），只进 `excluded` 计数 |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
@@ -763,14 +772,14 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 - **报告页**：Recharts 雷达图（五维）+ 知识域横向条形图（短板域警示色**并附文字标注**，不靠颜色单独表意；配色经调色板校验器明暗双模式检查）、逐题点评卡片、短板高亮、总评；**逐题复盘卡**（阶段 2 FR-25：我的回答按「【追问补充】」标记分成「首答 / 追问补充 N」不混成一大段、五维得分、关键点覆盖对比 ✓/✗、题库题参考答案折叠展示——项目深挖题无权威答案只给关键点对比；历史报告缺字段时退化为「题干 + 点评」）。三处入口：页头「决策回放」（P1-M4）、「导出 PDF」（P1-M8，文件名纯逻辑在 `lib/download.ts`）、「针对性练习推荐」卡（P1-M9，`?interview=<id>` 跳学习页承接来源场次，`showAdvice=false` 避免与学习建议卡复述；行为面不渲染）。
 - **学习推荐页**（`/learn`，P1-M9 FR-20）：场次选择器（只列技术面）+ 按短板域分组的资料卡；与报告页共用 `recommend-groups.tsx`（行内展开同题库页交互，不引新原语），默认场次判定在 `lib/learn.ts`。
 - **能力档案页**（`/profile`，P1-M10 / M10.5 FR-19）：四张卡按认知路径排（五维对照 → 总分曲线 → 知识域热力图 → 短板变化）+ 一行洞察；窗口、色阶与空态口径见 §4.11。
-- **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：只读时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
+- **决策回放页**（`/trace/[id]`，阶段 2 FR-21）：**节点时间线**（P2-M12）在逐轮卡片之上——每步一行（节点中文名 ｜ 时长柱条 ｜ 时长 ｜ 第 N 题 + 状态变化摘要），等待输入的柱条弱色区分，容器内滚动不挤走卡片（§4.7）。其下是只读事件时间线，按 `round` 聚成逐轮卡片——出题信息（域/难度/题型/题库命中数）进卡片头，其余事件按发生顺序排在时间线上：评分（覆盖率/五维/漏掉的关键点/点评/回答原文折叠）、追问（决策+原因）、换题（原因+进入阶段）、结束被挽留（还差 N 题）；`round=null` 的收尾事件单列（完成题量+短板域）。**规则与原因由后端给，前端只映射文案、不重算决策**（重算就可能与当时不一致）；旧场次无事件流 → 空态提示「该场次未记录决策」。静态展示不做自动播放；入口仅报告页（与「已结束才有报告」的语义吻合），仪表盘不加。
 - **设计（P1 收尾专项会话 1 归一）**：taste-skill 基调，专注型对话布局；阶段 1 不做营销首页。设计令牌是明暗双套 OKLCH（`globals.css`，含 P1 补的 `--success` 与 P2-M7 补的 `--stage`）+ 中文回退字体栈（Geist 不含 CJK）+ 全局 `prefers-reduced-motion` 兜底；**状态态各有唯一档位**（空态 / 加载态两档 / 错误态三档规则：可重试 = inline + 按钮、表单级 = 一行红字、全页 = 中性色 + 返回首页），卡片材质两档（卡片 = `rounded-xl + ring-1`，内嵌面板 = `rounded-lg border + bg-muted/30`，无阴影），共享件 `PageShell` / `PageHeader` / `EmptyState` / `ErrorState` / `StatusBanner` / `InlinePanel`。主题只跟随系统 `prefers-color-scheme`（不做切换）；移动端布局按响应式写但**未实测**（移动端整体暂缓）。
 
 - **窄屏顶栏（P2-M3）**：`<sm` 换行两行——品牌 + 右侧内容一行、主导航独占下一行（`AppHeader` 的 `flex-wrap` 与 `MainNav` 的 `order-3 w-full` 配合）；nav item `shrink-0 whitespace-nowrap`（**根治「被压成竖排单字」**——原实现五个 tab 挤一行，每个被压到 30px 宽、标签逐字换行并与品牌/用户区重叠），容器 `overflow-x-auto` 兜底（320px 放不下时导航自身横滑，不挤破页面）。`≥sm` 保持原单行 `h-14`（order 在桌面上与 DOM 序一致，像素不变）。验收 = headless 机械断言：页面级 `scrollWidth ≤ 视口宽`、nav 只占一行、item 高度 ≤32px。
 
 ## 10. 测试与验收
 
-**分层**：`tests/unit/`（纯逻辑 + FakeLLM 注入跑整图，无密钥无网络）→ `tests/integration/`（httpx ASGITransport + 临时库）→ 三个 smoke（真链路，手动跑）→ `evals/`（离线评测，显式命令，**不进 pytest**，见 §4.13）。
+**分层**：`tests/unit/`（纯逻辑 + FakeLLM 注入跑整图，无密钥无网络）→ `tests/integration/`（httpx ASGITransport + 临时库）→ 冒烟脚本（真链路，手动跑，清单见 §2 与 [README](../README.md)）→ `evals/`（离线评测，显式命令，**不进 pytest**，见 §4.13）。
 
 | 层 | 断言要点 |
 | --- | --- |
@@ -783,7 +792,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（820 个，不需要任何密钥）· `cd frontend && pnpm test`（257 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（837 个，不需要任何密钥）· `cd frontend && pnpm test`（260 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（P2-M10，`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——
 三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。三条口径：
@@ -842,6 +851,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-05 | P2-M12 节点级 Trace | §2 树补 `rules/timeline` · **§4.7 新增「节点时间线」段**（三字段来源 / 异步落盘的值渗漏 / 轮次与阶段判据 / 只列已完成的步）· §4.4 单列出题池记录难度取场次难度（题库标注不顶替）· §7 `/trace` 补 `nodes` · §9 回放页补节点时间线 · §10 计数（pytest 820→837、vitest 257→260）+「三个 smoke」表述订正 |
 | 2026-10-05 | P2-M11 简历分析（FR-28） | §1 下一步改波 4（部署 + PG 取消）· §2 树补 `api/resumes` / `tools/resumes` / `smoke_resume` / 前端 `lib/resume` + db 七表 · §3 降级链补「简历解析不降级」 · §4.1 补 `resume_id` · §4.4 项目域补**题库优先** · **§7 新增「简历通道」** + 端点表简历行 + 建场次补 `resume_id` · §8 补 `resumes` 表与引用计数清理 · §9 创建页简历区 · §10 计数（pytest 797→820、vitest 249→257） |
 | 2026-10-05 | P2-M11 第 0 步（8 道项目叙事题归位） | §4.4 新增「项目深挖域的题库身份」（`project` 进 `ASKABLE_DOMAINS`、第二单列出题池） · §4.12 池子现状改 5 道 enabled + `project` 同款隔离 · §6.6 改判表补归位条目 + 入库 status 规则补 `project` · §10 计数（pytest 795→797） |
 | 2026-10-04 | P2-M10 CI + MCP 题库查询 + 成本归因 | §2 树补 `.github/workflows/ci.yml` / `app/mcp_server/` / `smoke_mcp` / `cost_report` + 依赖行补 `mcp`（dev 组可选组件）· §3 补调用命名（`purpose` → Langfuse `name`，仅启用时传）· **§7 新增「MCP 通道」** · §10 计数（pytest 772→795）+ 新增 **CI 小节**（三个 job / 假密钥兜底 84 个用例 / 红线门禁只跑得了的一半）· §11 新增风险 17/18 |

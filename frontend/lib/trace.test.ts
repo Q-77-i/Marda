@@ -9,8 +9,11 @@ import {
   asStringList,
   asText,
   coveragePercent,
+  durationLabel,
+  durationPercent,
   groupTraceEvents,
   judgeEvidence,
+  maxDuration,
 } from "@/lib/trace";
 
 const event = (
@@ -211,5 +214,33 @@ describe("judgeEvidence", () => {
       missedKeyPoints: ["x"],
       comment: null,
     });
+  });
+});
+
+describe("节点时间线的标尺与文案（P2-M12）", () => {
+  const node = (duration_ms: number | null) => ({ duration_ms });
+
+  it("maxDuration：取最长一步；缺失值不参与", () => {
+    expect(maxDuration([node(120), node(null), node(8600)])).toBe(8600);
+    expect(maxDuration([])).toBe(0);
+    expect(maxDuration([node(null)])).toBe(0);
+  });
+
+  it("durationPercent：线性占比，封顶 100；标尺为 0 或缺失给 0", () => {
+    expect(durationPercent(4300, 8600)).toBeCloseTo(50);
+    expect(durationPercent(8600, 8600)).toBe(100);
+    expect(durationPercent(null, 8600)).toBe(0);
+    expect(durationPercent(100, 0)).toBe(0);
+  });
+
+  it("durationLabel：毫秒 / 秒 / 分秒三档；缺失给 null", () => {
+    expect(durationLabel(4)).toBe("4ms");
+    expect(durationLabel(999)).toBe("999ms");
+    expect(durationLabel(1000)).toBe("1.0s");
+    expect(durationLabel(8640)).toBe("8.6s");
+    expect(durationLabel(59999)).toBe("60.0s");
+    expect(durationLabel(60000)).toBe("1m 00s");
+    expect(durationLabel(75400)).toBe("1m 15s");
+    expect(durationLabel(null)).toBeNull();
   });
 });

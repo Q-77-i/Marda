@@ -12,7 +12,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getTrace, type Dim, type TraceEvent, type TraceResponse } from "@/lib/api";
+import {
+  getTrace,
+  type Dim,
+  type TraceEvent,
+  type TraceNode,
+  type TraceResponse,
+} from "@/lib/api";
 import {
   DIMENSIONS,
   QUESTION_TYPE_LABELS,
@@ -30,8 +36,11 @@ import {
   asStringList,
   asText,
   coveragePercent,
+  durationLabel,
+  durationPercent,
   groupTraceEvents,
   judgeEvidence,
+  maxDuration,
   type TraceRound,
 } from "@/lib/trace";
 
@@ -91,6 +100,8 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
   }
 
   const { rounds, closing } = groupTraceEvents(data.events);
+  // 节点时间线（P2-M12）：后端从 checkpoint 历史派生；老后端无该字段 → 空，整块不渲染
+  const nodes: TraceNode[] = data.nodes ?? [];
 
   return (
     <PageShell
@@ -133,6 +144,8 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
           为什么追问、为什么换题。展示的是当时写下的决策记录，事后不重算。
         </p>
 
+        {nodes.length > 0 && <NodeTimeline nodes={nodes} />}
+
         {data.events.length === 0 ? (
           <Card>
             <CardContent>
@@ -153,6 +166,70 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
           </>
         )}
     </PageShell>
+  );
+}
+
+/**
+ * 节点时间线（P2-M12 / SPEC §4.7）：引擎逐步执行的记录，从 checkpoint 存档读回来。
+ *
+ * 它补上决策事件里**没有**的节点（开场白 / 自我介绍提炼 / 等待输入）——那些步不产生
+ * 决策，但真在跑、也真要花时间。柱条是 CSS 手绘（`DomainHeatmap` 先例，不引图表库）：
+ * 线性标尺相对最慢一步，等待输入用弱色区分（那段主要是用户在想，不是引擎在算）。
+ */
+function NodeTimeline({ nodes }: { nodes: TraceNode[] }) {
+  const scale = maxDuration(nodes);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>节点时间线</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          引擎每执行一步都会存档，这里是逐步读回来的记录：节点、耗时与这一步改了什么。
+          时长是相邻两次存档的间隔（≈该步执行时间）；「等待输入」的时长主要是你思考与
+          作答的时间，不是引擎在算。
+        </p>
+        <ol className="flex max-h-96 flex-col overflow-y-auto">
+          {nodes.map((node) => {
+            const waiting = node.node === "pause";
+            const summary = [
+              node.round !== null ? `第 ${node.round} 题` : null,
+              ...node.writes,
+            ]
+              .filter((part): part is string => part !== null)
+              .join(" · ");
+            return (
+              <li
+                key={node.seq}
+                className="grid grid-cols-[6.5rem_minmax(3.5rem,8rem)_3.25rem_minmax(0,1fr)] items-center gap-x-3 py-1"
+                title={waiting ? "等待输入：时长含你思考与作答的时间" : undefined}
+              >
+                <span className="truncate text-xs font-medium">{node.node_label}</span>
+                <span aria-hidden className="h-1.5 overflow-hidden rounded-full bg-muted">
+                  <span
+                    className={cn(
+                      "block h-full rounded-full",
+                      waiting ? "bg-muted-foreground/40" : "bg-primary/70",
+                    )}
+                    style={{ width: `${durationPercent(node.duration_ms, scale)}%` }}
+                  />
+                </span>
+                <span className="text-right text-xs tabular-nums text-muted-foreground">
+                  {durationLabel(node.duration_ms) ?? "—"}
+                </span>
+                <span
+                  className="min-w-0 truncate text-xs text-muted-foreground"
+                  title={summary}
+                >
+                  {summary}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      </CardContent>
+    </Card>
   );
 }
 

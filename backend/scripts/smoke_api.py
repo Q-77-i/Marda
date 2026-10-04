@@ -662,6 +662,21 @@ async def main() -> None:
             assert rounds == sorted(rounds), f"轮次非单调：{rounds}"
             assert all(e["detail"] for e in events), "事件 detail 不得为空"
             print(f"回放 OK：{len(events)} 个事件 / 轮次 1-{max(rounds)}")
+
+            # 节点时间线（P2-M12）：从 checkpoint 历史零写入派生——含决策事件里没有的节点
+            nodes = trace["nodes"]
+            names = [n["node"] for n in nodes]
+            assert names[0] == "intro" and names[-1] == "report", f"时间线首尾异常：{names}"
+            assert {"intro", "profile", "pause", "ask", "judge", "report"} <= set(names), \
+                f"时间线缺节点：{sorted(set(names))}"
+            assert [n["seq"] for n in nodes] == list(range(len(nodes))), "序号不连续"
+            assert all(n["duration_ms"] is not None and n["duration_ms"] >= 0 for n in nodes), \
+                "时长缺失或为负"
+            assert all(n["writes"] for n in nodes), "每步至少写了一个（真变了的）通道"
+            span = sum(n["duration_ms"] for n in nodes) / 1000
+            slowest = max(nodes, key=lambda n: n["duration_ms"])
+            print(f"节点时间线 OK：{len(nodes)} 步 / 全程 {span:.1f}s / "
+                  f"最慢一步 {slowest['node_label']} {slowest['duration_ms'] / 1000:.1f}s")
             # 流式协议（P2-M4）：整场累计——每轮都已逐段断言过，这里给场次级总数
             assert stream_msgs >= QUESTION_COUNT + 1, \
                 f"流式消息数少于应有的面试官发言：{stream_msgs}"

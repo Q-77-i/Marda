@@ -255,7 +255,7 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 | M11 | 行为面 / HR 面（同一状态机换能力模型与题源，deepen-only 追问） |
 | M12 | 评估体系（检索四变体基线 + RAGAS；评分一致性自研 harness + 门禁） |
 
-阶段 3 + 二期（P2，多模态与企业级收尾）进行中（部署上云与 PG 迁移已取消，见文末部署说明）：
+二期（P2，多模态与企业级收尾）波 1–4 全部完成（部署上云与 PG 迁移已取消，见文末部署说明）：
 
 | 里程碑 | 内容 |
 | --- | --- |
@@ -270,6 +270,7 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 | P2-M9 | 可靠性（`reliability.py` 并发闸门 + 熔断 → `llm.py` 三条路径接线）+ **降级链**：断 LLM 时开场/出题/评分/报告全部走确定性兜底，面试照常走完并**如实标注**（未评分不产 0 分、档案排除）。验收 = `smoke_degraded.py`（假上游 503 下跑完整场） |
 | P2-M10 | CI（GitHub Actions 三 job：pytest / lint+vitest+build / **语料入库守卫 + 检查器自检**；真比对本机跑）+ MCP 题库查询 server（stdio、只公共题、规范 2026-07-28）+ 成本归因（调用按环节命名 + `cost_report.py` 按场次读回）|
 | P2-M11 | 简历分析（FR-28）：上传/粘贴简历 → flash 结构化抽取 → 预填 `candidate_profile`（出题侧零改动就变具体）+ 8 道项目叙事题归位 `project` 域 + PROJECT 阶段改**题库优先**（项目题自带预置追问素材）|
+| P2-M12 | 节点级 Trace：回放页新增**节点时间线**（每步的节点/时长/状态变化）——**零写入**派生自 checkpoint 历史（`aget_state_history`），补上 `intro`/`profile`/`pause` 这些决策事件里没有的节点；顺带修 M11 遗留的「项目题难度被题库标注顶替」（锁 L3 的场次首题曾显示 L1） |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
