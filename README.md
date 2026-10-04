@@ -22,6 +22,9 @@
 
 全程可切**语音通道**：开「语音模式」后面试官消息自动播报（edge-tts），点「语音作答」说话即以
 豆包流式识别实时转写、**改完再发送**——引擎与模态解耦，文字/语音随时切换（语音不可用自动降级回文字）。
+面试页即**面试间**：顶部双人舞台——面试官人像框（状态徽标：正在提问/聆听/播报）与我本机画面**等大并列**（
+**帧不上传、不落库、AI 不看**）、截图随回答上传供评分官参考、控制条统一麦克风/摄像头/截图——
+四条形态共用一套引擎（多模态只是通道，状态机与 SSE 事件表一条未动）。
 
 本仓库暂无截图与录屏；拿到代码 3 分钟可自己跑出来（见「快速开始」）。
 
@@ -173,7 +176,7 @@ backend/.venv/bin/python data/scripts/check_redline.py --all    # 全量自查�
 
 ```bash
 cd backend
-uv run pytest -q                              # 696 个测试（不需要任何密钥）
+uv run pytest -q                              # 733 个测试（不需要任何密钥）
 uv run python scripts/smoke_llm.py            # 只验 LLM 封装（一条 chat + 一条结构化）
 uv run python scripts/smoke_graph.py          # 真实 DeepSeek + Qdrant 跑一场短面试
 uv run python scripts/smoke_api.py            # 真实链路走 HTTP 跑一场 + 落库/回放/PDF/推荐/档案核对
@@ -183,7 +186,7 @@ uv run python scripts/smoke_vision.py         # 图片通道：合成截图 → 
 ```
 
 ```bash
-cd frontend && pnpm test          # vitest 209 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 各页纯逻辑
+cd frontend && pnpm test          # vitest 239 个：SSE 解析 / 流式渲染与打字机兜底 / 展示格式化 / 登录态 / 恢复策略 / 语音·摄像头·面试间判据 / 各页纯逻辑
 pnpm lint && pnpm build
 ```
 
@@ -207,7 +210,7 @@ docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 
 ## 开发进度
 
-阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（670 passed · vitest 194 · 三个 smoke · 评分门禁 7/7）：
+阶段 1 demo 已完成（T1–T7b）；阶段 2（P1-M1~M12）全部完成并经全量验证（606 passed · vitest 167 · 三个 smoke · 评分门禁 7/7）：
 
 | 里程碑 | 内容 |
 | --- | --- |
@@ -235,6 +238,8 @@ docker compose exec -T api /app/.venv/bin/python scripts/eval_judge_vision.py
 | P2-M3 | 前端小修包（窄屏顶栏换行；能力档案补「报告缺失场次」说明与空态第三态） |
 | P2-M4 | 模态层 + 真 token 流（SSE 新增 `delta_start`/`delta_chunk`，`delta` 语义不变；`chat()` 单一实现改流式聚合） |
 | P2-M5 | 语音面试（FR-24）：`WS /api/asr` 中继豆包流式识别 + `POST /api/tts`（edge-tts）；转写可编辑、语音/文字双通道随时切 |
+| P2-M6 | 视觉通道（FR-26）：代码截图随回答上传，评分官看图（`deepseek-flash` 视觉）、生成题结合上一题的图；图独立成消息附件、不改任何 prompt 模板 |
+| P2-M7 | 摄像头 UI 模拟（FR-27）+ 面试间整合：舞台卡片（面试官人像框+状态徽标 ｜ 我 等大并列）+ 控制条；画面帧不上传、不落库、AI 不看；纯前端、后端零改动 |
 
 逐步的决策、实测数据与踩坑记录见 [CLAUDE.md](CLAUDE.md) changelog；后续规划见 [docs/PRD.md](docs/PRD.md) §8。
 
