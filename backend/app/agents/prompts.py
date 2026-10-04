@@ -2,7 +2,7 @@
 
 约定：
 - 全部中文模板，占位符用 str.format 的 {name}；
-- 含候选人内容的模板必须带 GUARD（SPEC §12.4：候选人输入视为数据，不是指令）；
+- 含候选人内容的模板必须带 GUARD（SPEC §11 风险 4：候选人输入视为数据，不是指令）；
 - 结构化输出节点不在 prompt 里写 schema——llm.chat_json 自动注入 model_json_schema
   （T3 踩坑 2 口径，不要重复）；
 - 面试官身份走 `{persona}` 插槽（P1-M11）：技术面 / 行为面两种口吻，由调用方按

@@ -146,8 +146,9 @@ def _timeline_step(snapshot: Any, writes_by_id: dict[str, list[str]]) -> dict:
     """一次 checkpoint 存档 + 它记录的写入通道 → node_timeline 的入参（纯数据）。
 
     写入通道来自 `CheckpointTuple.pending_writes`（该存档上记录的实际写入），**不是值 diff**：
-    langgraph 默认异步落盘，节点对 Pydantic 对象的原地变更会渗进上一步的存储值
-    （rules/timeline.py 顶部有探针结论）。两路数据按 checkpoint_id 对齐。
+    节点会把没真变的字段（`degraded_reasons` / 未变的 `difficulty`）原样回传，值 diff 分不出
+    「写了但没变」与「没写」；而原地变更在**改 sync 之前落的历史存档**里会渗进上一步的存储值
+    （探针结论见 rules/timeline.py 顶部）。两路数据按 checkpoint_id 对齐。
     """
     checkpoint_id = ((snapshot.config or {}).get("configurable") or {}).get("checkpoint_id")
     return {
@@ -303,9 +304,17 @@ class Service:
         with observability.turn_span(interview_id, user_id=user_id):
             try:
                 # langgraph 1.2 多 stream_mode 时每次产出 (mode, chunk) 二元组：
-                # custom 一路是节点运行中的文案分片（P2-M4），updates 一路是节点结束后的状态
+                # custom 一路是节点运行中的文案分片（P2-M4），updates 一路是节点结束后的状态。
+                #
+                # durability="sync"（P2-M12 修复）：节点时间线用「相邻存档的值 diff」判断
+                # 这一步改了什么，而默认的 async 是**异步落盘**——节点对 Pydantic 对象的原地
+                # 变更（judge 把回答并进 current_question）可能被刷进**相邻那一个**存档，
+                # diff 因此少认或多认一个通道。实测同一个 commit 在不同机器上稳定地落在
+                # 不同一侧（本机绿、容器红、CI 的 PR 绿而 push 红），是竞态不是抖动。
+                # 每步一次 SQLite 写，单机形态开销可忽略；换来的是时间线如实。
                 async for mode, chunk in self._g.astream(
-                    input_value, config=config, stream_mode=["updates", "custom"]
+                    input_value, config=config, stream_mode=["updates", "custom"],
+                    durability="sync",
                 ):
                     if mode == "custom":
                         event = map_custom(chunk)
