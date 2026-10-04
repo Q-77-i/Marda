@@ -34,7 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # ⚠️ setup-uv 从 v8 起**不再发浮动大版本 tag**（v8/v9/v10 只有完整版本号）——写 @v10
+      # 会 `Unable to resolve action`（P2-M10 首跑就这么红的）。其余三个 action 的浮动
+      # 大版本 tag 都在（checkout/setup-node 的 v7、pnpm 的 v6），故照常用浮动。
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.13" # 对齐 backend/Dockerfile 与本机开发环境
       # 走官方 PyPI：pyproject 里的默认源是清华镜像（本地开发快），runner 在境外用它反而慢
@@ -76,7 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      # ⚠️ setup-uv 从 v8 起**不再发浮动大版本 tag**（v8/v9/v10 只有完整版本号）——写 @v10
+      # 会 `Unable to resolve action`（P2-M10 首跑就这么红的）。其余三个 action 的浮动
+      # 大版本 tag 都在（checkout/setup-node 的 v7、pnpm 的 v6），故照常用浮动。
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.13"
       - name: 安装依赖（锁定文件）
