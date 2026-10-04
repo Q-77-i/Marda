@@ -23,6 +23,7 @@ from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW
 from app.service import InterviewFinishedError, InterviewNotFoundError
 from app.tools import images
 from app.tools import recommend
+from app.tools import resumes
 
 router = APIRouter(
     prefix="/api/interviews", tags=["interviews"], dependencies=[Depends(get_current_user)]
@@ -39,6 +40,9 @@ class CreateRequest(BaseModel):
     difficulty: Literal["adaptive", "L1", "L2", "L3"] = "adaptive"
     # 会话类型（P1-M11 FR-22）：与技术岗位正交（position 两种类型同一个值）
     interview_type: Literal["tech", "behavioral"] = INTERVIEW_TECH
+    # 简历（P2-M11 FR-28）：先经 POST /api/resumes 解析出的 id；缺省 = 没传简历
+    # （出题侧按「无简历」走原路径，消息构造逐字一致——零回归是构造性的）
+    resume_id: str | None = None
 
     @model_validator(mode="after")
     def _behavioral_question_limit(self) -> "CreateRequest":
@@ -67,20 +71,33 @@ async def create_interview(
 ):
     service = request.app.state.service
     interview_id = uuid.uuid4().hex
+    db_path = get_settings().db_path
+    # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
+    # 解析结果转成 candidate_profile 文本预填——出题侧零改动就变具体。
+    candidate_profile = ""
+    if req.resume_id:
+        resume = await asyncio.to_thread(
+            db.get_resume, db_path, user_id=user["id"], resume_id=req.resume_id
+        )
+        if resume is None:
+            raise HTTPException(status_code=404, detail="简历不存在")
+        candidate_profile = resumes.format_profile(resume["parsed"])
     await asyncio.to_thread(
         db.create_interview,
-        get_settings().db_path,
+        db_path,
         interview_id=interview_id,
         position=req.position,
         question_count=req.question_count,
         difficulty=req.difficulty,
         user_id=user["id"],
         interview_type=req.interview_type,
+        resume_id=req.resume_id,
     )
     return EventSourceResponse(
         service.start_interview(
             interview_id, req.position, req.question_count, user_id=user["id"],
             difficulty=req.difficulty, interview_type=req.interview_type,
+            candidate_profile=candidate_profile, resume_id=req.resume_id or "",
         ),
         headers=SSE_HEADERS,
         ping=15,

@@ -544,7 +544,8 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     await _run(graph, config, state)
     values = await _run(graph, config, Command(resume="我是应届生"))
 
-    assert calls == []  # 首题为项目深挖题，不走题库检索
+    # 首题为项目深挖题：P2-M11 第 2 步起**先查 project 域**（不限难度），空池才走生成
+    assert calls == [("project", None)]
     question = values["current_question"]
     assert question["from_bank"] is False
     assert question["question_id"] is None
@@ -557,7 +558,8 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     # 项目题深挖一轮换题 → 技术题：题库未命中 → 原难度 → 放宽 +1 → LLM 生成
     await _run(graph, config, Command(resume="我的答案是……"))
     values = await _run(graph, config, Command(resume="深挖补充……"))
-    assert calls == [("agent-architecture", "L1"), ("agent-architecture", "L2")]  # 原难度 → 放宽 +1
+    # project 域（空池）→ 技术域：原难度 → 放宽 +1
+    assert calls == [("project", None), ("agent-architecture", "L1"), ("agent-architecture", "L2")]
     question = values["current_question"]
     assert question["from_bank"] is False
     assert question["question_id"] is None
@@ -567,6 +569,34 @@ async def test_题库未命中走LLM生成并放宽难度(install_llm, install_s
     gen_call = next(c for c in client.calls if "Agent 认知与架构" in c["system"])
     assert "RAG" in gen_call["system"]
     assert client.calls  # 出题官调用发生过
+
+
+async def test_项目深挖题题库优先_命中即用且带预置追问(install_llm, install_search, graph_env):
+    """P2-M11 第 2 步：PROJECT 阶段先查 project 域（不限难度），命中即用。
+
+    收益落点：题库题自带 key_points 与**预置 follow_ups**——项目阶段的覆盖率追问 /
+    深挖追问第一次真正可用（此前生成题全靠 LLM 现场写），且降级时也能直发题面。
+    """
+    install_llm()
+    _, calls = install_search({
+        ("project", "L1"): [{
+            "question_id": "q_proj", "question": "项目深挖题库题", "answer": "参考答案",
+            "key_points": ["k1", "k2"], "follow_ups": ["这道题的第一层追问"], "domain": "project",
+            "topic": "项目", "difficulty": "L2", "company": None, "round": None,
+        }],
+    })
+    graph, _, config, state, _ = await graph_env(question_count=2)
+
+    await _run(graph, config, state)
+    values = await _run(graph, config, Command(resume="我是应届生"))
+
+    question = values["current_question"]
+    assert calls == [("project", None)]  # 整池检索：难度不参与（与行为面同款口径）
+    assert question["from_bank"] is True
+    assert question["question_id"] == "q_proj"
+    assert question["question_type"] == "scenario"  # 题型不变：项目深挖仍计入轮次
+    assert question["follow_ups"] == ["这道题的第一层追问"]
+    assert values["asked_ids"] == ["q_proj"]  # 题库题进 asked_ids（生成题不进）
 
 
 async def test_第二道项目题带前情_出题prompt含已问题目原文(install_llm, install_search, graph_env):

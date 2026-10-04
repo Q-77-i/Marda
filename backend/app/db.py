@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS interviews (
     difficulty TEXT,
     status TEXT,
     started_at TEXT,
-    ended_at TEXT
+    ended_at TEXT,
+    resume_id TEXT
 );
 CREATE TABLE IF NOT EXISTS answers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,6 +57,14 @@ CREATE TABLE IF NOT EXISTS reports (
     id TEXT PRIMARY KEY,
     interview_id TEXT,
     payload JSON,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS resumes (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    filename TEXT,
+    text TEXT,
+    parsed JSON,
     created_at TEXT
 );
 """
@@ -86,6 +95,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
       语义等同 "tech"（历史场次全是技术面），消费方按「非 behavioral 即技术面」处理，
       不做全表回填（回填会与 reports.payload.interview_type 形成两个可漂移的来源）。
     - questions.user_id：私有题库归属列（P1-M7 FR-13），NULL = 公共题。
+    - interviews.resume_id：场次引用的简历（P2-M11 FR-28），老库补列后为 NULL = 没传简历。
 
     questions 表由语料管道建（不是本模块的 DDL），故先探测表是否存在——
     老库/未跑管道的库不该因为这个迁移而报错。管道侧 ingest._migrate 对同一列
@@ -96,6 +106,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE interviews ADD COLUMN user_id TEXT")
     if "interview_type" not in columns:
         conn.execute("ALTER TABLE interviews ADD COLUMN interview_type TEXT")
+    if "resume_id" not in columns:
+        conn.execute("ALTER TABLE interviews ADD COLUMN resume_id TEXT")
     if _table_exists(conn, "questions"):
         question_columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
         if "user_id" not in question_columns:
@@ -155,6 +167,7 @@ def create_interview(
     difficulty: str = "L1",
     user_id: str | None = None,
     interview_type: str = INTERVIEW_TECH,
+    resume_id: str | None = None,
 ) -> None:
     """`difficulty` 存**创建时选定的难度**（P1-M6 FR-14）："adaptive" 或 L1/L2/L3。
 
@@ -162,12 +175,15 @@ def create_interview(
     本列是用户的选择、供列表展示；列表页不展示自适应过程中的中间难度。
 
     `interview_type`（P1-M11 FR-22）：tech / behavioral，与 position 正交。
+
+    `resume_id`（P2-M11 FR-28）：本场使用的简历（NULL = 没传）。它同时是简历的
+    **引用计数**——删除场次时，没人再引用才连简历一起删（见 delete_interview）。
     """
     with _connect(db_path) as conn:
         conn.execute(
             "INSERT INTO interviews (id, thread_id, user_id, position, interview_type,"
-            " question_count, phase, difficulty, status, started_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)",
+            " question_count, phase, difficulty, status, started_at, resume_id)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?, ?)",
             (
                 interview_id,
                 interview_id,
@@ -178,6 +194,7 @@ def create_interview(
                 "intro",
                 difficulty,
                 _now(),
+                resume_id,
             ),
         )
 
@@ -232,11 +249,25 @@ def get_interview(db_path: Path, interview_id: str) -> dict | None:
 
 
 def delete_interview(db_path: Path, interview_id: str) -> bool:
-    """物理删除场次（T7a-R1）：interviews/answers/reports 三表。返回是否存在过。"""
+    """物理删除场次（T7a-R1）：interviews/answers/reports 三表。返回是否存在过。
+
+    简历（P2-M11）按**引用计数**清理：简历是用户级资产、同一份可跑多场，删场次只在该
+    简历已无任何场次引用时才一并删除——不静默把简历原文永久留在库里，也不误删还要用的。
+    """
     with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT resume_id FROM interviews WHERE id=?", (interview_id,)
+        ).fetchone()
+        resume_id = row["resume_id"] if row else None
         deleted = conn.execute("DELETE FROM interviews WHERE id=?", (interview_id,)).rowcount
         conn.execute("DELETE FROM answers WHERE interview_id=?", (interview_id,))
         conn.execute("DELETE FROM reports WHERE interview_id=?", (interview_id,))
+        if resume_id:
+            conn.execute(
+                "DELETE FROM resumes WHERE id=?"
+                " AND NOT EXISTS (SELECT 1 FROM interviews WHERE resume_id=?)",
+                (resume_id, resume_id),
+            )
     return deleted > 0
 
 
@@ -290,6 +321,59 @@ def count_finished_without_report(db_path: Path, *, user_id: str) -> int:
             (user_id,),
         ).fetchone()
     return int(row[0])
+
+
+def save_resume(
+    db_path: Path,
+    *,
+    resume_id: str,
+    user_id: str,
+    filename: str,
+    text: str,
+    parsed: dict[str, Any],
+) -> None:
+    """落一份简历（P2-M11）：原文 + 结构化结果。parsed 存 JSON 文本，读取侧解析。"""
+    with _connect(db_path) as conn:
+        conn.execute(
+            "INSERT INTO resumes (id, user_id, filename, text, parsed, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (resume_id, user_id, filename, text, json.dumps(parsed, ensure_ascii=False), _now()),
+        )
+
+
+def prune_unreferenced_resumes(db_path: Path, *, user_id: str) -> int:
+    """清掉该用户**没有任何场次引用**的旧简历，返回删除行数（P2-M11）。
+
+    简历是用户级资产：创建场次时带上 resume_id、删场次后再无引用才销毁
+    （delete_interview 的引用计数）。但「解析成功却没创建场次」会留下孤儿——
+    下一次解析时顺手清掉，不留静默垃圾、也不引后台任务。
+
+    **已知边界**：多标签同时开着创建页时，一边解析会清掉另一边尚未使用的简历
+    （那一边创建时报「简历不存在」，重新解析即可）——单机 demo 可接受，如实记录。
+    """
+    with _connect(db_path) as conn:
+        return conn.execute(
+            "DELETE FROM resumes WHERE user_id=?"
+            " AND NOT EXISTS (SELECT 1 FROM interviews WHERE resume_id = resumes.id)",
+            (user_id,),
+        ).rowcount
+
+
+def get_resume(db_path: Path, *, user_id: str, resume_id: str) -> dict | None:
+    """取本人简历；非本人 / 不存在一律 None（调用方按「不存在」404，不泄露存在性）。
+
+    user_id 必传（同 bank_private 的隔离口径）：漏传在调用处直接 TypeError，
+    而不是静默查出别人的简历。
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM resumes WHERE id=? AND user_id=?", (resume_id, user_id)
+        ).fetchone()
+    if row is None:
+        return None
+    item = dict(row)
+    item["parsed"] = json.loads(item["parsed"]) if item["parsed"] else {}
+    return item
 
 
 def get_report(db_path: Path, interview_id: str) -> dict | None:

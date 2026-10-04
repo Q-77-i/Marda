@@ -6,6 +6,7 @@
  */
 
 import { authorizedFetch, responseError } from "@/lib/http";
+import type { ResumeParseResult } from "@/lib/resume";
 import { postSSE, type SSEEvent } from "@/lib/sse";
 
 export type Phase =
@@ -222,11 +223,19 @@ export async function createInterview(
   difficulty: string,
   onEvent: (event: SSEEvent) => void,
   interviewType: string = "tech",
+  resumeId: string | null = null,
 ): Promise<string> {
   let interviewId = "";
   await postSSE(
     "/api/interviews",
-    { position, question_count: questionCount, difficulty, interview_type: interviewType },
+    {
+      position,
+      question_count: questionCount,
+      difficulty,
+      interview_type: interviewType,
+      // 简历（P2-M11 FR-28）：解析成功才带；不带 = 无简历路径（消息构造逐字不变）
+      ...(resumeId ? { resume_id: resumeId } : {}),
+    },
     (event) => {
       if (!interviewId && event.event === "meta") {
         interviewId = JSON.parse(event.data).interview_id ?? "";
@@ -512,6 +521,22 @@ export async function uploadPrivateFile(
   const response = await authorizedFetch("/api/bank/private/upload", { method: "POST", body });
   if (!response.ok) throw new Error(await responseError(response));
   return response.json() as Promise<UploadReport>;
+}
+
+/**
+ * 解析简历（P2-M11 FR-28，multipart）：文件与粘贴文本二选一，返回**结构化结果**
+ * （不含原文）——创建页据此显示「读到 N 段项目经历」，解析错要当场看得见。
+ */
+export async function uploadResume(
+  file: File | null,
+  text: string,
+): Promise<ResumeParseResult> {
+  const body = new FormData();
+  if (file) body.append("file", file);
+  else body.append("text", text);
+  const response = await authorizedFetch("/api/resumes", { method: "POST", body });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<ResumeParseResult>;
 }
 
 /** 编辑或归档/恢复；返回更新后的完整题目（含来源明细）。 */

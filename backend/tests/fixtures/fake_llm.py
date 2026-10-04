@@ -43,6 +43,11 @@ DEFAULT_BEHAVIORAL_SCORE = {
     "comment": "讲述清晰",
 }
 DEFAULT_PROFILE = {"summary": "应届生，Agent 方向", "projects": ["做过 RAG 问答系统"], "tech_stack": ["Python"]}
+DEFAULT_RESUME = {
+    "summary": "2026 届硕士，Agent 方向",
+    "projects": ["多轮检索问答系统：负责检索链路与重排", "代码助手：工具调用与沙箱"],
+    "skills": ["Python", "RAG", "LangGraph"],
+}
 DEFAULT_GENERATED = {
     "text": "请设计一个带工具调用的 Agent 系统",
     "topic": "系统设计",
@@ -97,6 +102,7 @@ class FakeLLMClient:
         score: dict | Callable[[], dict] | None = None,
         behavioral_score: dict | Callable[[], dict] | None = None,
         profile: dict | None = None,
+        resume: dict | None = None,
         generated: dict | None = None,
         report: dict | None = None,
         text: str = "面试官文案",
@@ -107,6 +113,7 @@ class FakeLLMClient:
             behavioral_score if behavioral_score is not None else DEFAULT_BEHAVIORAL_SCORE
         )
         self._profile = profile or DEFAULT_PROFILE
+        self._resume = resume or DEFAULT_RESUME
         self._generated = generated or DEFAULT_GENERATED
         self._report = report or DEFAULT_REPORT
         self._text = text
@@ -141,6 +148,8 @@ class FakeLLMClient:
         system = kwargs["messages"][0]["content"]
         # messages 全量留档（P2-M6）：图附件断言要看得到整条消息列表，不只 system
         self.calls.append({"system": system, "messages": kwargs.get("messages", [])})
+        if "简历解析器" in system:  # P2-M11：简历抽取（标记须排在「提炼」之前，见 prompts）
+            return json.dumps(self._resume, ensure_ascii=False)
         if "评分官" in system:
             raw = self._behavioral_score if "行为面" in system else self._score
             return json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)

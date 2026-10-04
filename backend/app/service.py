@@ -221,12 +221,16 @@ class Service:
         user_id: str = "",
         difficulty: str = ADAPTIVE,
         interview_type: str = INTERVIEW_TECH,
+        candidate_profile: str = "",
+        resume_id: str = "",
     ) -> AsyncIterator[dict]:
         """创建场次后立即执行开场（SPEC §7）：首事件 meta 携带 interview_id。
 
         difficulty（P1-M6 FR-14）：adaptive = 从 L1 起自适应升降；L1/L2/L3 = 全场锁定该档。
         interview_type（P1-M11 FR-22）：tech / behavioral——只换题源与能力模型，
         图结构与阶段推进复用（行为面走 BEHAVIORAL 单段）。
+        candidate_profile / resume_id（P2-M11 FR-28）：简历解析结果预填候选人插槽；
+        空值 = 没传简历，出题侧消息构造与接入前逐字一致。
         """
         state = InterviewState(
             interview_id=interview_id,
@@ -236,6 +240,8 @@ class Service:
             question_count=question_count,
             difficulty=base_difficulty(difficulty),
             difficulty_locked=difficulty != ADAPTIVE,
+            candidate_profile=candidate_profile,
+            resume_id=resume_id,
         )
         config = run_config(interview_id, question_count)
         yield _event("meta", {
