@@ -78,6 +78,20 @@ def browse_questions(
     return [_item(row) for row in rows], total
 
 
+def get_question(db_path: Path, question_id: str) -> dict[str, Any] | None:
+    """按 id 取单题（**只认公共 + enabled**）；取不到返回 None。
+
+    不区分「不存在 / 别人的私有题 / 已归档」——私有题的 id 不该成为可探测的信号
+    （同 M7「跨用户一律 404」的口径）。P2-M10 起供 MCP 题库查询 server 用。
+    """
+    where, _ = _where({})
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT {_FIELDS} FROM questions WHERE id=? AND {where}", (question_id,)
+        ).fetchone()
+    return _item(row) if row else None
+
+
 def fetch_sources(db_path: Path, question_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     """按 id 批量取来源明细（一题多源，按 id 分组）。"""
     if not question_ids:

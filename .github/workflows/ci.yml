@@ -1,0 +1,90 @@
+# CI（P2-M10）：push / PR 上跑**不需要密钥**的那一半——测试、lint、构建、能离线跑的守卫。
+#
+# 不进 CI 的（口径见 docs/SPEC.md §10）：
+# - smoke_*（真 DeepSeek / 语音 key / Qdrant，手动跑）；
+# - 评测与评分门禁（花真钱，且门禁的余量按「同一 golden 连跑三次」的波动定，CI 里跑会被
+#   上游抖动误伤）；
+# - **语料红线的「真比对」**：比对语料是个人题库，按红线定义不进仓库——CI 里没有语料，
+#   这一条只能在有语料的机器上跑（提交前固定动作 `data/scripts/check_redline.py`）。
+#   redline job 跑的是它**能诚实跑的**部分：检查器自检 + 语料/密钥的入库守卫。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# 测试用假密钥：`config.Settings` 有必填项（deepseek_api_key / siliconflow_api_key /
+# jwt_secret≥32）。本地靠 .env 掩盖，CI 没有 .env —— 缺了它单测层会在 get_settings()
+# 直接 ValidationError（「本地绿、CI 红」的经典形态；集成层的 conftest 自己注入，
+# 单测层没有）。全是假值，不触网。
+env:
+  DEEPSEEK_API_KEY: ci-dummy-key
+  SILICONFLOW_API_KEY: ci-dummy-key
+  JWT_SECRET: ci-dummy-secret-0123456789abcdef0123456789
+
+jobs:
+  backend:
+    name: 后端测试（pytest）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13" # 对齐 backend/Dockerfile 与本机开发环境
+      # 走官方 PyPI：pyproject 里的默认源是清华镜像（本地开发快），runner 在境外用它反而慢
+      - name: 安装依赖（锁定文件）
+        working-directory: backend
+        run: uv sync --frozen --default-index https://pypi.org/simple
+      - name: pytest（不需要任何密钥）
+        working-directory: backend
+        run: uv run pytest -q
+
+  frontend:
+    name: 前端（lint / vitest / build）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 12.4.2 # 与生成 pnpm-lock.yaml 的本地版本一致
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24" # 对齐 frontend/Dockerfile（node:24-alpine）
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: 安装依赖（锁定文件）
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+      - name: lint
+        working-directory: frontend
+        run: pnpm lint
+      - name: vitest
+        working-directory: frontend
+        run: pnpm test
+      - name: build
+        working-directory: frontend
+        run: pnpm build
+
+  redline:
+    name: 语料红线（CI 可查部分：入库守卫 + 检查器自检）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.13"
+      - name: 安装依赖（锁定文件）
+        working-directory: backend
+        run: uv sync --frozen --default-index https://pypi.org/simple
+      # ① test_repo_hygiene：语料/密钥类文件没被 git add 进索引（语料不在仓库 = 没有可比的
+      #    语料，这一条就是 CI 能给出的最强保证）；② test_check_redline：检查器本身的
+      #    骨架/窗口/合并/语料取值逻辑没坏（合成语料夹具）。真比对见文件头说明。
+      - name: 语料/密钥入库守卫 + 检查器自检
+        working-directory: backend
+        run: uv run pytest tests/unit/test_repo_hygiene.py tests/unit/test_check_redline.py -q

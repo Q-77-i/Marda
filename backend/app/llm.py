@@ -16,6 +16,9 @@
   并发闸门 + 断路器）——闸门持有期 = 整条上游调用的生命周期（流式是整流，不是建连）；
   **只有「上游不可用」类失败计入熔断**（内容类失败按定义就是上游活着时出的错）。
   换模型档位（pro → flash）与换兜底内容**不在这里**——那是调用方（节点）的降级语义。
+- **成本归因（P2-M10）**：每次调用可带 `purpose`（出题/评分/报告…），映射成 Langfuse
+  generation 的 `name`，云端即可按环节读成本；**只在 Langfuse 启用时传**——原生 openai
+  SDK 会把 `name` 当未知参数塞进请求体（DeepSeek 侧 400）。
 
 用法：
     text = await chat([{"role": "user", "content": "出个题"}])
@@ -118,6 +121,15 @@ def reset_reliability() -> None:
     _guards.clear()
 
 
+def _observation_kwargs(purpose: str | None) -> dict[str, Any]:
+    """调用用途 → drop-in 的 `name`（成本按环节归因，P2-M10）。
+
+    **只在 Langfuse 启用时给**：drop-in 的 `OpenAiArgsExtractor` 会把 `name` 摘掉，
+    而原生 openai SDK 会把它当未知参数塞进请求体（DeepSeek 侧即 400）。
+    """
+    return {"name": purpose} if purpose and observability.enabled() else {}
+
+
 @retry(
     retry=retry_if_exception(_is_retryable),
     stop=stop_after_attempt(NETWORK_RETRY_ATTEMPTS),
@@ -131,8 +143,9 @@ async def _create(
     temperature: float,
     response_format: dict | None = None,
     model: str | None = None,
+    purpose: str | None = None,
 ) -> Any:
-    kwargs: dict[str, Any] = {}
+    kwargs: dict[str, Any] = dict(_observation_kwargs(purpose))
     if response_format is not None:
         kwargs["response_format"] = response_format
     return await _get_client().chat.completions.create(
@@ -157,6 +170,7 @@ async def _create_stream(
     max_tokens: int,
     temperature: float,
     model: str | None = None,
+    purpose: str | None = None,
 ) -> Any:
     """建立流式请求。**重试只覆盖这一步**（建连 + 响应头）——一旦开始吐字，重试就会
     把同一段话说两遍，中途断流交给上层抛错（用户侧「重试」= 重跑失败节点，语义已有）。
@@ -172,6 +186,7 @@ async def _create_stream(
         extra_body={"thinking": {"type": "disabled"}},  # 坑位 1/2：流式下同样关 thinking
         stream=True,
         stream_options={"include_usage": True},
+        **_observation_kwargs(purpose),
     )
 
 
@@ -181,6 +196,7 @@ async def stream_chat(
     max_tokens: int = 2048,
     temperature: float = 0.7,
     model: str | None = None,
+    purpose: str | None = None,
 ) -> AsyncIterator[str]:
     """流式文案调用：逐块产出正文增量（usage 块与空块不产出）。
 
@@ -194,7 +210,11 @@ async def stream_chat(
         async with guard.acquire():
             try:
                 response = await _create_stream(
-                    messages, max_tokens=max_tokens, temperature=temperature, model=model
+                    messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    model=model,
+                    purpose=purpose,
                 )
                 async for chunk in response:
                     if not chunk.choices:
@@ -218,6 +238,7 @@ async def _request(
     temperature: float,
     response_format: dict | None = None,
     model: str | None = None,
+    purpose: str | None = None,
 ) -> str:
     """发一次请求并取正文；网络层异常统一转 LLMError，并过保护器（P2-M9）。"""
     guard = _guard_for(model)
@@ -229,6 +250,7 @@ async def _request(
                 temperature=temperature,
                 response_format=response_format,
                 model=model,
+                purpose=purpose,
             )
         )
     except UpstreamBusy as exc:
@@ -248,6 +270,7 @@ async def chat(
     temperature: float = 0.7,
     model: str | None = None,
     on_delta: Callable[[str], None] | None = None,
+    purpose: str | None = None,
 ) -> str:
     """文案类调用（开场/出题/追问/结束语）。**内部走流式**，逐块回调 `on_delta`。
 
@@ -263,7 +286,7 @@ async def chat(
     for attempt in range(2):  # 首次 + 空输出重请求 1 次
         parts: list[str] = []
         async for piece in stream_chat(
-            current, max_tokens=max_tokens, temperature=temperature, model=model
+            current, max_tokens=max_tokens, temperature=temperature, model=model, purpose=purpose
         ):
             parts.append(piece)
             if on_delta is not None:
@@ -297,6 +320,7 @@ async def chat_json(
     max_tokens: int = 2048,
     temperature: float = 0.3,
     model: str | None = None,
+    purpose: str | None = None,
 ) -> T:
     """结构化类调用（评分/提炼/报告）。json_object 模式 + Pydantic 校验，失败重请求 1 次。
 
@@ -312,6 +336,7 @@ async def chat_json(
             temperature=temperature,
             response_format=response_format,
             model=model,
+            purpose=purpose,
         )
         try:
             return schema.model_validate_json(content)

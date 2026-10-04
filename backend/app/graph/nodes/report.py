@@ -82,7 +82,8 @@ async def report_node(state: InterviewState) -> dict:
         remark = await stream.speak(
             [{"role": "system", "content": CLOSING_REMARK_TEMPLATE.format(
                 persona=persona_for(state.interview_type),
-            )}]
+            )}],
+            purpose="closing",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         logger.warning("结束陈词生成失败，跳过：%s", exc)
@@ -120,12 +121,14 @@ async def _report_text(state: InterviewState, *, behavioral: bool) -> ReportLLM 
             schema=ReportLLM,
             temperature=0.3,
             model=get_settings().deepseek_pro_model,  # 深度档（SPEC §3：报告用 v4-pro）
+            purpose="report",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
         logger.warning("报告（v4-pro）生成失败，降级 flash（P2-M9）：%s", exc)
     try:
-        part = await llm.chat_json(messages, schema=ReportLLM, temperature=0.3)  # 缺省 = flash
+        # 缺省 = flash
+        part = await llm.chat_json(messages, schema=ReportLLM, temperature=0.3, purpose="report")
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
         logger.warning("报告（flash）也失败，输出确定性内容（P2-M9 降级）：%s", exc)

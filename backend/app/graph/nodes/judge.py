@@ -99,6 +99,7 @@ async def judge_node(state: InterviewState) -> dict:
             ),
             schema=score_schema_for(state.interview_type),
             temperature=JUDGE_TEMPERATURE,
+            purpose="judge",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）

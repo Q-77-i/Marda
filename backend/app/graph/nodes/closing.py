@@ -32,7 +32,8 @@ async def closing_invite_node(state: InterviewState) -> dict:
         text = await stream.speak(
             [{"role": "system", "content": CLOSING_INVITE_TEMPLATE.format(
                 persona=persona, section=section,
-            )}]
+            )}],
+            purpose="closing",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
@@ -59,7 +60,8 @@ async def answer_candidate_node(state: InterviewState) -> dict:
         text = await stream.speak(
             [{"role": "system", "content": ANSWER_CANDIDATE_TEMPLATE.format(
                 persona=persona, content=state.user_input,
-            )}, *extra]
+            )}, *extra],
+            purpose="closing",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
@@ -89,7 +91,8 @@ async def refuse_end_node(state: InterviewState) -> dict:
         text = await stream.speak(
             [{"role": "system", "content": REFUSE_END_TEMPLATE.format(
                 persona=persona, question=question,
-            )}]
+            )}],
+            purpose="closing",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）

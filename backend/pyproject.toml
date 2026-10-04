@@ -33,6 +33,10 @@ dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
     "ragas>=0.3,<0.4",
+    # MCP 题库查询 server（P2-M10）：**可选组件**，只有 app/mcp_server 用它。
+    # 放 dev 组的理由：容器 `uv sync --no-dev` 天然不进 api 镜像（协议代码与 api 无关），
+    # 而本地 `uv sync` / `uv run pytest` 开箱即用（不制造「先装某个 group 才能跑测试」的坑）。
+    "mcp>=2,<3",
 ]
 
 [tool.pytest.ini_options]

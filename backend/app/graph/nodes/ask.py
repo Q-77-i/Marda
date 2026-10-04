@@ -97,6 +97,7 @@ async def ask_node(state: InterviewState) -> dict:
                 profile=state.candidate_profile or "（候选人未提供项目背景）",
             )}],
             preamble=preamble,
+            purpose="ask",  # 成本归因（P2-M10）
         )
     except llm.LLMError as exc:
         degrade.reraise_if_content(exc)  # 内容类不降级（见 degrade 模块）
@@ -208,6 +209,7 @@ async def _generate_tech(state: InterviewState) -> QuestionRecord:
         )}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
+        purpose="ask",  # 成本归因（P2-M10）
     )
     return QuestionRecord(
         text=generated.text,
@@ -242,6 +244,7 @@ async def _generate_scenario(state: InterviewState) -> QuestionRecord:
             asked=_asked_project_block(state))}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
+        purpose="ask",  # 成本归因（P2-M10）
     )
     return QuestionRecord(
         text=generated.text,
@@ -270,6 +273,7 @@ async def _generate_behavioral(state: InterviewState) -> QuestionRecord:
             asked=_asked_behavioral_block(state))}, *await _last_answer_attachment(state)],
         schema=GeneratedQuestion,
         temperature=0.7,
+        purpose="ask",  # 成本归因（P2-M10）
     )
     return QuestionRecord(
         text=generated.text,

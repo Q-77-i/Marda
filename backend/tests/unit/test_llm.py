@@ -149,6 +149,38 @@ async def test_chat_透传参数并关thinking(install):
     assert "response_format" not in call
 
 
+async def test_langfuse启用时purpose作为调用名(install, monkeypatch):
+    """成本归因（P2-M10）：`purpose` 映射成 drop-in 的 `name`（Langfuse 里按环节归因）。"""
+    monkeypatch.setattr(llm.observability, "enabled", lambda: True)
+    client = install([_response("好")])
+    await llm.chat(MESSAGES, purpose="opening")
+    assert client.calls[0]["name"] == "opening"
+
+
+async def test_langfuse未启用时不传调用名(install):
+    """关闭时**不能传**——原生 openai SDK 会把未知参数塞进请求体（DeepSeek 侧 400）。
+
+    （默认关闭 = conftest 的 `_hermetic_langfuse` 夹具。）
+    """
+    client = install([_response("好")])
+    await llm.chat(MESSAGES, purpose="opening")
+    assert "name" not in client.calls[0]
+
+
+async def test_不传purpose时请求不带name(install, monkeypatch):
+    monkeypatch.setattr(llm.observability, "enabled", lambda: True)
+    client = install([_response("好")])
+    await llm.chat(MESSAGES)
+    assert "name" not in client.calls[0]
+
+
+async def test_chat_json同样按purpose命名(install, monkeypatch):
+    monkeypatch.setattr(llm.observability, "enabled", lambda: True)
+    client = install([_response('{"technical_depth": 3, "comment": "还行"}')])
+    await llm.chat_json(MESSAGES, schema=Review, purpose="judge")
+    assert client.calls[0]["name"] == "judge"
+
+
 async def test_chat_空内容重请求后成功(install):
     client = install([_response(None), _response("补上了")])
 

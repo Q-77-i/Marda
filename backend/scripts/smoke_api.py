@@ -166,57 +166,21 @@ async def wait_ready() -> None:
     raise RuntimeError("uvicorn 未在 30s 内就绪")
 
 
-def _model_of(obs) -> str | None:
-    """观测的模型名。v2 API 把它放在 `model` 字段，而 SDK 4.9.1 没声明该字段（落在
-    model_extra），别用 `provided_model_name`——那个恒为 None，会误判成「没上报模型名」。"""
-    return getattr(obs, "model", None) or (obs.model_extra or {}).get("model")
+async def _fetch_observations(trace_id: str, *, report_model: str) -> list:
+    """读回云端观测并等到「这一场齐了」：树闭合之外，还要等**报告那次调用**落库。
 
-
-async def _fetch_observations(langfuse_client, trace_id: str, *, report_model: str) -> list:
-    """读回云端观测（v2 observations API）；上报是异步批量的，等观测落全再返回。
-
-    判据三条，缺一都会拿到**偏小的快照**（断言本身不会错，但打印的轮次数/token/成本会少算，
-    实测漏过 2 个 span + 2 个 generation + 整条报告调用）：
-
-    1. **树闭合**——所有 generation 的父节点都在返回集内。观测逐条落库，只判「非空」会拿到
-       半棵树（generation 已到、它挂的轮次 span 还没到），此时的父子断言必然误报。
-    2. **报告调用已到**——报告是全场最后一次 LLM 调用，落库最晚，是「这一场观测齐了」的
-       天然哨兵；顺带把 SPEC §3「报告走深度档」变成断言。
-    3. **连续两次条数不变**——收尾确认没有更晚落下的观测。
-
-    走 v2 而非 `api.trace.get`：**Langfuse 对 2026-09-16 之后新建的组织停用了 legacy
-    trace 端点**（410 LEGACY_API_UNAVAILABLE_FOR_NEW_ORGANIZATION），v4 云上读数据只有
-    v2 observations / metrics 这一条路。
+    报告是全场最后一次 LLM 调用、落库最晚，是天然哨兵；顺带把 SPEC §3「报告走深度档」
+    变成断言。等待语义与判据的详解在 `observability.fetch_trace_observations`
+    （P2-M10 抽成共享实现：`scripts/cost_report.py` 用的是同一份，避免两份读回各自漂移）。
     """
-    last: Exception | None = None
-    data: list = []
-    stable = 0
-    for _ in range(30):
-        try:
-            # SDK 的 API 客户端是同步 httpx，扔线程池，别卡事件循环
-            resp = await asyncio.to_thread(
-                langfuse_client.api.observations.get_many,
-                trace_id=trace_id, fields="core,basic,usage,model", limit=100,
-            )
-            page = resp.data
-            ids = {o.id for o in page}
-            gens = [o for o in page if o.type == "GENERATION"]
-            done = (
-                bool(page)
-                and all(o.parent_observation_id in ids for o in gens)
-                and any(_model_of(o) == report_model for o in gens)
-            )
-            stable = stable + 1 if done and len(page) == len(data) else 0
-            last = RuntimeError(f"观测尚未落全（当前 {len(page)} 条）")
-            data = page
-            if stable >= 2:
-                return data
-        except Exception as exc:  # 未落库时是空/404，其余错误同样重试到超时
-            last = exc
-        await asyncio.sleep(1)
-    if data:  # 超时但有数据：交给断言去报真正的问题，别在这里吞掉
-        return data
-    raise RuntimeError(f"trace {trace_id} 30s 内未在云端可见：{last}")
+    return await observability.fetch_trace_observations(
+        trace_id,
+        extra_complete=lambda page: any(
+            observability.model_of(o) == report_model
+            for o in page
+            if o.type == "GENERATION"
+        ),
+    )
 
 
 async def main() -> None:
@@ -732,7 +696,7 @@ async def main() -> None:
                 trace_id = lf.create_trace_id(seed=interview_id)
                 observability.flush()
                 report_model = get_settings().deepseek_pro_model
-                obs = await _fetch_observations(lf, trace_id, report_model=report_model)
+                obs = await _fetch_observations(trace_id, report_model=report_model)
                 turns = [o for o in obs if o.name == "interview-turn"]
                 gens = [o for o in obs if o.type == "GENERATION"]
                 shapes = [(o.name, o.type) for o in obs]
@@ -744,7 +708,7 @@ async def main() -> None:
                 turn_ids = {t.id for t in turns}
                 assert all(g.parent_observation_id in turn_ids for g in gens), \
                     "generation 未挂在轮次 span 下"
-                models = {_model_of(g) for g in gens}
+                models = {observability.model_of(g) for g in gens}
                 assert models and None not in models, f"generation 未带模型名（成本归属前提）：{models}"
                 assert report_model in models, f"报告未走深度档 {report_model}（SPEC §3）：{models}"
                 tokens = sum((g.usage_details or {}).get("total", 0) for g in gens)

@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 import subprocess
@@ -70,6 +71,26 @@ def _ngrams(skeleton: str) -> list[str]:
     return [skeleton[i : i + NGRAM] for i in range(len(skeleton) - NGRAM + 1)]
 
 
+def key_point_texts(raw: object) -> list[str]:
+    """关键点列的文本列表。库里存的是 **JSON 文本**（老库/夹具也可能是列表，两种都容错）。
+
+    ⚠️ 这里踩过一回（P2-M10 修）：原写法 `*(key_points or [])` 把 JSON 文本当可迭代**拆成
+    单字**——单字滑不出 12 字窗口，于是**关键点一条都没参与比对，检查却全绿**。
+    「顺手把字符串展开」这种写法不会报错，只会静默少查一路。
+    """
+    if not raw:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(item) for item in raw]
+    try:
+        parsed = json.loads(str(raw))
+    except ValueError:
+        return [str(raw)]
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed]
+    return [str(parsed)]
+
+
 def build_bank_ngrams(db_path: Path) -> set[str]:
     """题库文本（题干 + 答案 + 关键点）的骨架 n-gram 集合。只读打开。"""
     con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
@@ -79,7 +100,8 @@ def build_bank_ngrams(db_path: Path) -> set[str]:
         con.close()
     grams: set[str] = set()
     for question, answer, key_points in rows:
-        for text in (question or "", answer or "", *(key_points or [])):
+        texts = [question or "", answer or "", *key_point_texts(key_points)]
+        for text in texts:
             grams.update(_ngrams(cjk_skeleton(str(text))))
     return grams
 

@@ -11,6 +11,7 @@ trace_id 由场次派生、多轮 resume 归同一 trace、generation 挂在轮�
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 from langfuse import Langfuse
@@ -90,6 +91,97 @@ def test_一次面试一个trace且多轮归并(langfuse_env):
     assert all(_attrs(s)["session.id"] == "iv-abc" for s in same_interview)
     assert all(_attrs(s)["user.id"] == "u1" for s in same_interview)
     assert {s.name for s in spans} == {"interview-turn"}
+
+
+def _obs(kind, *, oid="o", name=None, model="deepseek-flash", parent=None,
+         cost=None, usage=None, start=0):
+    """观测替身（只带 summarize 消费的字段；v2 API 的 model 落在 model_extra）。"""
+    return SimpleNamespace(
+        id=oid, type=kind, name=name, parent_observation_id=parent,
+        cost_details=None if cost is None else {"total": cost},
+        usage_details=usage, start_time=start,
+        model=model, model_extra={},
+    )
+
+
+def test_成本汇总按模型与环节归因():
+    """成本读回（P2-M10）：按模型 / 按 purpose / 按轮次三个切面，外加「价格表没配」的判据。"""
+    observations = [
+        _obs("SPAN", oid="t1", name="interview-turn", start=1),
+        _obs("SPAN", oid="t2", name="interview-turn", start=2),
+        _obs("GENERATION", oid="g1", name="ask", parent="t1",
+             cost=0.002, usage={"input": 100, "output": 50, "total": 150}),
+        _obs("GENERATION", oid="g2", name="judge", parent="t1",
+             cost=0.001, usage={"input": 80, "output": 20, "total": 100}),
+        _obs("GENERATION", oid="g3", name="report", parent=None, model="deepseek-v4-pro",
+             cost=0.03, usage={"input": 900, "output": 300, "total": 1200}),
+        _obs("SPAN", oid="root", name=None),  # 非轮次 span：不进 by_turn
+    ]
+
+    s = observability.summarize_observations(observations)
+
+    assert s["generations"] == 3 and s["turn_spans"] == 2
+    assert s["tokens"] == {"input": 1080, "output": 370, "total": 1450}
+    assert abs(s["cost_total"] - 0.033) < 1e-9 and s["cost_priced"] is True
+    assert [r["key"] for r in s["by_model"]] == ["deepseek-v4-pro", "deepseek-flash"]  # 贵的在前
+    assert s["by_model"][1]["calls"] == 2
+    assert {r["key"]: r["label"] for r in s["by_purpose"]} == {
+        "ask": "出题", "judge": "评分", "report": "报告",
+    }
+    assert [(r["key"], r["label"], r["calls"]) for r in s["by_turn"]] == [
+        (0, "场外（开场/报告/收尾）", 1), (1, "第 1 轮", 2),
+    ]
+
+
+def test_成本汇总_未命名与未配价格表如实标注():
+    """历史场次（P2-M10 之前的 generation 没有 name）+ Langfuse 没配价格表 → 都不静默。"""
+    observations = [
+        _obs("SPAN", oid="t1", name="interview-turn", start=1),
+        _obs("GENERATION", oid="g1", name=None, parent="t1", cost=0.0,
+             usage={"input": 10, "output": 5, "total": 15}),
+    ]
+
+    s = observability.summarize_observations(observations)
+
+    assert s["by_purpose"][0]["key"] == "(未命名)"
+    assert s["cost_priced"] is False  # 有调用但成本为 0 = 价格表没配，报告要说明
+    assert s["tokens"]["total"] == 15  # token 照常读得到
+
+
+class _FakeReadClient:
+    """读回替身：按序吐出各次调用的观测页（`get_many` 是同步的，原样返回即符合契约）。"""
+
+    def __init__(self, pages: list[list]) -> None:
+        self.calls = 0
+        outer = self
+
+        class _Observations:
+            def get_many(self, **kwargs):
+                page = pages[min(outer.calls, len(pages) - 1)]
+                outer.calls += 1
+                return SimpleNamespace(data=page)
+
+        self.api = SimpleNamespace(observations=_Observations())
+
+
+async def test_成本读回等树闭合且条数稳定(monkeypatch):
+    """半棵树不算齐（观测逐条落库）；条数连续两次不变才收尾（防更晚的观测丢在门外）。"""
+    turn = _obs("SPAN", oid="t1", name="interview-turn")
+    gen = _obs("GENERATION", oid="g1", parent="t1")
+    client = _FakeReadClient([[gen], [gen, turn]])  # 第一页：父节点还没到
+    monkeypatch.setattr(observability, "get_client", lambda: client)
+
+    data = await observability.fetch_trace_observations("trace-1", tries=10, interval=0)
+
+    assert len(data) == 2 and client.calls == 4  # 齐了之后再确认两次条数不变
+
+
+async def test_成本读回_云端一直不可见就如实报错(monkeypatch):
+    client = _FakeReadClient([[]])  # 永远空
+    monkeypatch.setattr(observability, "get_client", lambda: client)
+
+    with pytest.raises(RuntimeError, match="未在云端可见"):
+        await observability.fetch_trace_observations("trace-2", tries=3, interval=0)
 
 
 def test_LLM调用挂在轮次span下(langfuse_env):

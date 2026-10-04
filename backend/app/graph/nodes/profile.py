@@ -29,6 +29,7 @@ async def profile_node(state: InterviewState) -> dict:
         extraction = await llm.chat_json(
             [{"role": "system", "content": PROFILE_TEMPLATE.format(content=state.user_input)}, *extra],
             schema=ProfileExtraction,
+            purpose="profile",  # 成本归因（P2-M10）
             temperature=0.3,
         )
     except llm.LLMError as exc:

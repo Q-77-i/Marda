@@ -33,6 +33,26 @@ def db_path(tmp_path):
     return path
 
 
+def test_单题查询_只认公共且启用(db_path, tmp_path):
+    """`get_question`（P2-M10，MCP 题库查询 server 用）：私有题与归档题一律当「没找到」。
+
+    不区分「不存在 / 是别人的私有题 / 已归档」——**私有题的 id 不该成为可探测的信号**
+    （与 M7 跨用户一律 404 同一口径）。
+    """
+    insert_questions(db_path, [
+        question_row("q_priv", user_id="u1"),
+        question_row("q_draft", status="draft"),
+    ])
+
+    item = bank_query.get_question(db_path, "q1")
+
+    assert item is not None and item["question_id"] == "q1"
+    assert item["key_points"] == ["k1", "k2"]  # 与浏览同款解析（JSON 文本 → 列表）
+    assert bank_query.get_question(db_path, "q_priv") is None
+    assert bank_query.get_question(db_path, "q_draft") is None
+    assert bank_query.get_question(db_path, "q_不存在") is None
+
+
 def test_浏览只含enabled并解析json字段(db_path):
     items, total = bank_query.browse_questions(db_path)
     assert total == 3  # q4 是 draft
