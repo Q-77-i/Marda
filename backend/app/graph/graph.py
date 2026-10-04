@@ -2,7 +2,7 @@
 
 运行时模型：每次用户消息 = 一个 resume super-step——route 分发到对应节点链，
 连续执行到下一个 interrupt 暂停；非幂等副作用（计数/写 state）只发生在
-interrupt 之后的节点里（SPEC §12.3，resume 不重跑暂停前节点）。
+interrupt 之后的节点里（SPEC §11 风险 3，resume 不重跑暂停前节点）。
 """
 
 from __future__ import annotations
