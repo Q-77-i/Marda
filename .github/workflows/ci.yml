@@ -40,6 +40,16 @@ jobs:
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.13" # 对齐 backend/Dockerfile 与本机开发环境
+      # PDF 渲染的系统件，**与 backend/Dockerfile 同一套**：weasyprint 靠 pango/harfbuzz 排版、
+      # 中文靠 Noto CJK。runner 镜像里两样都没有（实测其 apt 清单：无 libpango/libharfbuzz/libglib、
+      # 无 CJK 字体，只有 emoji 字体）——后端两个 PDF 用例会当场红：`test_PDF可读回且中文不是乱码`
+      # 在 import weasyprint 时就 OSError（`cannot load libgobject-2.0-0`）、
+      # `test_PDF只用随镜像分发的字体` 断言「只许 Noto」（它 docstring 自己写着「或直接跑容器」）。
+      - name: 系统依赖（PDF：pango/harfbuzz + 中文字体，同 Dockerfile）
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 fonts-noto-cjk
       # 走官方 PyPI：pyproject 里的默认源是清华镜像（本地开发快），runner 在境外用它反而慢
       - name: 安装依赖（锁定文件）
         working-directory: backend
