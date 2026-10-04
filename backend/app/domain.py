@@ -27,19 +27,28 @@ DOMAIN_LABELS: Final[dict[str, str]] = {
     "algorithms": "手撕算法",
     "behavioral": "行为与项目面",
     "cs-fundamentals": "计算机基础",
+    "project": "项目深挖",
 }
 
 # 行为面域 id（行为题在 questions.domain 里的取值；也是行为面场次的出题域）
 BEHAVIORAL_DOMAIN: Final[str] = "behavioral"
 
-# 引擎可出题的域（P1-M11）：六大技术域 + 行为面。**行为面不属于技术配额**——
-# 本集合的语义即「可出题但不属于技术配额」：集合内域都能被出题检索，但只有
-# DOMAIN_WEIGHTS 的键参与配额分配；行为面场次按整池抽取（不选域、不分配配额）。
-# algorithms 不在此集合：现阶段只存不考（M7 拍板）。
-ASKABLE_DOMAINS: Final[frozenset[str]] = frozenset(DOMAIN_WEIGHTS) | {BEHAVIORAL_DOMAIN}
+# 项目深挖域 id（项目深挖题的 domain 取值，P1-M4.6-C 起；P2-M11 第 0 步起有题库身份）
+PROJECT_DOMAIN: Final[str] = "project"
+
+# 引擎可出题的域（P1-M11）：六大技术域 + 行为面 + 项目深挖（P2-M11 第 0 步）。
+# **单列出题池不属于技术配额**——本集合的语义即「可出题但不属于技术配额」：集合内域
+# 都能被出题检索，但只有 DOMAIN_WEIGHTS 的键参与配额分配；行为面场次按整池抽取
+# （不选域、不分配配额），项目深挖题由 PROJECT 阶段按域检索。集合之外的域不可出题：
+# algorithms 只存不考（M7 拍板）、cs-fundamentals 是 draft。
+ASKABLE_DOMAINS: Final[frozenset[str]] = frozenset(DOMAIN_WEIGHTS) | {
+    BEHAVIORAL_DOMAIN,
+    PROJECT_DOMAIN,
+}
 
 # 可上传/可入私有库的域（P1-M7）：六大技术域 + algorithms（只存不考）。
-# **不含行为面**（M11 D7：私有行为题暂不开）；其余域解析入库但置 draft。
+# **不含行为面与项目深挖**（M11 D7：私有行为题暂不开；项目深挖题同理走引擎侧）；
+# 其余域解析入库但置 draft。
 ENABLED_DOMAINS: Final[frozenset[str]] = frozenset(DOMAIN_WEIGHTS) | {"algorithms"}
 
 # 会话类型（P1-M11 FR-22）：与技术岗位正交（position 两种类型都是同一个岗位）。

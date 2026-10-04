@@ -247,6 +247,8 @@ def update_difficulty(state) -> None:
 
 **项目深挖前置（P1-M4.6-C）**：首题（WARMUP 之后）与 `phase=PROJECT` 走 `_generate_scenario`（结合候选人项目经历定制）；`phase=TECH_BASE` 走题库/生成。`_generate_scenario` 按轮出题——轮次号进 prompt 供 LLM 换切入点（架构设计/难点攻坚/选型权衡）避免重复，难度随 `state.difficulty`（不再固定 L3）。项目题 `domain="project"` 不参与域统计的口径保留。图边不变：PROJECT/TECH_BASE 都走 judge，追问/评分/降级链通用。
 
+**项目深挖域的题库身份（P2-M11 第 0 步）**：`project` 进 `ASKABLE_DOMAINS`（第二个单列出题池，`DOMAIN_WEIGHTS` 不含它、`pick_domain` 永不分给它配额），域 id 与「项目深挖」标签上移 `app/domain.py`（单一来源，MCP 域清单/题库分面/报告与 PDF 标签随之透出）；**8 道项目叙事题**（M9 从技术域改判到 behavioral 的那批）按改判表归位 `project` 域——题库第一次有这一域。**本步只改归属与集合常量：PROJECT 阶段仍走 `_generate_scenario` 生成**（题库优先检索是 M11 后续步骤）；私有题库不开放该域（`ENABLED_DOMAINS` 不含，同行为面）。
+
 **同场多道项目题的措辞去重（P1-M4.7 后续）**：出题官每轮是**独立调用**、只拿得到轮次号——不喂前情时「换个切入点」等于掷骰子（真链路实测三道题套同一个开头）。两条修法同时在位：① **喂回已问题目原文**——`_asked_project_block(state)` 把已问项目题（`domain=PROJECT_DOMAIN`）原文逐条塞进 `{asked}` 插槽，一道未问时给 `ASKED_PROJECT_EMPTY` 明说「这是第一道」，不让模型脑补前情；② **两层模板同禁复述背景**（场景题 + 口吻层）——题前衔接语（§4.8）已交代「结合你的项目」，题目再铺一句简历复述就是模板脸。措辞是否真不雷同属生成质量、靠真链路验收；单测只钉**接线**（第二道起 prompt 必带第一道原文）。
 
 **出题接上下文（P1-M4.5-A）**：`candidate_profile` 进口吻层模板与生成模板，允许结合候选人背景适度改写题干表述。**三条防漂移约束**：
@@ -413,16 +415,16 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 
 **复用同一状态机与报告体系，只换能力模型与题源**。会话类型 `interview_type ∈ {tech, behavioral}` 与岗位 `position` **正交**（两种类型面向同一岗位，position 恒为「Agent/AI 工程师」）；一条新列贯穿 `interviews.interview_type`（DB）→ `state.interview_type` → 报告 payload `interview_type`。
 
-- **流程（D1：单 BEHAVIORAL 段）**：`INTRO → WARMUP → BEHAVIORAL → CLOSING → 报告`。没有项目深挖段与技术分段——行为题池小（14 题）、题库里两类行为题（项目叙事 / HR 规划题）的元数据分不干净，随机混合与真实 HR 面一致。图结构一条边不动：`route` 把 `BEHAVIORAL` 与 `TECH_BASE/PROJECT` 同路分发到 `judge`；`advance.phase_after_answer(..., interview_type)` 答满 `question_count` → `CLOSING`。
+- **流程（D1：单 BEHAVIORAL 段）**：`INTRO → WARMUP → BEHAVIORAL → CLOSING → 报告`。没有项目深挖段与技术分段——行为题池小、题库里两类行为题（项目叙事 / HR 规划题）的元数据分不干净，随机混合与真实 HR 面一致。**池子现状（P2-M11 第 0 步后）= 5 道 enabled + 3 道 draft**：8 道项目叙事题已按改判表归位 `project` 域（§4.4/§6.6）。图结构一条边不动：`route` 把 `BEHAVIORAL` 与 `TECH_BASE/PROJECT` 同路分发到 `judge`；`advance.phase_after_answer(..., interview_type)` 答满 `question_count` → `CLOSING`。
 - **题源**：`domain="behavioral"` 整池随机——`search_questions(difficulty=None)` = **不限难度**（行为题的 L1-L3 是技术深度语义，挂行为题上没有意义；D3）。池子耗尽 → LLM 按同标准现场生成行为题兜底（`BEHAVIORAL_ASK_GENERATE_TEMPLATE`，不入库）。
 - **难度（D3）**：创建表单对行为面**隐藏难度选择器**，出题不消费难度；**自适应机制保留不关**（少一个分支）——`state.difficulty` 照常升降，但只是死数据（报告与列表都不展示难度徽标）。
-- **题量（D1）**：行为面上限 **10 题**（`BEHAVIORAL_MAX_QUESTIONS`，API 层 422 校验 + 表单只给 5/10）——14 题的池子在 15 题场会当场耗尽走 LLM 兜底。
+- **题量（D1）**：行为面上限 **10 题**（`BEHAVIORAL_MAX_QUESTIONS`，API 层 422 校验 + 表单只给 5/10）——池子只有 5 道 enabled 题（P2-M11 第 0 步后），10 题场中后段即耗尽、走 LLM 生成兜底（**有意保留**：兜底路径本就为池空设计，题面与讲述要点同标准产出，只是不入库）。
 - **评分（D2）**：`BehavioralScoreItem` 五维 1-5——沟通表达 / 逻辑结构 / **项目经验**（与技术面同名同义，两类型雷达图跨类型对照时语义一致）/ 价值观与动机 / 职业稳定性。**维度表单一来源在后端**：报告 payload 与回放响应（`/trace`，judge 事件是评分模型裸 dump）都带 `dims: [{key, label}]`，前端与 PDF 都消费它，不再各自硬编维度表（老 payload 无该字段 → 前端退回技术面常量）。
 - **追问 = deepen-only（P1-M11 ①）**：行为题的 key_points 是**讲述结构**（「用 STAR 说清情境与任务」）而非知识点——按覆盖率追问「补漏」语义不成立，澄清（当场对质矛盾点）也不做。`explain_decision(..., deepen_only=True)`：单题至多一次深挖（问细节：情境 / 个人动作 / 可验证结果 / 复盘），用过即换题（`Reason.DEEPEN_LIMIT`）；`error_flag` 仍由评分官产出，但只用于报告展示。判据按**题型**（`question_type == "behavioral"`）而非会话类型——将来若混排也成立。
 - **聚合**：`aggregate_scores(..., interview_type)` 行为面走行为面维度表，`domain_scores` 恒为空（整场一个域），`weaknesses` 改为**最弱的评分维度**（同一「最低 2 个、并列第三也带」规则，`_weakest`）。总分仍走 `overall_score`（加 `dims` 参数，默认技术面五维——M10 D1 的单一来源不变）。
 - **报告与 PDF**：报告页按 `dims` 渲染雷达与逐题得分；行为面**不渲染知识域卡与「针对性练习推荐」卡**（D5——推荐检索的是六大技术域，行为面没有可推的域；接口也直接返回空分组，不做无效检索）。PDF 模板按 `has_domains` 收起右栏（维度全宽展示），短板标签为「短板维度」；**导出按钮照常**（D 补充④）。
 - **题库启用（D6）**：`data/scripts/enable_behavioral.py` 把**有实质答案**的行为题翻成 enabled 并补进 Qdrant（幂等；复用 `finalize_status` 与 ingest 的点构造，管线入库域已含行为面，下一次整链重跑结果一致）。**验收口径：脚本最后从 Qdrant 读回该域的点逐点核对**（只翻 status 不算数）。私有题库**不开放行为面域**（D7，`ENABLED_DOMAINS` 不含它；P2-M3 复核：前端三处下拉（上传/筛选/编辑）都走同一份 `ENABLED_DOMAINS`，上传传 behavioral 400、编辑传 behavioral 422，单测与集成测试各钉一层）。
-- **出题池隔离（验收②）**：行为面进 `ASKABLE_DOMAINS`（**可出题但不属于技术配额**——集合内域都能出题，但只有 `DOMAIN_WEIGHTS` 的键参与配额分配）；`pick_domain` 只在权重表分配，技术面永远抽不到 behavioral（单测 + 集成反查双保险）。
+- **出题池隔离（验收②）**：行为面进 `ASKABLE_DOMAINS`（**可出题但不属于技术配额**——集合内域都能出题，但只有 `DOMAIN_WEIGHTS` 的键参与配额分配）；`pick_domain` 只在权重表分配，技术面永远抽不到 behavioral（单测 + 集成反查双保险）。**`project` 是第二个单列出题池**（P2-M11 第 0 步，同款语义）：它由 PROJECT 阶段按域取题，技术配额同样不含它。
 - **不做**：混合模式（两类型各自验证完再议）、行为面私有题、行为面学习推荐与档案（均按 D4/D5 排除）。
 
 ## 4.13 离线评估体系（P1-M12）
@@ -545,8 +547,8 @@ domain_label(domain) -> str                              # DOMAIN_LABELS；proje
 - **个人题库在前**：完全同分时先导入者优先（与入库口径一致）；个人题库 `SOURCE_PRIORITY` 恒 0，开源答案再长也不顶替主源
 - **自带零回归校验**：个人题库 12 个字段逐字比对，只允许新增 `sources` 明细行；不过则非零退出——**不允许带病入库**（开源语料解析改动后重跑，个人题库产物逐字节一致）
 - **近似重复只报不并**：相似度 ≥0.9 的候选对打印清单（含个人×开源对），人工登记白名单后才合（§8.1）
-- **人工改判表**（`data/curation/question_overrides.json`）：逐题修正 `domain` / `status`，`combine` 每次运行都应用（P1-M9 起，见 §4.10 的叙事题污染）。key 是 `question_id` —— **题干的内容哈希**，题干改一个字条目就失效，故未命中的条目会列进运行报告（`bank.apply_overrides` 返回未命中集，不静默）；每条必须写 `reason`，缺了直接报错。改判在零回归校验**之后**执行（改判就是要动 `domain`/`status`，不是回归）。**已落库的库**用 `data/scripts/apply_overrides.py` 补齐（幂等，改判成 draft 的从 Qdrant 撤点、仍在 enabled 但换域的改 payload 的 `domain`——它是检索过滤字段）——只为十来道题把整个向量库重建一遍不值当。
-- **入库 status 规则**（P1-M11 起）：`domain ∈ ASKABLE_DOMAINS ∪ ENABLED_DOMAINS` 且有实质答案 → enabled（行为面自 M11 起进可出题域，管线重跑与 `enable_behavioral.py` 的判定同源）；两个集合之外的域（cs-fundamentals）解析入库但置 draft。
+- **人工改判表**（`data/curation/question_overrides.json`）：逐题修正 `domain` / `status`，`combine` 每次运行都应用（P1-M9 起，见 §4.10 的叙事题污染）。key 是 `question_id` —— **题干的内容哈希**，题干改一个字条目就失效，故未命中的条目会列进运行报告（`bank.apply_overrides` 返回未命中集，不静默）；每条必须写 `reason`，缺了直接报错。改判在零回归校验**之后**执行（改判就是要动 `domain`/`status`，不是回归）。**已落库的库**用 `data/scripts/apply_overrides.py` 补齐（幂等，改判成 draft 的从 Qdrant 撤点、仍在 enabled 但换域的改 payload 的 `domain`——它是检索过滤字段）——只为十来道题把整个向量库重建一遍不值当。**P2-M11 第 0 步**：改判表里 8 道项目叙事题 `behavioral → project`（enabled→enabled 的纯域改判，`set_payload` 重打标即可——向量文本 `question_doc_text` 不含域，不重嵌、不补点）。
+- **入库 status 规则**（P1-M11 起）：`domain ∈ ASKABLE_DOMAINS ∪ ENABLED_DOMAINS` 且有实质答案 → enabled（行为面自 M11 起、项目深挖自 P2-M11 第 0 步起进可出题域，管线重跑与 `enable_behavioral.py` 的判定同源）；两个集合之外的域（cs-fundamentals）解析入库但置 draft。
 - **近似重复白名单合并**（P2-M1）：白名单分两处应用、各管一段——`parse_md` 的清单管**个人库同源内部**（解析期就合掉），`combine` 的 `APPROVED_MERGE_PAIRS` 管**跨源**（所有源集齐后才可判，重复报告也打在 combine）。实现同一份（`bank.merge_approved_pairs(questions, pairs)`），**匹配不到直接报错**（题干改字 → 哈希变，白名单不许静默失效）。P2-M1 登记 3 对措辞级（只差一个逗号 / 「到底」二字 / 「一个」）；同轮盘点出的假阳性对与跨域同题对**故意不并**，理由写在清单注释里。
 - **难度重标注表**（P2-M1，`data/curation/difficulty_annotations.json`）：`{question_id: L1|L2|L3}`，由 `annotate_difficulty.py` 批量生成（flash + 与前端创建表单同源的三档语义）。**为什么需要它**：四源里只有 `ai-agents-from-zero` 带真实难度标注，其余三源解析时一律落默认 L2（实测 686 题）——难度档因此几乎不区分（L2 一度占 80%），L3×15 组合直供不足。`combine` 在**零回归校验之后**应用（`difficulty` 在 `FROZEN_FIELDS` 里，标注与改判同理：动它就是改判、不是回归）；已落库的库用 `data/scripts/apply_difficulty.py` 补齐（SQLite UPDATE + Qdrant `set_payload`；标注不改 doc 文本、不必重建向量库），幂等可重跑。`from-zero` 的 89 道真实标注**不在表内**（保留原标注，并作为 rubric 校准集：首轮一致率完全 68.5% / 相邻 98.9%）。
 - **启用行为面题库**（`data/scripts/enable_behavioral.py`，P1-M11）：把有实质答案的行为题翻成 enabled 并补进 Qdrant（幂等；写后从 Qdrant 读回逐点核对，只翻 status 不算数）。与 `apply_overrides.py` 同一模式：**就地补齐**，避免为十来道题全量重建向量库。
@@ -751,7 +753,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 | 评测口径 | 指标纯函数（分级增益、退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测，部署环境复测随阶段 3）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（795 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（797 个，不需要任何密钥）· `cd frontend && pnpm test`（249 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（P2-M10，`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——
 三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。三条口径：
@@ -810,6 +812,7 @@ reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-05 | P2-M11 第 0 步（8 道项目叙事题归位） | §4.4 新增「项目深挖域的题库身份」（`project` 进 `ASKABLE_DOMAINS`、第二单列出题池） · §4.12 池子现状改 5 道 enabled + `project` 同款隔离 · §6.6 改判表补归位条目 + 入库 status 规则补 `project` · §10 计数（pytest 795→797） |
 | 2026-10-04 | P2-M10 CI + MCP 题库查询 + 成本归因 | §2 树补 `.github/workflows/ci.yml` / `app/mcp_server/` / `smoke_mcp` / `cost_report` + 依赖行补 `mcp`（dev 组可选组件）· §3 补调用命名（`purpose` → Langfuse `name`，仅启用时传）· **§7 新增「MCP 通道」** · §10 计数（pytest 772→795）+ 新增 **CI 小节**（三个 job / 假密钥兜底 84 个用例 / 红线门禁只跑得了的一半）· §11 新增风险 17/18 |
 | 2026-10-04 | P2-M9 可靠性（上游保护 + 降级链） | §3 新增「上游保护与降级链」小节（闸门/熔断/降级矩阵/不产假信号） · §7 SSE 事件表加 `degraded` + chat 端点补 `degraded_reasons` + error 行补分界 · §10 计数（pytest 733→772、vitest 239→249） · §11 新增风险 16 · §2 scripts 行补 `smoke_degraded` |
 | 2026-10-04 | P2-M8 端到端验收 + 文档同步 | §1 下一步改波 3（波 2 收官）· §2 scripts 行补 `smoke_vision` / `smoke_e2e` / `eval_judge_vision` · §10 计数勘误（vitest 232 → 239）+ 组合场口径 · §11 风险 14 补备份去向（已删） |

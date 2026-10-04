@@ -28,12 +28,13 @@ from app.domain import (
     BEHAVIORAL_DOMAIN,
     DOMAIN_LABELS,
     INTERVIEW_BEHAVIORAL,
+    PROJECT_DOMAIN,
     QUESTION_TYPE_BEHAVIORAL,
 )
 from app.graph.rules import degrade, stream
 from app.graph.rules.difficulty import DIFFICULTY_ORDER
 from app.graph.rules.quota import pick_domain
-from app.graph.rules.transition import PROJECT_DOMAIN, buffer_line, transition_line
+from app.graph.rules.transition import buffer_line, transition_line
 from app.graph.state import InterviewState, Phase, QuestionRecord, TraceEvent, add_history, add_trace
 from app.tools import images as image_store
 from app.tools import question_search
