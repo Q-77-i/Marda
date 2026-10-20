@@ -4,140 +4,180 @@
 @import "tw-animate-css";
 
 /*
- * 设计令牌：冷中性底 + 单一钢蓝强调色（面试工具，克制、专注）。
- * 明暗双模式跟随系统偏好（Tailwind v4 默认 dark 变体即 prefers-color-scheme）。
- * 令牌命名与 shadcn/ui 约定一致，components/ui/* 直接消费。
+ * 设计令牌（2026-10 界面重塑）：
+ * 暖灰纸面 + 深色左栏 + 单一钴蓝强调色。工作台是亮的，面试间默认亮场、可切暗场。
  *
- * 强调色取值来自图表调色板校验（dataviz validate_palette.js，明暗各六项全过）：
- * - sRGB 下青绿系色相可达到的 chroma 偏低（H195 在 L0.50 上限 0.086，低于 0.1 阈值
- *   会"读作灰色"），故取 H240 钢蓝；白字对比 5.91:1（AA）；
- * - --warning 仅用于报告页"短板"语义状态，且始终带文字标签，不单独依赖颜色。
+ * 明暗双模式仍跟随系统偏好，但两套都重新选过步：
+ * - 明色：canvas #ECEBE5 / paper #FAF9F5 / ink #16181C / cobalt #2A49D8；
+ * - 暗色：canvas #0C0E11 / paper #15181D / ink #ECEAE3 / accent #8BA1FF。
+ * 深色左栏在两种模式下都成立（暗色下比页面底更暗一档）。
+ *
+ * 令牌命名与 shadcn/ui 约定一致，components/ui/* 直接消费。
+ * 图表色来自同一组令牌（lib/chart-tokens.ts 读取计算样式），不另起一套。
  */
 
 :root {
   --radius: 0.75rem;
 
-  --background: oklch(0.994 0.002 240);
-  --foreground: oklch(0.235 0.012 250);
+  --background: #ecebe5;
+  --foreground: #16181c;
 
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.235 0.012 250);
+  --card: #faf9f5;
+  --card-foreground: #16181c;
 
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.235 0.012 250);
+  --popover: #faf9f5;
+  --popover-foreground: #16181c;
 
-  --primary: oklch(0.5 0.113 240);
-  --primary-foreground: oklch(0.99 0.005 240);
+  --primary: #2a49d8;
+  --primary-foreground: #ffffff;
+  --primary-deep: #1d34ad;
 
-  --secondary: oklch(0.965 0.004 240);
-  --secondary-foreground: oklch(0.3 0.012 250);
+  --secondary: #f3f1eb;
+  --secondary-foreground: #2b2e34;
 
-  --muted: oklch(0.968 0.004 240);
-  --muted-foreground: oklch(0.53 0.014 250);
+  --muted: #f3f1eb;
+  --muted-foreground: #64635e;
 
-  /* 面试间舞台底色（P2-M7）：让舞台「住在」一块淡色区域里（底座），而不是靠一条分隔线。
-     亮色取 muted 同档（ΔL≈0.026 vs 页面底，与气泡在同一条感知线上），白卡 tile 因此浮起来；
-     暗色不能照搬——必须「比页面底亮、又比卡片暗」，否则 tile 会陷进底座（见下方 dark 块）。 */
-  --stage: oklch(0.968 0.004 240);
+  /* 面试间舞台底色：亮场取 paper 与 canvas 之间的一档，暗场单独覆盖（见 .room-dark） */
+  --stage: #f0eee8;
 
-  --accent: oklch(0.958 0.014 240);
-  --accent-foreground: oklch(0.34 0.06 240);
+  --accent: #e6e9fb;
+  --accent-foreground: #1b2f9e;
 
-  --destructive: oklch(0.55 0.19 25);
-  --destructive-foreground: oklch(0.99 0.008 25);
+  --destructive: #ab4038;
+  --destructive-foreground: #ffffff;
 
   /* 语义状态色（非第二强调色）：
-     --warning 短板/部分失败；--success 能力改善/上传成功（与报告 PDF 的成功语义同源，见 report_pdf.py）。 */
-  --warning: oklch(0.63 0.13 70);
-  --warning-foreground: oklch(0.99 0.01 70);
+     --warning 短板/部分失败；--success 能力改善/上传成功（与报告 PDF 的成功语义同源）。 */
+  --warning: #a5611b;
+  --warning-foreground: #ffffff;
 
-  --success: oklch(0.52 0.11 160);
-  --success-foreground: oklch(0.99 0.008 160);
+  --success: #2c6f52;
+  --success-foreground: #ffffff;
 
   /*
-   * 热力图色阶（P1-M10.5，能力档案专用）：品牌 H240 单色 5 级，
-   * 固定锚定评分制 1–5——同一分数永远同一颜色，新增场次不会重刷历史格子的颜色。
-   *
-   * 明暗各一套步值（暗色是重新选步不是翻转：暗=低分、亮=高分）。已过
-   * dataviz validate_palette.js 校验（明暗各一次）：单调 L / 相邻 ΔL≥0.06 / 单色相
-   * 三项 PASS；「最近底色档 ≥2:1」一项是 sequential 热力图被该 skill 明确豁免的口径
-   * （其文档自带的 sequential 蓝阶在同一检查下同样只挂这一项，1.32:1 < 本阶 1.53:1）。
-   * 兜底是二级编码：**每格都印数字**（1–5 档数字对比分别 ≥10 / ≥5，全部 ≥4.5:1）+ 单元格描边，
-   * 颜色只是副渠道，不单独表意。
+   * 热力图色阶：单一钴蓝色相 5 级，固定锚定评分制 1-5——同一分数永远同一颜色。
+   * 这是 sequential（单色相连续量），不是 categorical；按 dataviz 口径只要求
+   * 明暗各自的 L 单调（明色 0.913→0.46，暗色 0.28→0.734），且每格印数字 + 描边
+   * 作为二级编码。validate_palette.js 的 categorical 检查不适用于此色阶。
    */
-  --heat-1: oklch(0.86 0.042 240);
-  --heat-2: oklch(0.76 0.068 240);
-  --heat-3: oklch(0.66 0.09 240);
-  --heat-4: oklch(0.55 0.108 240);
-  --heat-5: oklch(0.44 0.116 240);
-  /* 两档墨色写死值、不写 var(--foreground)：正文色会跟着明暗主题翻，
-     而墨色必须跟着**格底色**走（暗色下 4–5 档是亮底，仍要用深字）。 */
-  --heat-ink-dark: oklch(0.235 0.012 250);
-  --heat-ink-light: oklch(0.99 0.005 240);
-  /* 数字墨色按档给，翻转点在 3→4 档（组件不做明暗判断，只按档取令牌） */
+  --heat-1: #dbe2f5;
+  --heat-2: #b9c7ee;
+  --heat-3: #92a7e0;
+  --heat-4: #647cc8;
+  --heat-5: #3e56ab;
+  /* 墨色跟着格底色走，不跟主题翻 */
+  --heat-ink-dark: #16181c;
+  --heat-ink-light: #f7f8ff;
   --heat-fg-1: var(--heat-ink-dark);
   --heat-fg-2: var(--heat-ink-dark);
   --heat-fg-3: var(--heat-ink-dark);
   --heat-fg-4: var(--heat-ink-light);
   --heat-fg-5: var(--heat-ink-light);
 
-  --border: oklch(0.912 0.005 240);
-  --input: oklch(0.912 0.005 240);
-  --ring: oklch(0.5 0.113 240);
+  --border: #d8d5cc;
+  --input: #bfbbb0;
+  --ring: #2a49d8;
+
+  /* 深色左栏：两种主题下都成立 */
+  --rail: #121418;
+  --rail-2: #181b21;
+  --rail-foreground: #e9e8e2;
+  --rail-muted: #8d9198;
+  --rail-line: rgb(255 255 255 / 0.09);
+
+  /* 面试间：默认亮场；.room-dark 覆盖为暗场 */
+  --room-bg: #f0eee8;
+  --room-panel: #faf9f5;
+  --room-panel-2: #f3f1eb;
+  --room-panel-3: #e9e7e0;
+  --room-line: #d8d5cc;
+  --room-line-strong: #bfbbb0;
+  --room-ink: #16181c;
+  --room-ink-2: #2b2e34;
+  --room-muted: #64635e;
+  --room-faint: #8a8880;
+  --room-accent: #2a49d8;
+  --room-accent-soft: #e6e9fb;
+  --room-success: #2c6f52;
+  --room-danger: #ab4038;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: oklch(0.168 0.008 250);
-    --foreground: oklch(0.955 0.004 240);
+    --background: #0c0e11;
+    --foreground: #eceae3;
 
-    --card: oklch(0.212 0.009 250);
-    --card-foreground: oklch(0.955 0.004 240);
+    --card: #15181d;
+    --card-foreground: #eceae3;
 
-    --popover: oklch(0.212 0.009 250);
-    --popover-foreground: oklch(0.955 0.004 240);
+    --popover: #15181d;
+    --popover-foreground: #eceae3;
 
-    --primary: oklch(0.66 0.115 240);
-    --primary-foreground: oklch(0.19 0.022 240);
+    --primary: #8ba1ff;
+    --primary-foreground: #0c0e11;
+    --primary-deep: #a9baff;
 
-    --secondary: oklch(0.268 0.009 250);
-    --secondary-foreground: oklch(0.955 0.004 240);
+    --secondary: #1b1f26;
+    --secondary-foreground: #eceae3;
 
-    --muted: oklch(0.262 0.009 250);
-    --muted-foreground: oklch(0.69 0.012 250);
+    --muted: #1b1f26;
+    --muted-foreground: #9a9d9c;
 
-    /* 舞台底色（暗色单独调值）：页面底 0.168 与卡片 0.212 之间取中——比底亮、比卡片暗 */
-    --stage: oklch(0.19 0.009 250);
+    --stage: #101318;
 
-    --accent: oklch(0.3 0.03 240);
-    --accent-foreground: oklch(0.9 0.04 240);
+    --accent: rgb(139 161 255 / 0.13);
+    --accent-foreground: #c9d4ff;
 
-    --destructive: oklch(0.66 0.16 25);
-    --destructive-foreground: oklch(0.16 0.02 25);
+    --destructive: #e08b82;
+    --destructive-foreground: #0c0e11;
 
-    --warning: oklch(0.66 0.12 72);
-    --warning-foreground: oklch(0.18 0.03 72);
+    --warning: #e0a45b;
+    --warning-foreground: #0c0e11;
 
-    --success: oklch(0.72 0.13 160);
-    --success-foreground: oklch(0.18 0.03 160);
+    --success: #6fc79b;
+    --success-foreground: #0c0e11;
 
-    /* 热力图色阶（暗色）：同一品牌色相重新选步——暗=低分、亮=高分；
-       数字墨色的翻转点仍是 3→4 档，但方向与明色相反（亮底用深字）。 */
-    --heat-1: oklch(0.34 0.055 240);
-    --heat-2: oklch(0.44 0.075 240);
-    --heat-3: oklch(0.53 0.092 240);
-    --heat-4: oklch(0.66 0.11 240);
-    --heat-5: oklch(0.78 0.115 240);
+    /* 暗色热力图：同一色相重新选步，暗=低分、亮=高分 */
+    --heat-1: #1c2450;
+    --heat-2: #2a3a7a;
+    --heat-3: #3e56ab;
+    --heat-4: #647cc8;
+    --heat-5: #92a7e0;
     --heat-fg-1: var(--heat-ink-light);
     --heat-fg-2: var(--heat-ink-light);
     --heat-fg-3: var(--heat-ink-light);
     --heat-fg-4: var(--heat-ink-dark);
     --heat-fg-5: var(--heat-ink-dark);
 
-    --border: oklch(1 0 0 / 12%);
-    --input: oklch(1 0 0 / 16%);
-    --ring: oklch(0.66 0.115 240);
+    --border: rgb(255 255 255 / 0.1);
+    --input: rgb(255 255 255 / 0.16);
+    --ring: #8ba1ff;
+
+    --rail: #080a0d;
+    --rail-2: #101318;
+    --rail-foreground: #eceae3;
+    --rail-muted: #8d9198;
+    --rail-line: rgb(255 255 255 / 0.1);
   }
+}
+
+/* 面试间暗场：只覆盖房间令牌，不影响工作台主题 */
+.room-dark {
+  --room-bg: #0c0e11;
+  --room-panel: #12151a;
+  --room-panel-2: #171b22;
+  --room-panel-3: #1d222b;
+  --room-line: rgb(255 255 255 / 0.1);
+  --room-line-strong: rgb(255 255 255 / 0.18);
+  --room-ink: #eceae3;
+  --room-ink-2: #c9c7c0;
+  --room-muted: #96999e;
+  --room-faint: #71757c;
+  --room-accent: #8ba1ff;
+  --room-accent-soft: rgb(139 161 255 / 0.13);
+  --room-success: #6fc79b;
+  --room-danger: #e08b82;
 }
 
 @theme inline {
@@ -149,6 +189,7 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-primary: var(--primary);
   --color-primary-foreground: var(--primary-foreground);
+  --color-primary-deep: var(--primary-deep);
   --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--secondary-foreground);
   --color-muted: var(--muted);
@@ -166,16 +207,38 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --color-rail: var(--rail);
+  --color-rail-2: var(--rail-2);
+  --color-rail-foreground: var(--rail-foreground);
+  --color-rail-muted: var(--rail-muted);
+  --color-rail-line: var(--rail-line);
+
+  --color-room-bg: var(--room-bg);
+  --color-room-panel: var(--room-panel);
+  --color-room-panel-2: var(--room-panel-2);
+  --color-room-panel-3: var(--room-panel-3);
+  --color-room-line: var(--room-line);
+  --color-room-line-strong: var(--room-line-strong);
+  --color-room-ink: var(--room-ink);
+  --color-room-ink-2: var(--room-ink-2);
+  --color-room-muted: var(--room-muted);
+  --color-room-faint: var(--room-faint);
+  --color-room-accent: var(--room-accent);
+  --color-room-accent-soft: var(--room-accent-soft);
+  --color-room-success: var(--room-success);
+  --color-room-danger: var(--room-danger);
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
 
   /* 中文回退栈显式声明：Geist 不含 CJK 字形，不写这一段就落到各平台默认字体
      （macOS 苹方 / Windows 雅黑 / Linux 各异），同一页面跨平台字形与字重不一致。 */
   --font-sans: var(--font-geist-sans), "PingFang SC", "Hiragino Sans GB",
     "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif;
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-geist-mono), "SF Mono", ui-monospace,
+    SFMono-Regular, Menlo, monospace;
 }
 
 @layer base {
@@ -183,9 +246,91 @@
     @apply border-border;
   }
 
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
     @apply bg-background text-foreground font-sans antialiased;
   }
+
+  ::selection {
+    background: var(--primary);
+    color: var(--primary-foreground);
+  }
+}
+
+/* 深色左栏的细点阵纹理；只在固定栏上使用，不铺在滚动容器上。 */
+.rail-texture {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.rail-texture::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    rgb(255 255 255 / 0.055) 1px,
+    transparent 0
+  );
+  background-size: 22px 22px;
+  mask-image: linear-gradient(to bottom, #000, transparent 70%);
+}
+
+/* 面试官播报波形：只在 TTS 真播报时出现，减少动效偏好下由全局兜底停住。 */
+@keyframes room-wave {
+  0%,
+  100% {
+    transform: scaleY(0.4);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.room-wave {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 14px;
+}
+
+.room-wave span {
+  display: block;
+  width: 2px;
+  border-radius: 1px;
+  background: var(--room-accent);
+  transform-origin: bottom;
+  animation: room-wave 1.1s ease-in-out infinite;
+}
+
+.room-wave span:nth-child(1) {
+  height: 5px;
+}
+
+.room-wave span:nth-child(2) {
+  height: 10px;
+  animation-delay: 0.12s;
+}
+
+.room-wave span:nth-child(3) {
+  height: 7px;
+  animation-delay: 0.24s;
+}
+
+.room-wave span:nth-child(4) {
+  height: 13px;
+  animation-delay: 0.36s;
+}
+
+.room-wave span:nth-child(5) {
+  height: 6px;
+  animation-delay: 0.48s;
 }
 
 /* 打字机光标：仅在流式输出时出现，减少动效偏好下不闪 */
