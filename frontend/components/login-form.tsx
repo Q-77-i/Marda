@@ -1,19 +1,36 @@
 "use client";
 
-import { cn } from "cn";
+import { ArrowRight, Eye, EyeOff } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MonoLabel } from "@/components/ui/mono-label";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { login, register, validatePassword, validateUsername } from "@/lib/auth";
 import { getToken, isStorageAvailable, setToken } from "@/lib/session";
+import { cn } from "@/lib/utils";
 
 type Mode = "login" | "register";
 
 const MODE_LABELS: Record<Mode, string> = { login: "登录", register: "注册" };
+
+const MODE_COPY: Record<
+  Mode,
+  { heading: string; description: string; submit: string }
+> = {
+  login: {
+    heading: "登录你的训练台",
+    description: "继续上次的面试，或开始一场新的训练。",
+    submit: "登录",
+  },
+  register: {
+    heading: "创建你的账号",
+    description: "面试记录、能力档案与学习推荐都会保存在这个账号下。",
+    submit: "注册并进入",
+  },
+};
 
 /**
  * 登录 / 注册表单（FR-23）：单页双 tab。
@@ -28,6 +45,7 @@ export function LoginForm() {
   const [mode, setMode] = useState<Mode>("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [storageOk, setStorageOk] = useState(true);
@@ -71,81 +89,131 @@ export function LoginForm() {
   }
 
   const disabled = busy || !storageOk;
+  const copy = MODE_COPY[mode];
 
   return (
-    <Card className="w-full max-w-sm">
-      <CardHeader>
-        <CardTitle>{mode === "login" ? "登录" : "注册"}</CardTitle>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-1 rounded-lg bg-muted p-1" role="tablist">
-          {(Object.keys(MODE_LABELS) as Mode[]).map((item) => (
-            <button
-              key={item}
-              type="button"
-              role="tab"
-              aria-selected={item === mode}
-              onClick={() => switchMode(item)}
-              className={cn(
-                "rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-                item === mode
-                  ? "bg-background"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {MODE_LABELS[item]}
-            </button>
-          ))}
-        </div>
+    <div className="flex flex-col">
+      <h2 className="text-[26px] leading-tight font-semibold tracking-[-0.035em]">
+        {copy.heading}
+      </h2>
+      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
+        {copy.description}
+      </p>
 
-        <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
-          <label className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-muted-foreground">用户名</span>
-            <Input
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              autoFocus
-              disabled={disabled}
-              placeholder="3–32 位字母、数字或下划线"
-            />
-          </label>
+      <div
+        role="tablist"
+        aria-label="登录与注册"
+        className="mt-7 flex gap-6 border-b border-border"
+      >
+        {(Object.keys(MODE_LABELS) as Mode[]).map((item) => (
+          <button
+            key={item}
+            type="button"
+            role="tab"
+            aria-selected={item === mode}
+            onClick={() => switchMode(item)}
+            className={cn(
+              "relative pb-2.5 text-xs transition-colors",
+              item === mode
+                ? "font-medium text-foreground"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          >
+            {MODE_LABELS[item]}
+            {item === mode ? (
+              <span
+                aria-hidden
+                className="absolute right-0 -bottom-px left-0 h-0.5 bg-foreground"
+              />
+            ) : null}
+          </button>
+        ))}
+      </div>
 
-          <label className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-muted-foreground">密码</span>
+      <form className="mt-5 flex flex-col gap-4" onSubmit={handleSubmit}>
+        <label className="flex flex-col gap-2">
+          <MonoLabel>用户名</MonoLabel>
+          <Input
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            autoComplete="username"
+            autoFocus
+            disabled={disabled}
+            placeholder="3 到 32 位字母、数字或下划线"
+          />
+        </label>
+
+        <label className="flex flex-col gap-2">
+          <MonoLabel>密码</MonoLabel>
+          <div className="relative">
             <Input
-              type="password"
+              type={showPassword ? "text" : "password"}
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(event) => setPassword(event.target.value)}
               autoComplete={mode === "login" ? "current-password" : "new-password"}
               disabled={disabled}
               placeholder="至少 6 位"
+              className="pr-10"
             />
-          </label>
+            <button
+              type="button"
+              onClick={() => setShowPassword((value) => !value)}
+              aria-label={showPassword ? "隐藏密码" : "显示密码"}
+              className="absolute top-1/2 right-1.5 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              {showPassword ? (
+                <EyeOff className="size-4" strokeWidth={1.8} />
+              ) : (
+                <Eye className="size-4" strokeWidth={1.8} />
+              )}
+            </button>
+          </div>
+        </label>
 
-          {error && (
-            <p className="text-sm text-destructive" role="alert">
-              {error}
-            </p>
-          )}
+        {error ? (
+          <p
+            role="alert"
+            className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs leading-relaxed text-destructive"
+          >
+            {error}
+          </p>
+        ) : null}
 
-          {!storageOk && (
-            <StatusBanner tone="error">
-              当前浏览器环境禁用了本地存储（常见于隐私/无痕模式），无法保存登录状态。
-            </StatusBanner>
-          )}
+        {!storageOk ? (
+          <StatusBanner tone="error">
+            当前浏览器环境禁用了本地存储（常见于隐私/无痕模式），无法保存登录状态。
+          </StatusBanner>
+        ) : null}
 
-          <Button type="submit" size="lg" disabled={disabled}>
-            {busy ? "处理中…" : MODE_LABELS[mode]}
-          </Button>
-        </form>
+        <Button
+          type="submit"
+          size="lg"
+          disabled={disabled}
+          className="mt-1 w-full justify-between px-4"
+        >
+          <span className="flex items-center gap-2">
+            <ArrowRight className="size-4" strokeWidth={1.8} />
+            {busy ? "处理中…" : copy.submit}
+          </span>
+          <span className="font-mono text-[9px] tracking-[0.08em] opacity-70">
+            ENTER
+          </span>
+        </Button>
+      </form>
 
-        <p className="text-xs text-muted-foreground">
-          {mode === "login"
-            ? "还没有账号？切换到「注册」，注册后历史记录会归入你的账号。"
-            : "用户名注册后不可修改，密码请自行保管（demo 暂不支持找回）。"}
-        </p>
-      </CardContent>
-    </Card>
+      <p className="mt-4 text-[11.5px] leading-relaxed text-muted-foreground">
+        {mode === "login" ? "还没有账号？" : "已有账号？"}
+        <button
+          type="button"
+          onClick={() => switchMode(mode === "login" ? "register" : "login")}
+          className="ml-1 text-primary underline underline-offset-2 hover:text-primary-deep"
+        >
+          {mode === "login" ? "注册" : "登录"}
+        </button>
+        {mode === "login"
+          ? "，历史面试与能力档案会归入你的账号。"
+          : "，用户名注册后不可修改。"}
+      </p>
+    </div>
   );
 }
