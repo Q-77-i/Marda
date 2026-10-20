@@ -14,6 +14,7 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
+import { StatStrip, type StatItem } from "@/components/ui/stat-strip";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { exportReportPdf, getReport, type ReportResponse } from "@/lib/api";
 import { DIMENSIONS, domainLabel, isBehavioral, reportLabel } from "@/lib/constants";
@@ -43,7 +44,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
 
   if (error) {
     return (
-      <PageShell nav={false} right={null}>
+      <PageShell>
         <ErrorState
           variant="page"
           message={error}
@@ -60,7 +61,7 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
 
   if (!data) {
     return (
-      <PageShell nav={false} right={null}>
+      <PageShell>
         <Skeleton className="h-8 w-48" />
         <div className="grid gap-6 lg:grid-cols-2">
           <Skeleton className="h-80 w-full" />
@@ -116,55 +117,70 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
     report.question_count,
   );
 
+  const stats: StatItem[] = [
+    {
+      label: "五维均分",
+      value: hasScores ? (
+        <>
+          {formatScore(overall)}
+          <span className="ml-1 text-xs font-medium text-muted-foreground">/ 5</span>
+        </>
+      ) : (
+        "未评分"
+      ),
+      hint: hasScores ? "五维等权均值" : "整场未评分，不显示 0 分",
+    },
+    {
+      label: "完成题量",
+      value: `${completedCount(report.answered_count, report.question_count)} / ${report.question_count}`,
+      hint: "已答 / 配置题量",
+    },
+    {
+      label: "生成时间",
+      value: formatTime(createdAt),
+      hint: "报告生成后不可变",
+    },
+  ];
+
   return (
-    <PageShell
-      nav={false}
-      right={
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={onExport}
-            disabled={exporting}
-            className={cn(buttonVariants({ size: "sm" }))}
-          >
-            {exporting ? "导出中…" : "导出 PDF"}
-          </button>
-          <Link
-            href={`/trace/${interviewId}`}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            决策回放
-          </Link>
-          <Link
-            href={`/interview/${interviewId}`}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            查看面试回放
-          </Link>
-          <Link
-            href="/"
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            返回首页
-          </Link>
-        </div>
-      }
-    >
+    <PageShell>
         <PageHeader
+          kicker="Report / Session summary"
           title="能力评估报告"
           description={report.position}
           right={
-            <>
-              {hasScores && <Stat label="五维均分" value={formatScore(overall)} suffix="/ 5" />}
-              <Stat
-                label="完成题量"
-                value={`${completedCount(report.answered_count, report.question_count)}`}
-                suffix={`/ ${report.question_count}`}
-              />
-              <Stat label="生成时间" value={formatTime(createdAt)} />
-            </>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={onExport}
+                disabled={exporting}
+                className={cn(buttonVariants({ size: "sm" }))}
+              >
+                {exporting ? "导出中…" : "导出 PDF"}
+              </button>
+              <Link
+                href={`/trace/${interviewId}`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                决策回放
+              </Link>
+              <Link
+                href={`/interview/${interviewId}`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                查看面试回放
+              </Link>
+              <Link
+                href="/"
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                返回首页
+              </Link>
+            </div>
           }
         />
+
+        <StatStrip items={stats} />
 
         {/* 降级交代（P2-M9）：原因逐条列出——用户必须知道哪些内容不是 AI 产出的。
             文案在 lib/degrade.ts（页面分支进不了 vitest，做成数据才测得到） */}
@@ -333,27 +349,5 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
           </Card>
         )}
     </PageShell>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  suffix,
-}: {
-  label: string;
-  value: string;
-  suffix?: string;
-}) {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span className="tabular-nums text-lg font-semibold leading-none">
-        {value}
-        {suffix && (
-          <span className="ml-1 text-xs font-normal text-muted-foreground">{suffix}</span>
-        )}
-      </span>
-    </div>
   );
 }
