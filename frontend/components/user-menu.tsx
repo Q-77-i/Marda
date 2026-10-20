@@ -1,17 +1,17 @@
 "use client";
 
+import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { fetchMe, type Me } from "@/lib/auth";
 import { clearToken } from "@/lib/session";
 
 /**
- * 头部用户区（FR-23）：显示当前用户 + 登出。
+ * 左栏用户区（FR-23）：显示当前用户 + 登出。
  *
- * 只挂仪表盘头部 —— 面试页/报告页的 right 位已被进度与操作占满，不挤占布局。
  * token 失效时 fetchMe 内部走全局 401 处置（清 token + 跳登录），此处无需兜底。
+ * 窄栏只留头像与登出图标，宽栏才展开用户名。
  */
 export function UserMenu() {
   const router = useRouter();
@@ -36,16 +36,30 @@ export function UserMenu() {
     router.replace("/login");
   }
 
+  const initial = me?.username?.slice(0, 1).toUpperCase() ?? "M";
+
   return (
-    <div className="flex items-center gap-2">
-      {me && (
-        <span className="max-w-[8rem] truncate text-xs text-muted-foreground">
-          {me.username}
+    <div className="flex items-center gap-2.5 md:border-t md:border-rail-line md:pt-3">
+      <span className="flex size-7 shrink-0 items-center justify-center rounded-full bg-white/10 text-[10px] font-semibold text-rail-foreground">
+        {initial}
+      </span>
+      <span className="hidden min-w-0 flex-1 xl:block">
+        <span className="block truncate text-xs text-rail-foreground">
+          {me?.username ?? "账号"}
         </span>
-      )}
-      <Button variant="ghost" size="sm" onClick={handleLogout}>
-        退出登录
-      </Button>
+        <span className="mt-0.5 block font-mono text-[9px] tracking-[0.08em] text-rail-muted uppercase">
+          Candidate
+        </span>
+      </span>
+      <button
+        type="button"
+        onClick={handleLogout}
+        aria-label="退出登录"
+        title="退出登录"
+        className="flex size-7 shrink-0 items-center justify-center rounded-md text-rail-muted transition-colors hover:bg-white/5 hover:text-white"
+      >
+        <LogOut className="size-4" strokeWidth={1.8} />
+      </button>
     </div>
   );
 }

@@ -21,10 +21,12 @@ function StatusBanner({
       data-slot="status-banner"
       role={tone === "error" ? "alert" : "status"}
       className={cn(
-        "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-sm",
-        tone === "error" && "border-destructive/40 bg-destructive/5 text-destructive",
-        tone === "warning" && "border-warning/40 bg-warning/5 text-foreground/90",
-        tone === "info" && "bg-muted/40 text-muted-foreground",
+        "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-xs leading-relaxed",
+        tone === "error" &&
+          "border-destructive/30 bg-destructive/10 text-destructive",
+        tone === "warning" &&
+          "border-warning/30 bg-warning/10 text-foreground/90",
+        tone === "info" && "border-border bg-muted/40 text-muted-foreground",
         className,
       )}
       {...props}

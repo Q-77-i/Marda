@@ -20,12 +20,12 @@ export type ChartTokens = {
 
 /** 兜底常量必须与 globals.css 的明色令牌一致（改令牌时同步这里）。 */
 const FALLBACK: ChartTokens = {
-  primary: "#056a9d",
-  warning: "#ba7917",
-  border: "#e2e4e7",
-  muted: "#666d74",
-  foreground: "#1f2429",
-  surface: "#ffffff",
+  primary: "#2a49d8",
+  warning: "#a5611b",
+  border: "#d8d5cc",
+  muted: "#64635e",
+  foreground: "#16181c",
+  surface: "#faf9f5",
 };
 
 function readTokens(): ChartTokens {

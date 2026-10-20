@@ -1,11 +1,23 @@
 "use client";
 
-import { cn } from "cn";
+import {
+  ArrowUp,
+  Check,
+  ImagePlus,
+  Mic,
+  Moon,
+  ShieldCheck,
+  Square,
+  Sun,
+  Video,
+  Volume2,
+  type LucideIcon,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { cn } from "cn";
 
-import { AppHeader } from "@/components/app-header";
 import { CandidateTile, InterviewerTile, StageCard } from "@/components/interview-room";
 import { MessageBubble, type ChatItem } from "@/components/message-bubble";
 import {
@@ -17,9 +29,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Button, buttonVariants } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
-import { StatusBanner } from "@/components/ui/status-banner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   dispatcher,
@@ -40,6 +49,7 @@ import {
 import { openCamera } from "@/lib/camera-client";
 import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { interviewerChip } from "@/lib/interview-room";
+import { phaseSteps } from "@/lib/interview-phases";
 import { degradedNotice } from "@/lib/degrade";
 import { progressLabel } from "@/lib/format";
 import { compressImage, uploadImage } from "@/lib/image-client";
@@ -109,6 +119,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [cameraStarting, setCameraStarting] = useState(false);
   /* 面试间舞台：面试官 tile 的「正在播报」徽标（TTS 状态回调驱动） */
   const [speakerSpeaking, setSpeakerSpeaking] = useState(false);
+  /* 左栏会话信息：岗位来自会话快照；类型不回传，故只展示岗位与阶段 */
+  const [position, setPosition] = useState("AI 面试");
+  /* 面试间配色：默认亮场，用户可切暗场并记忆（localStorage 不可用时仅本次有效） */
+  const [roomTheme, setRoomTheme] = useState<"light" | "dark">("light");
 
   const queueRef = useRef(new TypewriterQueue());
   const composingRef = useRef(false);
@@ -265,6 +279,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
           images: m.image_ids,
         })),
       );
+      setPosition(session.position || "AI 面试");
       setPhase(session.phase);
       setAnswered(session.answered_count);
       setTotal(session.question_count);
@@ -293,6 +308,17 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setVoiceMode(voiceModeRef.current);
     } catch {
       voiceModeRef.current = false;
+    }
+  }, []);
+
+  /* 面试间配色偏好（默认亮场）：存储不可用（隐私模式）静默当没开过 */
+  useEffect(() => {
+    try {
+      if (window.localStorage.getItem("marda.room.theme") === "dark") {
+        setRoomTheme("dark");
+      }
+    } catch {
+      setRoomTheme("light");
     }
   }, []);
 
@@ -437,6 +463,18 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     // 打开就播当前这道题：用户开语音模式，十有八九是想听正在问的题
     const lastAssistant = messagesRef.current.filter((m) => m.role === "assistant").pop();
     if (lastAssistant) speak(lastAssistant.content);
+  };
+
+  const toggleRoomTheme = () => {
+    setRoomTheme((prev) => {
+      const next = prev === "light" ? "dark" : "light";
+      try {
+        window.localStorage.setItem("marda.room.theme", next);
+      } catch {
+        // 隐私模式等存储不可用：只本次有效
+      }
+      return next;
+    });
   };
 
   /**
@@ -712,319 +750,602 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     busy,
   });
 
+  const phaseState = phaseSteps(phase);
+  const composerHint = connecting
+    ? "正在连接语音…"
+    : recording
+      ? "正在听你说，说完点「结束录音」"
+      : cameraStarting
+        ? "正在打开摄像头…"
+        : busy
+          ? "面试官正在回应…"
+          : "答案越具体，评分与点评越准确";
+
   return (
-    <div className="flex h-[100dvh] flex-col">
+    <div
+      className={cn(
+        "room flex h-[100dvh] flex-col overflow-hidden bg-room-bg text-room-ink xl:grid xl:grid-cols-[264px_minmax(0,1fr)_320px]",
+        roomTheme === "dark" && "room-dark",
+      )}
+    >
       {/* 登录过期（补充点 ①）：只留「重新登录」一个出口——留在页面上每个请求都会 401 */}
       <AlertDialog open={expired}>
-        <AlertDialogContent>
+        <AlertDialogContent className="border border-room-line bg-room-panel text-room-ink ring-0">
           <AlertDialogHeader>
-            <AlertDialogTitle>登录已过期</AlertDialogTitle>
-            <AlertDialogDescription>
+            <AlertDialogTitle className="text-room-ink">登录已过期</AlertDialogTitle>
+            <AlertDialogDescription className="text-room-muted">
               需要重新登录才能继续。已提交的回答都已保存，重新登录后可回到本场面试继续作答。
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <AlertDialogFooter>
+          <AlertDialogFooter className="border-room-line bg-room-panel-2">
             <AlertDialogAction onClick={redirectToLogin}>重新登录</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      <AppHeader
-        width="narrow"
-        right={
-          <div className="flex items-center gap-3">
-            <span className="hidden text-xs text-muted-foreground sm:inline">
-              {PHASE_LABELS[phase]}
+      {/* 左栏：会话、阶段、结束 */}
+      <aside className="hidden h-full min-h-0 flex-col overflow-y-auto border-r border-rail-line bg-rail text-rail-foreground xl:flex">
+        <Link href="/" className="flex items-center gap-2.5 px-3.5 py-5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-bold tracking-[-0.05em] text-primary-foreground">
+            M
+          </span>
+          <span className="flex flex-col leading-none">
+            <span className="text-[13.5px] font-semibold tracking-[-0.01em] text-white">
+              Marda 码达
             </span>
-            <span className="tabular-nums text-xs font-medium">
+            <span className="mt-1 font-mono text-[9px] tracking-[0.14em] text-rail-muted uppercase">
+              Interview Room
+            </span>
+          </span>
+        </Link>
+
+        <div className="mx-3.5 mt-1 rounded-lg border border-rail-line bg-white/[0.025] p-3.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5 font-mono text-[8.5px] tracking-[0.1em] text-[#8ee0b6] uppercase">
+              <span
+                className={cn(
+                  "size-1 rounded-full bg-current",
+                  !readonly && !finished && "animate-pulse",
+                )}
+              />
+              {readonly ? "Read-only" : finished ? "Finishing" : "Live session"}
+            </span>
+            <span className="font-mono text-[8px] text-rail-muted">
               {progressLabel(answered, total)}
             </span>
-            {!readonly && (
-              <Button
-                variant={voiceMode ? "default" : "outline"}
-                size="sm"
-                aria-pressed={voiceMode}
-                onClick={toggleVoiceMode}
-                disabled={loading || finished}
-                title="面试官消息用语音播报；作答可点下方「语音作答」"
-              >
-                语音模式
-              </Button>
-            )}
-            {readonly ? (
-              <Link
-                href={`/report/${interviewId}`}
-                className={cn(buttonVariants({ size: "sm" }))}
-              >
-                查看报告
-              </Link>
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleEnd}
-                disabled={busy || finished || loading || recording}
-              >
-                结束面试
-              </Button>
-            )}
           </div>
-        }
-      />
-
-      {/* 面试间（P2-M7 改版④）：≥xl 是「左中右」——面试官卡在左、我在右、对话流夹在中间
-          （空间语言 = 左边的人在说、右边的人在听，与气泡左右对齐同构）；两侧等宽 ⇒
-          中间区域的中心 = 页面中心，对话列与输入区因此自动对齐、不需要改任何既有宽度。
-          <xl 塞不下侧卡（768 对话列 + 两卡 + 留白 > 视口），回落为顶部卡片。
-          两个安置点共用同一对 tile 组件——形态只有一处定义 */}
-      <section aria-label="面试间" className="flex min-h-0 flex-1 justify-center">
-        {/* 左护栏：**贴着对话流**——DOM 间距 8px + 对话列自带 24px 内边距 = 视觉 32px；
-            三栏成组居中，外侧留白由视口自动吸收（1280 下 48px、1440 下 128px，天然大于内侧
-            ⇒ 读作「护栏」而不是「贴边」） */}
-        <div className="hidden items-center pr-2 xl:flex">
-          <div className="w-[200px] 2xl:w-[240px]">
-            <InterviewerTile chip={roomChip} />
+          <div className="mt-2 truncate text-[13px] font-semibold text-[#f0eee8]">
+            {position}
           </div>
-        </div>
-
-        <div className="flex min-h-0 w-full max-w-3xl flex-col">
-          {/* <xl 回落：顶部舞台卡（同一对 tile，换个安置点） */}
-          <div className="xl:hidden">
-            <StageCard
-              chip={roomChip}
-              stream={cameraStream}
-              supported={cameraSupported}
-              starting={cameraStarting}
-              onToggle={toggleCamera}
-            />
+          <div className="mt-1 font-mono text-[8.5px] text-rail-muted">
+            {PHASE_LABELS[phase]}
           </div>
-
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="min-h-0 flex-1 overflow-y-auto"
-          >
-            <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6 sm:px-6">
-              {loading && (
-                <p className="text-sm text-muted-foreground">正在载入面试…</p>
-              )}
-              {!loading && messages.length === 0 && !error && (
-                <p className="text-sm text-muted-foreground">
-                  面试尚未开始，请返回首页重新创建。
-                </p>
-              )}
-              {messages.map((item, index) => (
-                <MessageBubble
-                  key={item.id}
-                  interviewId={interviewId}
-                  item={{
-                    ...item,
-                    typing:
-                      busy && index === messages.length - 1 && item.role === "assistant",
-                  }}
-                />
-              ))}
-              {showThinking && <ThinkingBubble />}
+          <div className="mt-3">
+            <div className="flex items-baseline justify-between gap-2 font-mono text-[9px] text-rail-muted">
+              <span>进度</span>
+              <span>
+                <b className="font-medium text-[#e9e8e2]">{answered}</b> / {total} 题
+              </span>
+            </div>
+            <div className="mt-1.5 h-[3px] overflow-hidden rounded-full bg-white/10">
+              <span
+                className="block h-full rounded-full bg-[#8ba1ff] transition-[width]"
+                style={{
+                  width: `${total ? Math.min(100, (answered / total) * 100) : 0}%`,
+                }}
+              />
             </div>
           </div>
         </div>
 
-        <div className="hidden items-center pl-2 xl:flex">
-          <div className="w-[200px] 2xl:w-[240px]">
-            <CandidateTile
-              stream={cameraStream}
-              supported={cameraSupported}
-              starting={cameraStarting}
-              onToggle={toggleCamera}
-            />
+        <div className="mt-5 px-3.5 font-mono text-[8.5px] tracking-[0.14em] text-[#666a71] uppercase">
+          Interview phases
+        </div>
+        <div className="mt-2 px-3.5">
+          {phaseState.steps.map((step, index) => {
+            const done =
+              index < phaseState.currentIndex ||
+              (phaseState.finished && index <= phaseState.currentIndex);
+            const active = index === phaseState.currentIndex && !phaseState.finished;
+            return (
+              <div
+                key={step.key}
+                className="relative grid grid-cols-[18px_minmax(0,1fr)] gap-2.5 px-2 pb-4 last:pb-0"
+              >
+                {index < phaseState.steps.length - 1 ? (
+                  <span
+                    aria-hidden
+                    className="absolute top-4 bottom-0 left-[16px] w-px bg-white/10"
+                  />
+                ) : null}
+                <span
+                  className={cn(
+                    "relative z-[1] flex size-[17px] items-center justify-center rounded-full border bg-rail font-mono text-[8px]",
+                    done
+                      ? "border-[#3d6b56] bg-[#1c2a24] text-[#7fcea8]"
+                      : active
+                        ? "border-[#8ba1ff] bg-[#1a2140] text-[#b9c6ff]"
+                        : "border-[#3a3e46] text-[#70747b]",
+                  )}
+                >
+                  {done ? (
+                    <Check className="size-2.5" strokeWidth={2} />
+                  ) : (
+                    String(index + 1).padStart(2, "0")
+                  )}
+                </span>
+                <span className="flex flex-col gap-0.5">
+                  <span
+                    className={cn(
+                      "text-[11.5px] leading-tight",
+                      done
+                        ? "text-[#b9bdc4]"
+                        : active
+                          ? "font-medium text-white"
+                          : "text-[#8f939a]",
+                    )}
+                  >
+                    {step.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "font-mono text-[8px]",
+                      active ? "text-[#8ba1ff]" : "text-[#5f636a]",
+                    )}
+                  >
+                    {done
+                      ? step.key === "finished"
+                        ? "已生成"
+                        : "已完成"
+                      : active
+                        ? "进行中"
+                        : "待进入"}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="mt-auto flex flex-col gap-2.5 p-3.5">
+          {readonly ? (
+            <Link
+              href={`/report/${interviewId}`}
+              className="flex h-[38px] w-full items-center justify-center gap-2 rounded-lg border border-white/20 text-[12px] text-[#d7d9de] transition-colors hover:border-white/40 hover:bg-white/5"
+            >
+              查看报告
+            </Link>
+          ) : (
+            <button
+              type="button"
+              onClick={handleEnd}
+              disabled={busy || finished || loading || recording}
+              className="flex h-[38px] w-full items-center justify-center gap-2 rounded-lg border border-white/20 text-[12px] text-[#d7d9de] transition-colors hover:border-white/40 hover:bg-white/5 disabled:pointer-events-none disabled:opacity-45"
+            >
+              <Square className="size-3.5" strokeWidth={1.8} />
+              结束面试
+            </button>
+          )}
+          <div className="flex items-center justify-center gap-1.5 font-mono text-[8px] text-rail-muted">
+            <ShieldCheck className="size-3" strokeWidth={1.8} />
+            回答已自动保存
           </div>
         </div>
-      </section>
+      </aside>
 
-      <div className="border-t bg-background">
-        <div className="mx-auto flex max-w-3xl flex-col gap-2 px-4 py-3 sm:px-6">
-          {degradedBadge && <StatusBanner tone="warning">{degradedBadge}</StatusBanner>}
-          {notice && <StatusBanner>{notice}</StatusBanner>}
-
-          {error && (
-            <StatusBanner
-              tone="error"
-              action={
-                pending ? (
-                  <Button variant="outline" size="sm" onClick={handleRetry}>
-                    重试
-                  </Button>
-                ) : null
-              }
+      {/* 中栏：顶栏 + 窄屏舞台 + 对话 + 控制台 */}
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="flex h-[62px] flex-none items-center justify-between gap-3 border-b border-room-line px-4 md:px-6">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-room-accent text-[12px] font-bold tracking-[-0.05em] text-room-bg xl:hidden">
+              M
+            </span>
+            <div className="min-w-0">
+              <div className="flex items-baseline gap-2">
+                <strong className="truncate text-[12.5px] font-medium">
+                  {PHASE_LABELS[phase]}
+                </strong>
+                <span className="font-mono text-[9.5px] text-room-muted">
+                  {progressLabel(answered, total)}
+                </span>
+              </div>
+              <div className="truncate font-mono text-[8.5px] text-room-faint">
+                {position}
+              </div>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5">
+            <button
+              type="button"
+              onClick={toggleRoomTheme}
+              aria-pressed={roomTheme === "dark"}
+              title="切换面试间配色"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink"
             >
-              {error}
-            </StatusBanner>
-          )}
-
-          {readonly ? (
-            <p className="py-2 text-sm text-muted-foreground">
-              本场面试已结束，以上为完整回放 ·{" "}
+              {roomTheme === "dark" ? (
+                <Moon className="size-3.5" strokeWidth={1.8} />
+              ) : (
+                <Sun className="size-3.5" strokeWidth={1.8} />
+              )}
+              <span className="hidden sm:inline">
+                {roomTheme === "dark" ? "暗场" : "亮场"}
+              </span>
+            </button>
+            {!readonly ? (
+              <button
+                type="button"
+                aria-pressed={voiceMode}
+                onClick={toggleVoiceMode}
+                disabled={loading || finished}
+                title="面试官消息用语音播报；作答可点下方「语音作答」"
+                className={cn(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-[10.5px] transition-colors disabled:pointer-events-none disabled:opacity-45",
+                  voiceMode
+                    ? "border-room-accent bg-room-accent-soft text-room-accent"
+                    : "border-room-line text-room-muted hover:border-room-line-strong hover:text-room-ink",
+                )}
+              >
+                <Volume2 className="size-3.5" strokeWidth={1.8} />
+                <span className="hidden sm:inline">语音播报</span>
+              </button>
+            ) : null}
+            {readonly ? (
               <Link
                 href={`/report/${interviewId}`}
-                className="underline underline-offset-4"
+                className="inline-flex h-7 items-center rounded-md bg-room-accent px-2.5 text-[10.5px] font-medium text-room-bg xl:hidden"
               >
-                查看能力报告
+                查看报告
               </Link>
-            </p>
-          ) : finished ? (
-            <p className="py-2 text-sm text-muted-foreground">
-              面试已结束，正在生成能力报告…
-            </p>
-          ) : (
-            <>
-              {attachments.length > 0 && (
-                <div className="flex flex-col gap-1.5">
-                  <div className="flex flex-wrap gap-2">
-                    {attachments.map((item, index) => (
-                      <div key={item.url} className="relative">
-                        {/* eslint-disable-next-line @next/next/no-img-element -- 本地预览 blob */}
-                        <img
-                          src={item.url}
-                          alt={`待发送截图 ${index + 1}`}
-                          className="max-h-24 w-auto rounded-lg ring-1 ring-foreground/15"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => removeAttachment(index)}
-                          aria-label={`移除第 ${index + 1} 张截图`}
-                          className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full bg-foreground text-xs text-background"
-                        >
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  {/* 如实交代图的用途（用户口径 2026-10-04）：别让用户以为传了白传 */}
-                  <p className="text-xs text-muted-foreground">{ATTACH_HINT}</p>
-                </div>
-              )}
-              <Textarea
-                ref={inputRef}
-                value={draft}
-                onChange={(e) => setDraft(e.target.value)}
-                onCompositionStart={() => {
-                  composingRef.current = true;
-                }}
-                onCompositionEnd={() => {
-                  // 复位延到下一个宏任务：macOS 输入法用回车"上屏"时 compositionend 先于 keydown 到达，
-                  // 立刻复位会让那次回车被误判成普通回车（表现为上屏的同时把消息发出去）
-                  setTimeout(() => {
-                    composingRef.current = false;
-                  }, 0);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key !== "Enter" || e.shiftKey) return;
-                  // 组字进行中（含 Windows 输入法的 keyCode 229）：这个回车归输入法选字，放行
-                  if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
-                  e.preventDefault();
-                  // 刚用回车把候选上屏（compositionend 已先到、isComposing 已是 false）：只上屏，不发送也不换行
-                  if (composingRef.current) return;
-                  handleSend();
-                }}
-                disabled={busy || loading}
-                rows={1}
-                placeholder="输入你的回答，Enter 发送，Shift + Enter 换行"
-                // 随内容自增长、**封顶 6 行**（初始 2 行由 min-h-16 兜底）：md 起 text-sm/leading-5 →
-                // 6×20px + 上下 padding 16px = 136px（max-h-34）；窄屏 text-base → 6×24px+16px = 160px（max-h-40）。
-                // 再长就框内滚动，不挤占会话流
-                className="max-h-40 min-h-16 resize-none overflow-y-auto md:max-h-34"
-              />
-              {/* 面试间控制条（P2-M7）：房间控件（语音 / 摄像头）+ 工具（截图）｜主操作（发送）。
-                  flex-wrap：窄屏放不下时整组换行，不让 flex 把按钮压变形（M3 的教训） */}
-              <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-                <span className="text-xs text-muted-foreground">
-                  {connecting
-                    ? "正在连接语音…"
-                    : recording
-                      ? "正在听你说，说完点「结束录音」"
-                      : cameraStarting
-                        ? "正在打开摄像头…"
-                        : busy
-                          ? "面试官正在回应…"
-                          : "答案越具体，评分与点评越准确"}
-                </span>
-                <div className="flex shrink-0 items-center gap-2">
-                  <Button
-                    variant={recording ? "default" : "outline"}
-                    onClick={recording ? () => void stopRecording() : () => void startRecording()}
-                    /* 录音中不禁用（否则用户按不停、录音收不了尾）——判据在 lib/voice.ts 里，有 vitest */
-                    disabled={micDisabled({
-                      recording,
-                      connecting,
-                      supported: micSupported,
-                      busy,
-                      finished,
-                    })}
-                    title={
-                      micSupported
-                        ? "点击开始录音，再点结束；转写会填进输入框，可修改后再发送"
-                        : "当前浏览器不支持录音，请用文字作答"
-                    }
-                  >
-                    {recording ? "结束录音" : "语音作答"}
-                  </Button>
-                  <Button
-                    variant={cameraOn ? "default" : "outline"}
-                    aria-pressed={cameraOn}
-                    onClick={toggleCamera}
-                    /* 开着的时候必须可点（那就是「关摄像头」）——判据在 lib/camera.ts 里，有 vitest */
-                    disabled={
-                      cameraDisabled({
-                        on: cameraOn,
-                        starting: cameraStarting,
-                        supported: cameraSupported,
-                      }) || loading
-                    }
-                    title={
-                      cameraOn
-                        ? "关闭本机画面"
-                        : cameraSupported
-                          ? `开启本机画面：${CAMERA_HINT}`
-                          : "当前浏览器不支持摄像头，或页面不在安全上下文中"
-                    }
-                  >
-                    {cameraStarting ? "连接中…" : "摄像头"}
-                  </Button>
-                  <Button
-                    variant="outline"
-                    onClick={() => fileRef.current?.click()}
-                    disabled={attaching || busy || loading || finished || recording}
-                    title={ATTACH_TITLE}
-                  >
-                    {attaching ? "上传中…" : "附截图"}
-                  </Button>
-                  <input
-                    ref={fileRef}
-                    type="file"
-                    accept={IMAGE_ACCEPT}
-                    multiple
-                    hidden
-                    onChange={(e) => {
-                      void handlePick(e.target.files);
-                      e.target.value = ""; // 清空才能连选同一张
-                    }}
-                  />
-                  {/* 工具与主操作之间留一道分隔（面试间控制条的房间感） */}
-                  <div className="flex h-5 items-center" aria-hidden>
-                    <Separator orientation="vertical" />
-                  </div>
-                  <Button
-                    onClick={handleSend}
-                    disabled={attaching || busy || loading || !draft.trim() || blocksSubmit(recording)}
-                  >
-                    发送
-                  </Button>
-                </div>
-              </div>
-            </>
-          )}
+            ) : (
+              <button
+                type="button"
+                onClick={handleEnd}
+                disabled={busy || finished || loading || recording}
+                className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink disabled:pointer-events-none disabled:opacity-45 xl:hidden"
+              >
+                <Square className="size-3" strokeWidth={1.8} />
+                <span className="hidden sm:inline">结束</span>
+              </button>
+            )}
+          </div>
+        </header>
+
+        {/* 窄屏顶部舞台：保留摄像头入口，宽屏改由右栏承载 */}
+        <div className="xl:hidden">
+          <StageCard
+            chip={roomChip}
+            speaking={speakerSpeaking}
+            stream={cameraStream}
+            supported={cameraSupported}
+            starting={cameraStarting}
+            onToggle={toggleCamera}
+          />
         </div>
-      </div>
+
+        <div
+          ref={scrollRef}
+          onScroll={handleScroll}
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-5 md:px-6"
+        >
+          <div className="mx-auto flex max-w-[720px] flex-col">
+            {loading && (
+              <p className="text-xs text-room-muted">正在载入面试…</p>
+            )}
+            {!loading && messages.length === 0 && !error && (
+              <p className="text-xs text-room-muted">
+                面试尚未开始，请返回首页重新创建。
+              </p>
+            )}
+            {messages.map((item, index) => (
+              <MessageBubble
+                key={item.id}
+                interviewId={interviewId}
+                last={index === messages.length - 1 && !showThinking}
+                item={{
+                  ...item,
+                  typing:
+                    busy && index === messages.length - 1 && item.role === "assistant",
+                }}
+              />
+            ))}
+            {showThinking && <ThinkingBubble />}
+          </div>
+        </div>
+
+        <div className="flex-none border-t border-room-line bg-room-bg px-4 py-3 md:px-6">
+          <div className="mx-auto flex max-w-[720px] flex-col gap-2">
+            {degradedBadge && <RoomBanner tone="warning">{degradedBadge}</RoomBanner>}
+            {notice && <RoomBanner>{notice}</RoomBanner>}
+            {error && (
+              <RoomBanner
+                tone="error"
+                action={
+                  pending ? (
+                    <button
+                      type="button"
+                      onClick={handleRetry}
+                      className="h-7 shrink-0 rounded-md border border-room-line px-2.5 text-[10.5px] text-room-ink transition-colors hover:bg-room-panel-2"
+                    >
+                      重试
+                    </button>
+                  ) : null
+                }
+              >
+                {error}
+              </RoomBanner>
+            )}
+
+            {readonly ? (
+              <p className="py-2 text-xs text-room-muted">
+                本场面试已结束，以上为完整回放。
+                <Link
+                  href={`/report/${interviewId}`}
+                  className="ml-1 text-room-accent underline underline-offset-2"
+                >
+                  查看能力报告
+                </Link>
+              </p>
+            ) : finished ? (
+              <p className="py-2 text-xs text-room-muted">
+                面试已结束，正在生成能力报告…
+              </p>
+            ) : (
+              <>
+                {attachments.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap gap-2">
+                      {attachments.map((item, index) => (
+                        <div key={item.url} className="relative">
+                          {/* eslint-disable-next-line @next/next/no-img-element -- 本地预览 blob */}
+                          <img
+                            src={item.url}
+                            alt={`待发送截图 ${index + 1}`}
+                            className="max-h-24 w-auto rounded-lg ring-1 ring-room-line"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeAttachment(index)}
+                            aria-label={`移除第 ${index + 1} 张截图`}
+                            className="absolute -top-1.5 -right-1.5 flex size-5 items-center justify-center rounded-full bg-room-ink text-[11px] text-room-bg"
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="text-[10.5px] text-room-muted">{ATTACH_HINT}</p>
+                  </div>
+                )}
+
+                <div className="rounded-lg border border-room-line-strong bg-room-panel transition-colors focus-within:border-room-accent focus-within:ring-2 focus-within:ring-room-accent/20">
+                  <Textarea
+                    ref={inputRef}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onCompositionStart={() => {
+                      composingRef.current = true;
+                    }}
+                    onCompositionEnd={() => {
+                      // 复位延到下一个宏任务：macOS 输入法用回车"上屏"时 compositionend 先于 keydown 到达，
+                      // 立刻复位会让那次回车被误判成普通回车（表现为上屏的同时把消息发出去）
+                      setTimeout(() => {
+                        composingRef.current = false;
+                      }, 0);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key !== "Enter" || e.shiftKey) return;
+                      // 组字进行中（含 Windows 输入法的 keyCode 229）：这个回车归输入法选字，放行
+                      if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return;
+                      e.preventDefault();
+                      // 刚用回车把候选上屏（compositionend 已先到、isComposing 已是 false）：只上屏，不发送也不换行
+                      if (composingRef.current) return;
+                      handleSend();
+                    }}
+                    disabled={busy || loading}
+                    rows={1}
+                    placeholder="输入你的回答，Enter 发送，Shift + Enter 换行"
+                    className="max-h-40 min-h-16 resize-none overflow-y-auto border-0 bg-transparent px-3.5 pt-3 pb-1 text-[12.5px] shadow-none focus-visible:border-transparent focus-visible:ring-0 md:max-h-34"
+                  />
+                  <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
+                    <div className="flex items-center gap-0.5">
+                      <RoomTool
+                        icon={Mic}
+                        label={
+                          recording
+                            ? "结束录音"
+                            : connecting
+                              ? "连接中…"
+                              : "语音作答"
+                        }
+                        pressed={recording}
+                        onClick={
+                          recording
+                            ? () => void stopRecording()
+                            : () => void startRecording()
+                        }
+                        disabled={micDisabled({
+                          recording,
+                          connecting,
+                          supported: micSupported,
+                          busy,
+                          finished,
+                        })}
+                        title={
+                          micSupported
+                            ? "点击开始录音，再点结束；转写会填进输入框，可修改后再发送"
+                            : "当前浏览器不支持录音，请用文字作答"
+                        }
+                      />
+                      <RoomTool
+                        icon={Video}
+                        label={cameraStarting ? "连接中…" : "摄像头"}
+                        pressed={cameraOn}
+                        onClick={toggleCamera}
+                        disabled={
+                          cameraDisabled({
+                            on: cameraOn,
+                            starting: cameraStarting,
+                            supported: cameraSupported,
+                          }) || loading
+                        }
+                        title={
+                          cameraOn
+                            ? "关闭本机画面"
+                            : cameraSupported
+                              ? `开启本机画面：${CAMERA_HINT}`
+                              : "当前浏览器不支持摄像头，或页面不在安全上下文中"
+                        }
+                      />
+                      <RoomTool
+                        icon={ImagePlus}
+                        label={attaching ? "上传中…" : "附截图"}
+                        onClick={() => fileRef.current?.click()}
+                        disabled={attaching || busy || loading || finished || recording}
+                        title={ATTACH_TITLE}
+                      />
+                      <input
+                        ref={fileRef}
+                        type="file"
+                        accept={IMAGE_ACCEPT}
+                        multiple
+                        hidden
+                        onChange={(e) => {
+                          void handlePick(e.target.files);
+                          e.target.value = ""; // 清空才能连选同一张
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono text-[8.5px] text-room-faint">
+                        {progressLabel(answered, total)}
+                      </span>
+                      <span aria-hidden className="h-4 w-px bg-room-line" />
+                      <button
+                        type="button"
+                        onClick={handleSend}
+                        disabled={
+                          attaching ||
+                          busy ||
+                          loading ||
+                          !draft.trim() ||
+                          blocksSubmit(recording)
+                        }
+                        className="inline-flex h-[30px] items-center gap-1.5 rounded-md bg-room-accent px-3 text-[11.5px] font-medium text-room-bg transition-colors hover:bg-room-accent/90 disabled:pointer-events-none disabled:opacity-45"
+                      >
+                        发送
+                        <ArrowUp className="size-3.5" strokeWidth={1.8} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-2 px-1 font-mono text-[8.5px] text-room-faint">
+                  <span className="truncate">{composerHint}</span>
+                  <span className="hidden shrink-0 sm:inline">
+                    Enter 发送 / Shift + Enter 换行
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      </main>
+
+      {/* 右栏：舞台、信号、答题提示 */}
+      <aside className="hidden min-h-0 flex-col gap-3 overflow-y-auto border-l border-room-line bg-room-bg p-4 xl:flex">
+        <div className="flex items-center justify-between gap-2 px-0.5">
+          <span className="font-mono text-[8.5px] tracking-[0.14em] text-room-faint uppercase">
+            Stage / live
+          </span>
+          <span className="font-mono text-[8px] text-room-faint">仅本机</span>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
+          <InterviewerTile
+            chip={roomChip}
+            speaking={speakerSpeaking}
+            className="rounded-none border-0"
+          />
+          <div className="flex items-center justify-between border-t border-room-line px-2.5 py-2 font-mono text-[8px] text-room-muted">
+            <span>Interviewer</span>
+            <span
+              className={cn(
+                "flex items-center gap-1.5",
+                speakerSpeaking && "text-room-accent",
+              )}
+            >
+              <span className="size-1 rounded-full bg-current" />
+              {speakerSpeaking ? "Speaking" : "Idle"}
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
+          <CandidateTile
+            stream={cameraStream}
+            supported={cameraSupported}
+            starting={cameraStarting}
+            onToggle={toggleCamera}
+            className="rounded-none border-0"
+          />
+          <div className="flex items-center justify-between border-t border-room-line px-2.5 py-2 font-mono text-[8px] text-room-muted">
+            <span>我 / 仅本机可见</span>
+            <span className="flex items-center gap-1.5">
+              <span className="size-1 rounded-full bg-current" />
+              {cameraOn ? "Camera on" : "Camera off"}
+            </span>
+          </div>
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
+          <div className="border-b border-room-line px-3 py-2 font-mono text-[8.5px] tracking-[0.12em] text-room-faint uppercase">
+            Session signals
+          </div>
+          {[
+            ["当前阶段", PHASE_LABELS[phase]],
+            ["已答题目", `${answered} / ${total}`],
+            ["语音播报", voiceMode ? "开启" : "关闭"],
+            ["摄像头", cameraOn ? "开启" : "关闭"],
+            ["本场状态", readonly ? "只读回放" : finished ? "生成报告" : "进行中"],
+          ].map(([label, value], index) => (
+            <div
+              key={label}
+              className={cn(
+                "flex items-center justify-between gap-2 px-3 py-2 text-[10.5px]",
+                index > 0 && "border-t border-room-line",
+              )}
+            >
+              <span className="text-room-muted">{label}</span>
+              <b className="font-mono text-[9.5px] font-medium text-room-ink">
+                {value}
+              </b>
+            </div>
+          ))}
+        </div>
+
+        <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
+          <div className="border-b border-room-line px-3 py-2 font-mono text-[8.5px] tracking-[0.12em] text-room-faint uppercase">
+            Answer cues
+          </div>
+          {[
+            ["01", "先给结论，再补约束与取舍。"],
+            ["02", "主动说出失败路径与兜底方案。"],
+            ["03", "用项目里的具体数字支撑判断。"],
+          ].map(([index, text]) => (
+            <div
+              key={index}
+              className="grid grid-cols-[18px_minmax(0,1fr)] gap-1.5 border-t border-room-line px-3 py-2 first:border-t-0"
+            >
+              <span className="font-mono text-[8px] text-room-accent">{index}</span>
+              <p className="text-[10px] leading-relaxed text-room-muted">{text}</p>
+            </div>
+          ))}
+        </div>
+
+        <p className="px-0.5 text-[9.5px] leading-relaxed text-room-faint">
+          摄像头画面只在本机渲染，不上传、不落库，模型不会读取。截图会随回答提交，用于代码题判分。
+        </p>
+      </aside>
     </div>
   );
 }
@@ -1032,16 +1353,82 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 /** 提交后、首个 delta 到达前的等待指示（面试官思考中）。 */
 function ThinkingBubble() {
   return (
-    <div className="flex justify-start">
-      <div className="flex items-center gap-1 rounded-xl rounded-tl-sm bg-muted px-3.5 py-3">
-        {[0, 1, 2].map((i) => (
+    <div className="flex items-start gap-3.5 pb-6">
+      <div className="flex size-[29px] items-center justify-center rounded-lg border border-room-line-strong bg-room-panel text-[10px] font-semibold">
+        M
+      </div>
+      <div className="mt-1.5 flex h-8 w-fit items-center gap-1 rounded-lg border border-room-line bg-room-panel px-3">
+        {[0, 1, 2].map((index) => (
           <span
-            key={i}
-            className="size-1.5 animate-pulse rounded-full bg-muted-foreground"
-            style={{ animationDelay: `${i * 160}ms` }}
+            key={index}
+            className="size-1 animate-pulse rounded-full bg-room-muted"
+            style={{ animationDelay: `${index * 160}ms` }}
           />
         ))}
       </div>
     </div>
+  );
+}
+
+function RoomBanner({
+  tone = "info",
+  children,
+  action,
+}: {
+  tone?: "info" | "warning" | "error";
+  children: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      role={tone === "error" ? "alert" : "status"}
+      className={cn(
+        "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-[11px] leading-relaxed",
+        tone === "error"
+          ? "border-room-danger/30 bg-room-danger/10 text-room-danger"
+          : tone === "warning"
+            ? "border-room-accent/30 bg-room-accent-soft text-room-ink"
+            : "border-room-line bg-room-panel text-room-muted",
+      )}
+    >
+      <span className="min-w-0">{children}</span>
+      {action}
+    </div>
+  );
+}
+
+function RoomTool({
+  icon: Icon,
+  label,
+  pressed,
+  onClick,
+  disabled,
+  title,
+}: {
+  icon: LucideIcon;
+  label: string;
+  pressed?: boolean;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={pressed}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[10.5px] transition-colors",
+        pressed
+          ? "bg-room-accent-soft text-room-accent"
+          : "text-room-muted hover:bg-room-panel-2 hover:text-room-ink",
+        "disabled:pointer-events-none disabled:opacity-45",
+      )}
+    >
+      <Icon className="size-3.5" strokeWidth={1.8} />
+      <span>{label}</span>
+    </button>
   );
 }

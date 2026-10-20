@@ -136,8 +136,9 @@ export function PrivateBankClient() {
   return (
     <>
       <PageHeader
+        kicker="Library / Private questions"
         title="私有题库"
-        description="上传你自己整理的题目，与公共题库一起参与出题——只对你可见"
+        description="上传你自己整理的题目，与公共题库一起参与出题；只对你可见。"
       />
       <Card>
         <CardHeader>

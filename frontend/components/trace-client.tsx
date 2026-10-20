@@ -73,7 +73,7 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
 
   if (error) {
     return (
-      <PageShell nav={false} width="narrow" right={null}>
+      <PageShell width="narrow">
         <ErrorState
           variant="page"
           message={error}
@@ -90,7 +90,7 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
 
   if (!data) {
     return (
-      <PageShell nav={false} width="narrow" right={null}>
+      <PageShell width="narrow">
         <Skeleton className="h-8 w-56" />
         <Skeleton className="h-24 w-full" />
         <Skeleton className="h-24 w-full" />
@@ -104,38 +104,32 @@ export function TraceClient({ interviewId }: { interviewId: string }) {
   const nodes: TraceNode[] = data.nodes ?? [];
 
   return (
-    <PageShell
-      nav={false}
-      width="narrow"
-      right={
-        <div className="flex items-center gap-2">
-          <Link
-            href={`/report/${interviewId}`}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            查看报告
-          </Link>
-          <Link
-            href={`/interview/${interviewId}`}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            面试回放
-          </Link>
-        </div>
-      }
-    >
+    <PageShell width="narrow">
         <PageHeader
+          kicker="Replay / Decision trace"
           title="决策回放"
           description={data.position}
           right={
-            <>
-              <span className="tabular-nums text-sm text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <span className="font-mono text-[10px] text-muted-foreground">
                 {progressLabel(data.answered_count, data.question_count)} 题
               </span>
               <Badge variant={data.status === "finished" ? "secondary" : "outline"}>
                 {data.status === "finished" ? "已结束" : "进行中"}
               </Badge>
-            </>
+              <Link
+                href={`/report/${interviewId}`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                查看报告
+              </Link>
+              <Link
+                href={`/interview/${interviewId}`}
+                className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+              >
+                面试回放
+              </Link>
+            </div>
           }
         />
 

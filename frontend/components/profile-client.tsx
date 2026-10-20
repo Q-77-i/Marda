@@ -10,6 +10,8 @@ import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
+import { MonoLabel } from "@/components/ui/mono-label";
+import { StatStrip, type StatItem } from "@/components/ui/stat-strip";
 import { ErrorState } from "@/components/ui/error-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getProfile, type ProfileResponse, type ProfileSession } from "@/lib/api";
@@ -74,8 +76,9 @@ export function ProfileClient() {
   const page = (content: ReactNode) => (
     <>
       <PageHeader
+        kicker="Profile / Capability record"
         title="能力档案"
-        description="多次面试的得分曲线与短板变化，用来看在变好还是变差"
+        description="多次面试的得分曲线与短板变化，用来看在变好还是变差。"
       />
       {content}
     </>
@@ -138,20 +141,30 @@ export function ProfileClient() {
         </>
       ) : (
         <>
-          <DimensionCard sessions={sessions} />
+          <div className="grid gap-5 xl:grid-cols-2 xl:items-start">
+            <DimensionCard sessions={sessions} />
 
-          <Card>
-            <CardHeader>
-              <CardTitle>总分曲线</CardTitle>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-2">
-              <OverallTrend
-                rows={overallRows(sessions)}
-                onSelect={(interviewId) => router.push(`/report/${interviewId}`)}
-              />
-              <p className="text-xs text-muted-foreground">点击曲线上的点可打开该场报告。</p>
-            </CardContent>
-          </Card>
+            <Card>
+              <CardHeader>
+                <div className="min-w-0">
+                  <CardTitle>总分曲线</CardTitle>
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    最近 {sessions.length} 场，点击数据点可打开该场报告。
+                  </p>
+                </div>
+                <MonoLabel>Overall</MonoLabel>
+              </CardHeader>
+              <CardContent className="flex flex-col gap-2">
+                <OverallTrend
+                  rows={overallRows(sessions)}
+                  onSelect={(interviewId) => router.push(`/report/${interviewId}`)}
+                />
+                <p className="text-[10.5px] text-muted-foreground">
+                  趋势与五维走向同步；真正有差异的是水平，见左侧对照。
+                </p>
+              </CardContent>
+            </Card>
+          </div>
 
           <HeatmapCard sessions={sessions} labels={labels} insight={insight} />
 
@@ -178,25 +191,29 @@ function HeatmapCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>知识域趋势</CardTitle>
-        {sessions.length > HEATMAP_WINDOW ? (
-          <CardAction>
-            <Button
-              variant="ghost"
-              size="xs"
-              aria-expanded={expanded}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded ? "收起" : `查看全部 ${sessions.length} 场`}
-            </Button>
-          </CardAction>
-        ) : null}
+        <div className="min-w-0">
+          <CardTitle>知识域趋势</CardTitle>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            行 = 知识域、列 = 场次；颜色分五档，每格都印数字。
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <MonoLabel>Domains</MonoLabel>
+          {sessions.length > HEATMAP_WINDOW ? (
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="xs"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                {expanded ? "收起" : `查看全部 ${sessions.length} 场`}
+              </Button>
+            </CardAction>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        {/* 不写「颜色越深分越高」：暗色主题下高分是更亮，这句只在明色成立 */}
-        <p className="text-xs text-muted-foreground">
-          行 = 知识域、列 = 场次，同一行的左右就是该域的走向；颜色分五档表示分数高低（见下方色阶）。
-        </p>
         <DomainHeatmap rows={heatRows(shown.sessions, WEIGHTED_DOMAINS)} labels={shown.labels} />
         {insight ? <p className="text-sm text-muted-foreground">洞察：{insight}</p> : null}
       </CardContent>
@@ -211,15 +228,45 @@ function HeatmapCard({
  * 真正有差异的是**水平**——哪一维常年偏弱，数字比线读得准，也不必引入分类色板。
  */
 function DimensionCard({ sessions }: { sessions: ProfileSession[] }) {
+  const latest = sessions[sessions.length - 1];
+  const hasScores = Object.keys(latest.scores).length > 0;
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>五维对照</CardTitle>
+        <div className="min-w-0">
+          <CardTitle>{sessions.length > 1 ? "五维能力" : "五维对照"}</CardTitle>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            {sessions.length > 1
+              ? "最近一场的快照；下方是场均与最近一场的对照。"
+              : "只有一场时的快照。"}
+          </p>
+        </div>
+        <MonoLabel>{sessions.length > 1 ? "Latest / avg" : "Latest"}</MonoLabel>
       </CardHeader>
-      <CardContent className="flex flex-col gap-2">
-        <p className="text-xs text-muted-foreground">
-          五维各场同涨同跌（走向见下方总分曲线），这里只对照各自的位置——哪一维常年偏弱。
-        </p>
+      <CardContent className="flex flex-col gap-4">
+        {sessions.length > 1 && hasScores ? (
+          <div className="grid items-center gap-4 md:grid-cols-[minmax(0,1fr)_150px]">
+            <ScoreRadar scores={latest.scores} />
+            <div className="flex flex-col gap-2">
+              {DIMENSIONS.map((dim) => (
+                <div
+                  key={dim.key}
+                  className="flex items-center justify-between gap-2 border-b border-border pb-1.5 text-[11px] last:border-0 last:pb-0"
+                >
+                  <span className="text-muted-foreground">{dim.label}</span>
+                  <span className="font-mono text-[11px]">
+                    {formatScore(latest.scores[dim.key] ?? 0)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            五维各场同涨同跌（走向见总分曲线），这里只对照各自的位置：哪一维常年偏弱。
+          </p>
+        )}
         <DimensionTable sessions={sessions} />
       </CardContent>
     </Card>
@@ -235,41 +282,61 @@ function SummaryTiles({
   labelOf: (interviewId: string) => string;
 }) {
   const { summary } = data;
-  const tiles: { title: string; value: string; hint: string }[] = [
-    { title: "已面试", value: `${summary.session_count} 场`, hint: "含报告的场次" },
-    { title: "平均总分", value: formatScore(summary.average_overall), hint: "五维等权均值" },
-    summary.latest_delta
-      ? {
-          title: "最近变化",
-          value: deltaLabel(summary.latest_delta.delta),
-          // 跨场比较必须带刻度标签：只说「涨了 0.6」用户不知道跟哪场比
-          hint: `${labelOf(data.sessions[data.sessions.length - 2].interview_id)} → ${labelOf(
+  const delta = summary.latest_delta?.delta;
+  const items: StatItem[] = [
+    {
+      label: "已面试",
+      value: (
+        <>
+          {summary.session_count}
+          <span className="ml-1 text-xs font-medium text-muted-foreground">场</span>
+        </>
+      ),
+      hint: "含报告的场次",
+    },
+    {
+      label: "平均总分",
+      value: (
+        <>
+          {formatScore(summary.average_overall)}
+          <span className="ml-1 text-xs font-medium text-muted-foreground">/ 5</span>
+        </>
+      ),
+      hint: "五维等权均值",
+    },
+    {
+      label: "最近变化",
+      value: typeof delta === "number" ? deltaLabel(delta) : "暂无",
+      // 跨场比较必须带刻度标签：只说「涨了 0.6」用户不知道跟哪场比
+      hint: summary.latest_delta
+        ? `${labelOf(data.sessions[data.sessions.length - 2].interview_id)} → ${labelOf(
             data.sessions[data.sessions.length - 1].interview_id,
-          )}`,
-        }
-      : { title: "最近变化", value: "—", hint: "再完成一场才有对比" },
-    summary.best
-      ? {
-          title: "最高分",
-          value: formatScore(summary.best.overall),
-          hint: labelOf(summary.best.interview_id),
-        }
-      : { title: "最高分", value: "—", hint: "" },
+          )}`
+        : "再完成一场才有对比",
+      tone:
+        typeof delta === "number"
+          ? delta > 0
+            ? "up"
+            : delta < 0
+              ? "down"
+              : "default"
+          : "default",
+    },
+    {
+      label: "最高分",
+      value: summary.best ? (
+        <>
+          {formatScore(summary.best.overall)}
+          <span className="ml-1 text-xs font-medium text-muted-foreground">/ 5</span>
+        </>
+      ) : (
+        "暂无"
+      ),
+      hint: summary.best ? labelOf(summary.best.interview_id) : "",
+    },
   ];
 
-  return (
-    <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-      {tiles.map((tile) => (
-        <Card key={tile.title}>
-          <CardContent className="flex flex-col gap-1 py-4">
-            <span className="text-xs text-muted-foreground">{tile.title}</span>
-            <span className="text-2xl font-semibold tabular-nums">{tile.value}</span>
-            <span className="truncate text-xs text-muted-foreground">{tile.hint}</span>
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
+  return <StatStrip items={items} />;
 }
 
 function DimensionTable({ sessions }: { sessions: ProfileSession[] }) {
@@ -279,15 +346,27 @@ function DimensionTable({ sessions }: { sessions: ProfileSession[] }) {
   );
 
   return (
-    <div className="grid grid-cols-[1fr_4.5rem_4.5rem] items-center gap-y-1 text-sm">
-      <span className="text-xs text-muted-foreground">维度</span>
-      <span className="text-right text-xs text-muted-foreground">场均</span>
-      <span className="text-right text-xs text-muted-foreground">最近一场</span>
+    <div className="grid grid-cols-[1fr_4.5rem_4.5rem] items-center gap-y-0">
+      <span className="pb-1.5 font-mono text-[9.5px] tracking-[0.1em] text-muted-foreground uppercase">
+        维度
+      </span>
+      <span className="pb-1.5 text-right font-mono text-[9.5px] tracking-[0.1em] text-muted-foreground uppercase">
+        场均
+      </span>
+      <span className="pb-1.5 text-right font-mono text-[9.5px] tracking-[0.1em] text-muted-foreground uppercase">
+        最近
+      </span>
       {DIMENSIONS.map((dim, index) => (
         <Fragment key={dim.key}>
-          <span className="text-muted-foreground">{dim.label}</span>
-          <span className="text-right tabular-nums">{formatScore(stats[index].average)}</span>
-          <span className="text-right tabular-nums">{formatScore(stats[index].latest)}</span>
+          <span className="border-t border-border py-1.5 text-[11.5px] text-muted-foreground">
+            {dim.label}
+          </span>
+          <span className="border-t border-border py-1.5 text-right font-mono text-[11px]">
+            {formatScore(stats[index].average)}
+          </span>
+          <span className="border-t border-border py-1.5 text-right font-mono text-[11px]">
+            {formatScore(stats[index].latest)}
+          </span>
         </Fragment>
       ))}
     </div>
@@ -362,19 +441,27 @@ function WeaknessChanges({ data }: { data: ProfileResponse }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>短板变化</CardTitle>
-        {data.weakness_changes.length > WEAKNESS_WINDOW ? (
-          <CardAction>
-            <Button
-              variant="ghost"
-              size="xs"
-              aria-expanded={expanded}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {expanded ? "收起" : `查看全部 ${data.weakness_changes.length} 场`}
-            </Button>
-          </CardAction>
-        ) : null}
+        <div className="min-w-0">
+          <CardTitle>短板变化</CardTitle>
+          <p className="mt-1 text-[11px] text-muted-foreground">
+            逐场对比上一场，最近一场在最上面。
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <MonoLabel>Changes</MonoLabel>
+          {data.weakness_changes.length > WEAKNESS_WINDOW ? (
+            <CardAction>
+              <Button
+                variant="ghost"
+                size="xs"
+                aria-expanded={expanded}
+                onClick={() => setExpanded((value) => !value)}
+              >
+                {expanded ? "收起" : `查看全部 ${data.weakness_changes.length} 场`}
+              </Button>
+            </CardAction>
+          ) : null}
+        </div>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
         {rows.map((row) => {

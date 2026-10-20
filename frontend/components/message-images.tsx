@@ -58,11 +58,11 @@ function Thumbnail({
   const url = useImageUrl(interviewId, imageId);
 
   if (url === null) {
-    return <div className="h-20 w-28 animate-pulse rounded-lg bg-foreground/10" aria-hidden />;
+    return <div className="h-20 w-28 animate-pulse rounded-lg bg-room-panel-3" aria-hidden />;
   }
   if (url === "error") {
     return (
-      <div className="flex h-20 w-28 items-center justify-center rounded-lg bg-foreground/10 px-2 text-center text-[10px] text-muted-foreground">
+      <div className="flex h-20 w-28 items-center justify-center rounded-lg bg-room-panel-3 px-2 text-center text-[10px] text-room-muted">
         图片加载失败
       </div>
     );
@@ -71,7 +71,7 @@ function Thumbnail({
     <button
       type="button"
       onClick={() => onOpen(url)}
-      className="overflow-hidden rounded-lg ring-1 ring-foreground/15 transition-opacity hover:opacity-90"
+      className="overflow-hidden rounded-lg ring-1 ring-room-line transition-opacity hover:opacity-90"
       title="点击查看大图"
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- 鉴权 blob 图，next/image 不适用 */}
@@ -100,7 +100,7 @@ export function MessageImages({
         <div
           role="presentation"
           onClick={() => setZoomed(null)}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 p-6 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-room-bg/85 p-6 backdrop-blur-sm"
         >
           {/* eslint-disable-next-line @next/next/no-img-element -- 同上 */}
           <img
