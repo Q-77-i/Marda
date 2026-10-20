@@ -71,14 +71,14 @@ export function ScoreRadar({
               domain={[0, 5]}
               tickCount={6}
               axisLine={false}
-              tick={{ fill: tokens.muted, fontSize: 12 }}
+              tick={false}
             />
             <Radar
               dataKey="score"
               stroke={tokens.primary}
               strokeWidth={2}
               fill={tokens.primary}
-              fillOpacity={0.22}
+              fillOpacity={0.12}
               dot={{ r: 4, fill: tokens.primary, strokeWidth: 0 }}
               isAnimationActive={false}
             />

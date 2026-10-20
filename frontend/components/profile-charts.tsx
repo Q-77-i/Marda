@@ -42,7 +42,7 @@ export function OverallTrend({
   const { tokens, mounted } = useChartTokens();
 
   return (
-    <ChartFrame height={260}>
+    <ChartFrame height={380}>
       {mounted && (
         <ResponsiveContainer width="100%" height="100%">
           <LineChart
