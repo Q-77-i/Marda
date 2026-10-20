@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 
 from app.api.auth import get_current_user
 from app.config import get_settings
-from app.service import InterviewFinishedError, InterviewNotFoundError
+from app.service import InterviewFinishedError, InterviewNotFoundError, Service
 from app.tools import images
 
 router = APIRouter(
@@ -34,7 +34,7 @@ async def upload_image(
     user: dict = Depends(get_current_user),
 ):
     """上传一张面试图片（候选人的代码截图/架构图），返回 image_id。"""
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         await service.check_can_send(interview_id, user["id"])  # 404 / 409 与消息端点同口径
     except InterviewNotFoundError as exc:
@@ -71,7 +71,7 @@ async def get_image(
     user: dict = Depends(get_current_user),
 ):
     """取回一张图（面试页气泡与回放渲染用）；他人场次/不存在/坏 id 一律 404。"""
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         await service.require_owner(interview_id, user["id"])
     except InterviewNotFoundError as exc:
