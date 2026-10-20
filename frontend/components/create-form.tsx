@@ -1,24 +1,23 @@
 "use client";
 
+import { ChevronDown, ChevronUp, FileUp, Play, Target, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { MonoLabel } from "@/components/ui/mono-label";
+import { Segmented } from "@/components/ui/segmented";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { Textarea } from "@/components/ui/textarea";
-import { createInterview, dispatcher, getBankCapacity, uploadResume, type CapacityOption } from "@/lib/api";
-import { capacityFor, shortfallMessage } from "@/lib/bank";
 import {
-  RESUME_ACCEPT,
-  RESUME_DISCLOSURE,
-  RESUME_PASTE_PLACEHOLDER,
-  RESUME_SUFFIX_HINT,
-  RESUME_TITLE,
-  resumeDigest,
-  resumeSource,
-  type ResumeParseResult,
-} from "@/lib/resume";
+  createInterview,
+  dispatcher,
+  getBankCapacity,
+  uploadResume,
+  type CapacityOption,
+} from "@/lib/api";
+import { capacityFor, shortfallMessage } from "@/lib/bank";
 import {
   BEHAVIORAL_MAX_QUESTIONS,
   DIFFICULTY_OPTIONS,
@@ -29,6 +28,16 @@ import {
   isBehavioral,
   questionCountOptions,
 } from "@/lib/constants";
+import {
+  RESUME_ACCEPT,
+  RESUME_DISCLOSURE,
+  RESUME_PASTE_PLACEHOLDER,
+  RESUME_SUFFIX_HINT,
+  RESUME_TITLE,
+  resumeDigest,
+  resumeSource,
+  type ResumeParseResult,
+} from "@/lib/resume";
 
 /**
  * 创建面试表单（决策 1A）：提交后跟完开场流再跳转面试页，
@@ -54,6 +63,7 @@ export function CreateForm() {
   const [parsing, setParsing] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0); // 移除后清空文件框（同文件重选也能触发）
+  const [resumeOpen, setResumeOpen] = useState(false); // 简历是可选段，默认收起，保证主操作在第一屏
 
   useEffect(() => {
     getBankCapacity([...QUESTION_COUNT_OPTIONS])
@@ -66,10 +76,12 @@ export function CreateForm() {
   // 行为面直接跳过容量判定：容量按「难度 × 域配额」算，与行为面题源无关（服务端也不拦）
   const blocked = behavioral
     ? []
-    : countOptions.map((option) => ({
-        count: option,
-        reason: shortfallMessage(capacityFor(capacity, difficulty, option), domainLabel),
-      })).filter((item) => item.reason !== null);
+    : countOptions
+        .map((option) => ({
+          count: option,
+          reason: shortfallMessage(capacityFor(capacity, difficulty, option), domainLabel),
+        }))
+        .filter((item) => item.reason !== null);
   const currentBlocked = blocked.some((item) => item.count === count);
 
   function pickType(value: string) {
@@ -151,112 +163,148 @@ export function CreateForm() {
     }
   }
 
+  const typeOptions = INTERVIEW_TYPE_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.label,
+    title: option.hint,
+  }));
+
+  const difficultyOptions = DIFFICULTY_OPTIONS.map((option) => ({
+    value: option.value,
+    label: option.value === "adaptive" ? "自适应" : option.value,
+    title: `${option.label}：${option.hint}`,
+  }));
+
+  const countChoices = countOptions.map((option) => {
+    const reason = blocked.find((item) => item.count === option)?.reason ?? null;
+    return {
+      value: String(option),
+      label: `${option} 题`,
+      title: reason ?? undefined,
+      disabled: reason !== null,
+    };
+  });
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>新建模拟面试</CardTitle>
+        <MonoLabel>New session</MonoLabel>
       </CardHeader>
-      <CardContent className="flex flex-col gap-5">
+      <CardContent className="flex flex-col gap-3.5">
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">岗位方向</span>
-          <div className="rounded-lg border bg-muted/40 px-3 py-2 text-sm">
+          <MonoLabel>岗位方向</MonoLabel>
+          <div className="flex h-10 items-center gap-2.5 rounded-lg border border-border bg-muted/40 px-3 text-[13px]">
+            <Target className="size-4 text-muted-foreground" strokeWidth={1.8} />
             {POSITION}
+            <span className="ml-auto font-mono text-[9px] tracking-[0.08em] text-muted-foreground uppercase">
+              Fixed
+            </span>
           </div>
         </div>
 
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">面试类型</span>
-          <div className="grid grid-cols-2 gap-2" role="group" aria-label="面试类型">
-            {INTERVIEW_TYPE_OPTIONS.map((option) => (
-              <Button
-                key={option.value}
-                type="button"
-                variant={option.value === interviewType ? "default" : "outline"}
-                aria-pressed={option.value === interviewType}
-                disabled={busy}
-                title={option.hint}
-                onClick={() => pickType(option.value)}
-              >
-                {option.label}
-              </Button>
-            ))}
-          </div>
-          <span className="text-xs text-muted-foreground">
-            {INTERVIEW_TYPE_OPTIONS.find((o) => o.value === interviewType)?.hint}
+          <MonoLabel>面试类型</MonoLabel>
+          <Segmented
+            options={typeOptions}
+            value={interviewType}
+            onChange={pickType}
+            columns={2}
+            ariaLabel="面试类型"
+            disabled={busy}
+          />
+          <span className="text-[11px] text-muted-foreground">
+            {INTERVIEW_TYPE_OPTIONS.find((option) => option.value === interviewType)?.hint}
           </span>
         </div>
 
         {!behavioral && (
           <div className="flex flex-col gap-2">
-            <span className="text-xs font-medium text-muted-foreground">难度</span>
-            <div className="grid grid-cols-2 gap-2" role="group" aria-label="难度">
-              {DIFFICULTY_OPTIONS.map((option) => (
-                <Button
-                  key={option.value}
-                  type="button"
-                  variant={option.value === difficulty ? "default" : "outline"}
-                  aria-pressed={option.value === difficulty}
-                  disabled={busy}
-                  title={option.hint}
-                  onClick={() => setDifficulty(option.value)}
-                >
-                  {option.label}
-                </Button>
-              ))}
-            </div>
-            <span className="text-xs text-muted-foreground">
-              {DIFFICULTY_OPTIONS.find((o) => o.value === difficulty)?.hint}
+            <MonoLabel>难度</MonoLabel>
+            <Segmented
+              options={difficultyOptions}
+              value={difficulty}
+              onChange={setDifficulty}
+              columns={4}
+              ariaLabel="难度"
+              disabled={busy}
+            />
+            <span className="text-[11px] text-muted-foreground">
+              {DIFFICULTY_OPTIONS.find((option) => option.value === difficulty)?.hint}
             </span>
           </div>
         )}
 
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">题目数量</span>
-          <div className="grid grid-cols-3 gap-2" role="group" aria-label="题目数量">
-            {countOptions.map((option) => {
-              const reason = blocked.find((item) => item.count === option)?.reason ?? null;
-              return (
-                <Button
-                  key={option}
-                  type="button"
-                  variant={option === count ? "default" : "outline"}
-                  aria-pressed={option === count}
-                  disabled={busy || reason !== null}
-                  title={reason ?? undefined}
-                  onClick={() => setCount(option)}
-                >
-                  {option} 题
-                </Button>
-              );
-            })}
-          </div>
+          <MonoLabel>题目数量</MonoLabel>
+          <Segmented
+            options={countChoices}
+            value={String(count)}
+            onChange={(value) => setCount(Number(value))}
+            columns={3}
+            ariaLabel="题目数量"
+            disabled={busy}
+          />
           {blocked.map((item) => (
-            <span key={item.count} className="text-xs text-destructive" role="status">
-              {item.count} 题不可选 —— {item.reason}
+            <span key={item.count} className="text-[11px] text-destructive" role="status">
+              {item.count} 题不可选：{item.reason}
             </span>
           ))}
         </div>
 
         <div className="flex flex-col gap-2">
-          <span className="text-xs font-medium text-muted-foreground">{RESUME_TITLE}</span>
+          <button
+            type="button"
+            onClick={() => setResumeOpen((value) => !value)}
+            aria-expanded={resumeOpen}
+            className="flex h-9 items-center justify-between gap-2 rounded-lg border border-border bg-muted/30 px-3 text-left transition-colors hover:border-foreground/30 hover:bg-muted"
+          >
+            <span className="flex min-w-0 items-center gap-2 text-muted-foreground">
+              <FileUp className="size-3.5 shrink-0" strokeWidth={1.8} />
+              <MonoLabel className="truncate text-[10px]" title={RESUME_TITLE}>导入简历（可选）</MonoLabel>
+            </span>
+            <span className="flex shrink-0 items-center gap-1.5 font-mono text-[9px] tracking-[0.06em] text-muted-foreground uppercase">
+              {resume ? "已解析" : resumeOpen ? "收起" : "添加"}
+              {resumeOpen ? (
+                <ChevronUp className="size-3.5" strokeWidth={1.8} />
+              ) : (
+                <ChevronDown className="size-3.5" strokeWidth={1.8} />
+              )}
+            </span>
+          </button>
+
           {resume ? (
-            <div className="flex items-center justify-between gap-2 rounded-lg border bg-muted/40 px-3 py-2">
-              <span className="text-sm">{resumeDigest(resume)}</span>
-              <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={clearResume}>
-                移除
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2">
+              <span className="min-w-0 truncate text-xs">{resumeDigest(resume)}</span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                disabled={busy}
+                onClick={clearResume}
+                aria-label="移除已解析的简历"
+              >
+                <X className="size-3.5" />
               </Button>
             </div>
-          ) : (
+          ) : resumeOpen ? (
             <div className="flex flex-col gap-2">
-              <input
-                key={fileInputKey}
-                type="file"
-                accept={RESUME_ACCEPT}
-                disabled={busy || parsing}
-                aria-label="选择简历文件"
-                className="text-sm file:mr-3 file:rounded-md file:border file:bg-background file:px-3 file:py-1.5 file:text-sm"
-                onChange={(event) => pickResumeFile(event.target.files?.[0] ?? null)}
-              />
+              <label className="flex cursor-pointer flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-input bg-muted/40 px-3 py-3 text-center transition-colors hover:border-primary hover:bg-accent">
+                <FileUp className="size-4 text-muted-foreground" strokeWidth={1.8} />
+                <span className="text-xs font-medium">点击选择文件</span>
+                <span className="text-[10.5px] text-muted-foreground">
+                  支持 .pdf / .md / .txt，不超过 2MB
+                </span>
+                <input
+                  key={fileInputKey}
+                  type="file"
+                  accept={RESUME_ACCEPT}
+                  disabled={busy || parsing}
+                  aria-label="选择简历文件"
+                  className="sr-only"
+                  onChange={(event) => pickResumeFile(event.target.files?.[0] ?? null)}
+                />
+              </label>
               <Textarea
                 value={resumeText}
                 onChange={(event) => editResumeText(event.target.value)}
@@ -274,20 +322,36 @@ export function CreateForm() {
                 >
                   {parsing ? "正在解析…" : "解析简历"}
                 </Button>
-                <span className="text-xs text-muted-foreground">{RESUME_SUFFIX_HINT}</span>
+                <span className="text-[10.5px] text-muted-foreground">{RESUME_SUFFIX_HINT}</span>
               </div>
             </div>
-          )}
-          <span className="text-xs text-muted-foreground">{RESUME_DISCLOSURE}</span>
+          ) : null}
+
+          {resumeOpen || resume ? (
+            <span className="text-[10.5px] leading-relaxed text-muted-foreground">
+              {RESUME_DISCLOSURE}
+            </span>
+          ) : null}
           {resumeError && (
-            <p className="text-sm text-destructive" role="alert">
+            <p className="text-xs text-destructive" role="alert">
               {resumeError}
             </p>
           )}
         </div>
 
-        <Button size="lg" disabled={busy || currentBlocked} onClick={handleStart}>
-          {busy ? "正在准备面试…" : "开始面试"}
+        <Button
+          size="lg"
+          className="mt-1 w-full justify-between px-4"
+          disabled={busy || currentBlocked}
+          onClick={handleStart}
+        >
+          <span className="flex items-center gap-2">
+            <Play className="size-4" strokeWidth={1.8} />
+            {busy ? "正在准备面试…" : "开始面试"}
+          </span>
+          <span className="font-mono text-[9px] tracking-[0.08em] opacity-70">
+            {count} Q
+          </span>
         </Button>
 
         {busy && (
@@ -297,7 +361,7 @@ export function CreateForm() {
         )}
 
         {error && (
-          <p className="text-sm text-destructive" role="alert">
+          <p className="text-xs text-destructive" role="alert">
             {error}
           </p>
         )}
