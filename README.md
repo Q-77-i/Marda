@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![CI](https://github.com/Q-77-i/Marda/actions/workflows/ci.yml/badge.svg)](https://github.com/Q-77-i/Marda/actions/workflows/ci.yml)
 
-面向计算机学生的 **Agent 智能面试学习平台**。业务闭环：**模拟面试 → 发现短板 → 针对性学习**。
+为校招计算机学生打造的 **Agent 面试训练**：自主出题、动态追问、短板诊断、学习推送，把一次模拟面试变成可复盘的闭环。
 
 核心是一个 **Agent 智能面试引擎**——维护面试会话状态、自主出题、根据回答动态追问，而不是"智能客服式"的被动问答；RAG 检索作为 Agent 的一个工具参与出题与推荐。技术面与行为面跑在同一套状态机上。
 
