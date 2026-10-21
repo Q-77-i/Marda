@@ -195,6 +195,20 @@ def test_重连问候重发当前题干():
     assert line and prev.text in line and "RAG" in line
 
 
+def test_重连问候优先重发最后一条面试官追问():
+    """追问已问出时，重连不能把已经答过的原始题再发一遍。"""
+    prev = _record("tech", "rag")
+    state = _state(prev=prev, phase=Phase.TECH_BASE)
+    state.chat_history = [
+        {"role": "assistant", "content": "原始题干"},
+        {"role": "user", "content": "我的回答"},
+        {"role": "assistant", "content": "追问：为什么不先过滤？"},
+    ]
+    line = reconnect_line(state)
+    assert line and "追问：为什么不先过滤？" in line
+    assert prev.text not in line
+
+
 @pytest.mark.parametrize("phase", [Phase.INTRO, Phase.WARMUP, Phase.CLOSING, Phase.FINISHED])
 def test_非答题阶段不重连(phase):
     """开场/自我介绍/反问阶段没有「刚才的题」可回去，静默恢复。"""

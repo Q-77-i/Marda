@@ -6,6 +6,9 @@
  *
  * 降级链（决策④）：后端 edge-tts → 浏览器 speechSynthesis → 纯文字
  * （两档都失败才提示一次，不打断面试；面试官文字照常显示）。
+ *
+ * 播报链路（P2-M13 优化）：POST 票据 → `<audio src=…/tts/stream/{ticket}>` 边收边播，
+ * 不再等整段 MP3 下载完；首块到达即出声（edge-tts 首块约 2s）。
  */
 
 import { authorizedFetch, responseError } from "@/lib/http";
@@ -30,7 +33,6 @@ export function chooseChineseVoice<T extends { lang: string }>(
 
 export class Speaker {
   private audio: HTMLAudioElement | null = null;
-  private objectUrl: string | null = null;
   private controller: AbortController | null = null;
   private browserUtterance: SpeechSynthesisUtterance | null = null;
   private browserSpeaking = false;
@@ -60,20 +62,25 @@ export class Speaker {
     const controller = new AbortController();
     this.controller = controller;
     try {
-      const response = await authorizedFetch("/api/tts", {
+      const response = await authorizedFetch("/api/tts/ticket", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: payload }),
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await responseError(response));
-      const blob = await response.blob();
-      if (blob.size === 0) throw new Error("语音合成没有返回音频");
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      this.objectUrl = url;
+      const data = (await response.json()) as { ticket?: string };
+      if (!data.ticket) throw new Error("语音播报链接生成失败");
+      const audio = new Audio(`/api/tts/stream/${data.ticket}`);
       this.audio = audio;
       audio.onended = () => this.cleanup();
+      audio.onerror = () => {
+        if (this.audio !== audio) return; // 已被 stop / 新播报替换
+        this.cleanup();
+        void this.speakWithBrowser(payload).then((spoken) => {
+          if (!spoken) this.onError?.("语音播报失败");
+        });
+      };
       await audio.play();
       this.onSpeakingChange?.(true);
     } catch (err) {
@@ -90,7 +97,6 @@ export class Speaker {
   stop(): void {
     this.controller?.abort();
     this.controller = null;
-    this.audio?.pause();
     this.cleanup();
     if (this.browserSpeaking || this.browserUtterance) {
       this.browserSpeaking = false;
@@ -167,10 +173,17 @@ export class Speaker {
   }
 
   private cleanup(): void {
-    const wasActive = this.audio !== null; // 空停（本来就没在播）不算变化，不回调
-    if (this.objectUrl) URL.revokeObjectURL(this.objectUrl);
-    this.objectUrl = null;
-    this.audio = null;
+    const wasActive = this.audio !== null;
+    if (this.audio) {
+      const audio = this.audio;
+      // 先摘掉回调再清 src：removeAttribute/load 会触发 error，不能误走降级
+      this.audio = null;
+      audio.onended = null;
+      audio.onerror = null;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load(); // 中止正在进行的流式请求
+    }
     if (wasActive) this.onSpeakingChange?.(false);
   }
 }
