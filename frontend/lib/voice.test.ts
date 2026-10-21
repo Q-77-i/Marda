@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  applyCorrection,
   asrUrl,
   blocksSubmit,
   canStartRecording,
@@ -78,6 +79,31 @@ describe("转写落框", () => {
 
   it("转写为空（没听清）：草稿原样保留", () => {
     expect(mergeTranscript("先补充一点", "   ")).toBe("先补充一点");
+  });
+});
+
+describe("智能校对落框", () => {
+  it("用户没编辑：用校对结果替换转写部分", () => {
+    expect(applyCorrection("", "先兆回再塞", "先召回再筛", "先兆回再塞")).toBe(
+      "先召回再筛",
+    );
+    expect(
+      applyCorrection("草稿", "先兆回再塞", "先召回再筛", "草稿\n先兆回再塞"),
+    ).toBe("草稿\n先召回再筛");
+  });
+
+  it("用户编辑过/已发出去：绝不覆盖", () => {
+    expect(applyCorrection("", "先兆回再塞", "先召回再筛", "我自己改了")).toBe(
+      "我自己改了",
+    );
+    expect(applyCorrection("", "先兆回再塞", "先召回再筛", "")).toBe("");
+  });
+
+  it("校对为空或没变化：保持原样", () => {
+    expect(applyCorrection("", "先兆回再塞", "", "先兆回再塞")).toBe("先兆回再塞");
+    expect(applyCorrection("", "先兆回再塞", "先兆回再塞", "先兆回再塞")).toBe(
+      "先兆回再塞",
+    );
   });
 });
 

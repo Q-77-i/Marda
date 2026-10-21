@@ -21,7 +21,7 @@ import asyncio
 import gzip
 import json
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -49,6 +49,37 @@ AUDIO_FORMAT = {"format": "pcm", "codec": "raw", "rate": 16000, "bits": 16, "cha
 FRAME_BYTES = 3200
 
 FINISH_TIMEOUT = 8.0  # 发完末帧后等 final 的上限；超时用最后一次 partial 兜底（不吞已识别文本）
+
+# 技术热词（v3 `request.corpus.context`，双向流式热词+上下文预算约 100 tokens）：
+# 通用候选同音词由模型自己处理，这里只补「领域内高频、但通用语料不会优先猜」的术语。
+# 实测动机（2026-10-21）：候选人答 RAG 检索方案时，上游把「先召回再筛 / 静默 / 候选位 /
+# 报错」听成「先兆回再塞 / 寂寞 / 穴位 / 爆粗」。热词是提示而非强制，配合前端可编辑转写。
+TECH_HOTWORDS: tuple[str, ...] = (
+    "服务端过滤",
+    "先召回再筛",
+    "召回",
+    "筛选",
+    "静默失败",
+    "相似度",
+    "候选位",
+    "重排",
+    "向量检索",
+    "混合检索",
+    "稀疏检索",
+    "稠密检索",
+    "RAG",
+    "Agent",
+    "LangGraph",
+    "工具调用",
+    "状态机",
+    "失败路径",
+    "兜底",
+    "降级",
+    "报错",
+    "省事",
+    "占满",
+    "未来事件",
+)
 
 
 class AsrError(Exception):
@@ -155,9 +186,14 @@ def parse_server_frame(raw: bytes) -> ServerFrame:
     return frame
 
 
-def request_payload(uid: str) -> dict[str, Any]:
-    """配置帧内容：PCM16k 单声道 + 标点/ITN（面试答题需要标点，否则大段无标点影响可读性）。"""
-    return {
+def request_payload(uid: str, hotwords: Sequence[str] | None = None) -> dict[str, Any]:
+    """配置帧内容：PCM16k 单声道 + 标点/ITN + 技术热词。
+
+    热词走 v3 的 `request.corpus.context`（JSON **字符串**，不是对象）；双向流式下
+    热词与上下文合计约 100 tokens，TECH_HOTWORDS 已控制在预算内。
+    """
+    terms = list(TECH_HOTWORDS if hotwords is None else hotwords)
+    payload: dict[str, Any] = {
         "user": {"uid": uid},
         "audio": dict(AUDIO_FORMAT),
         "request": {
@@ -167,6 +203,14 @@ def request_payload(uid: str) -> dict[str, Any]:
             "show_utterances": True,
         },
     }
+    if terms:
+        payload["request"]["corpus"] = {
+            "context": json.dumps(
+                {"hotwords": [{"word": term} for term in terms]},
+                ensure_ascii=False,
+            )
+        }
+    return payload
 
 
 ConnectFn = Callable[..., Any]
@@ -195,6 +239,7 @@ class AsrSession:
         api_key: str,
         resource_id: str,
         uid: str = "marda",
+        hotwords: Sequence[str] | None = None,
         connect: ConnectFn | None = None,
         finish_timeout: float = FINISH_TIMEOUT,
     ) -> None:
@@ -202,6 +247,7 @@ class AsrSession:
         self._api_key = api_key
         self._resource_id = resource_id
         self._uid = uid
+        self._hotwords = hotwords
         self._connect = connect
         self._finish_timeout = finish_timeout
         self._ws: Any = None
@@ -234,7 +280,7 @@ class AsrSession:
             self._ws = await connect(self._url, additional_headers=headers, open_timeout=10)
         except Exception as exc:  # 建连失败：给用户可读文案，不暴露堆栈
             raise AsrError(f"语音服务连接失败：{handshake_error_text(exc)}") from exc
-        await self._ws.send(build_full_request(request_payload(self._uid)))
+        await self._ws.send(build_full_request(request_payload(self._uid, self._hotwords)))
         self._reader = asyncio.create_task(self._read_loop())
 
     async def feed(self, pcm: bytes) -> None:

@@ -86,6 +86,24 @@ export function mergeTranscript(base: string, transcript: string): string {
   return head ? `${head}\n${spoken}` : spoken;
 }
 
+/**
+ * 把智能校对结果落到草稿（P2-M13 追加）：
+ * 只有用户没有在等校对期间改过/发出去时才替换；校对为空/没变则保持原样。
+ */
+export function applyCorrection(
+  base: string,
+  transcript: string,
+  corrected: string,
+  current: string,
+): string {
+  const spoken = transcript.trim();
+  const fixed = corrected.trim();
+  if (!spoken || !fixed || fixed === spoken) return current;
+  return current === mergeTranscript(base, transcript)
+    ? mergeTranscript(base, corrected)
+    : current;
+}
+
 /** 录音按钮的可用状态（组件据此渲染；纯函数便于钉死优先级）。 */
 export type VoiceUiState = {
   recording: boolean;

@@ -138,11 +138,15 @@ def buffer_line(state: InterviewState) -> str | None:
 
 
 def reconnect_line(state: InterviewState) -> str | None:
-    """重连问候（GET /interviews/{id}?reconnect=true）：重发当前题干作锚点。
+    """重连问候（GET /interviews/{id}?reconnect=true）：重发**最后一条面试官消息**。
 
-    仅进行中且处于答题阶段（项目/技术/行为面）的场次生成；开场/自我介绍/反问阶段与
+    只进行中且处于答题阶段（项目/技术/行为面）的场次生成；开场/自我介绍/反问阶段与
     已结束场次没有「刚才那道题」可回去，返回 None（前端静默恢复）。文案不落 checkpoint，
     只在响应里附一次——连续刷新不会堆叠。
+
+    **不能只重发 `current_question.text`**：追问节点已经问出新的追问时，当前题仍是原始题；
+    用户重连后会被要求重答一道已经答过的题（2026-10-21 实测）。优先取 chat_history 里
+    最后一条面试官消息（追问/换题/收尾），没有历史才回退当前题干。
     """
     if state.status != "running" or state.phase not in (
         Phase.PROJECT, Phase.TECH_BASE, Phase.BEHAVIORAL
@@ -151,7 +155,16 @@ def reconnect_line(state: InterviewState) -> str | None:
     question = state.current_question
     if question is None or not question.text:
         return None
+    last_prompt = next(
+        (
+            str(message.get("content") or "").strip()
+            for message in reversed(state.chat_history)
+            if message.get("role") == "assistant"
+        ),
+        "",
+    )
+    prompt = last_prompt or question.text
     return (
         "欢迎回来，我们继续刚才的面试。"
-        f"这道题是「{domain_label(question.domain)}」方向的：{question.text}"
+        f"这道题是「{domain_label(question.domain)}」方向的，接着刚才的问题：{prompt}"
     )

@@ -35,6 +35,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  correctTranscript,
   dispatcher,
   getSession,
   sendMessage,
@@ -69,6 +70,7 @@ import { Speaker } from "@/lib/tts";
 import {
   EMPTY_TRANSCRIPT_HINT,
   VOICE_MODE_KEY,
+  applyCorrection,
   blocksSubmit,
   mergeTranscript,
   micDisabled,
@@ -151,6 +153,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const nearBottomRef = useRef(true);
   const messagesRef = useRef<ChatItem[]>([]);
   const pendingRef = useRef<PendingTurn | null>(null);
+  /* 输入框最新值（智能校对回来时判断用户有没有改过/发出去） */
+  const draftRef = useRef("");
+  /* 当前题目（校对语境；会话回放没有实时 tag，回退到最后一条面试官消息） */
+  const currentQuestionRef = useRef<string | null>(null);
 
   /* 语音：voiceMode 走 ref——submit 是稳定回调（deps 只有 interviewId），
      闭包里的 state 是旧的，而 delta 到达时要按「此刻」的开关决定播不播 */
@@ -159,6 +165,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const waveRef = useRef<VoiceWaveHandle>(null);
   const draftBaseRef = useRef(""); // 开录时的草稿：转写整体替换它之后那一段
   const ttsWarnedRef = useRef(false);
+  const fallbackWarnedRef = useRef(false);
   const speakerRef = useRef<Speaker | null>(null);
   if (speakerRef.current === null) {
     speakerRef.current = new Speaker(
@@ -170,6 +177,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       },
       // 面试官 tile 的「正在播报」徽标（P2-M7 舞台）：回调只在真的起变化时触发
       setSpeakerSpeaking,
+      () => {
+        // 系统音音色明显差：降级发生时明确提示，不静默切换
+        if (fallbackWarnedRef.current) return;
+        fallbackWarnedRef.current = true;
+        setNotice("语音合成异常，已临时切换系统语音；题目以文字为准。");
+      },
     );
   }
 
@@ -507,14 +520,36 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     const recorder = new AsrRecorder({
       /* 真实振幅 → 输入框左侧声波（P2-M13）：命令式写入，20Hz 不重渲染整页 */
       onLevel: (level) => waveRef.current?.setLevel(level),
-      onPartial: (text) => setDraft(mergeTranscript(draftBaseRef.current, text)),
+      onPartial: (text) => {
+        const next = mergeTranscript(draftBaseRef.current, text);
+        draftRef.current = next;
+        setDraft(next);
+      },
       onFinal: (text) => {
-        setDraft(mergeTranscript(draftBaseRef.current, text));
+        const base = draftBaseRef.current;
+        const merged = mergeTranscript(base, text);
+        draftRef.current = merged;
+        setDraft(merged);
         if (!text.trim()) setNotice(EMPTY_TRANSCRIPT_HINT);
         recorderRef.current = null;
         setRecording(false);
         setTranscribing(false);
         setConnecting(false);
+        /* 第二层：ASR final 后做一次保守 LLM 校对。只在用户没改过/没发出去时替换；
+           失败保留原文，不打断面试。 */
+        if (text.trim()) {
+          void correctTranscript(text, currentQuestionRef.current)
+            .then((corrected) => {
+              const next = applyCorrection(base, text, corrected, draftRef.current);
+              if (next === draftRef.current) return;
+              draftRef.current = next;
+              setDraft(next);
+              setNotice("已智能纠正转写，请确认后发送。");
+            })
+            .catch(() => {
+              // 校对是增强不是必需：失败保留原文，不弹错误
+            });
+        }
       },
       onError: (message) => {
         setNotice(message);
@@ -561,6 +596,16 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     attachmentsRef.current = attachments;
   }, [attachments]);
 
+  /* 输入框镜像：智能校对回来时判断「用户有没有在等待期间改过/发出去」 */
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  /* 智能校对需要当前题目做语境（刷新/回放时最后一条面试官消息就是当前题） */
+  useEffect(() => {
+    currentQuestionRef.current = latestQuestionText(messages, true);
+  }, [messages]);
+
   /* 离开页面时收摊：麦克风轨道、AudioContext、WS、正在播的音频、附件预览 URL、摄像头轨道一个都不留 */
   useEffect(
     () => () => {
@@ -575,12 +620,19 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const degradedBadge = degradedNotice(degraded);
 
   const handlers: SSEHandlers = {
-    // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算
-    delta_start: () => applyAction(streamBuf.start()),
-    delta_chunk: ({ text }) => applyAction(streamBuf.chunk(text)),
+    // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算。
+    // 语音播报同时吃这条流：首句一到标点就开始 TTS（P2-M13 优化），不等 final。
+    delta_start: () => {
+      if (voiceModeRef.current) speakerRef.current?.begin();
+      applyAction(streamBuf.start());
+    },
+    delta_chunk: ({ text }) => {
+      if (voiceModeRef.current) speakerRef.current?.push(text);
+      applyAction(streamBuf.chunk(text));
+    },
     delta: ({ text }) => {
+      if (voiceModeRef.current) speakerRef.current?.finish(text);
       applyAction(streamBuf.delta(text));
-      speak(text);
     },
     question: (q) => {
       // 出题节点同一更新内先发 delta 再发 question → 挂到最后一条面试官消息上
@@ -723,6 +775,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   ): Promise<boolean> => {
     if (attaching) return false;
     if (files.length === 0) {
+      draftRef.current = "";
       setDraft("");
       void submit(text, true, []);
       return true;
@@ -734,6 +787,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       for (const file of files) ids.push(await uploadImage(interviewId, file.blob));
       releaseAttachments(files);
       setAttachments([]);
+      draftRef.current = "";
       setDraft("");
       void submit(text, true, ids);
       return true;
@@ -1139,7 +1193,9 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         <div className="flex-none border-t border-room-line bg-room-bg px-4 py-3 md:px-6">
           <div className="mx-auto flex max-w-[720px] flex-col gap-2">
             {degradedBadge && <RoomBanner tone="warning">{degradedBadge}</RoomBanner>}
-            {notice && <RoomBanner>{notice}</RoomBanner>}
+            {notice && (
+              <RoomBanner onDismiss={() => setNotice(null)}>{notice}</RoomBanner>
+            )}
             {error && (
               <RoomBanner
                 tone="error"
@@ -1205,7 +1261,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                   <Textarea
                     ref={inputRef}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onChange={(e) => {
+                      draftRef.current = e.target.value;
+                      setDraft(e.target.value);
+                    }}
                     onCompositionStart={() => {
                       composingRef.current = true;
                     }}
@@ -1369,7 +1428,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             className="rounded-none border-0"
           />
           <div className="flex items-center justify-between border-t border-room-line px-2.5 py-2 font-mono text-[8px] text-room-muted">
-            <span>我 / 仅本机可见</span>
+            <span>本机画面</span>
             <span className="flex items-center gap-1.5">
               <span className="size-1 rounded-full bg-current" />
               {cameraOn ? "Camera on" : "Camera off"}
@@ -1516,10 +1575,12 @@ function RoomBanner({
   tone = "info",
   children,
   action,
+  onDismiss,
 }: {
   tone?: "info" | "warning" | "error";
   children: ReactNode;
   action?: ReactNode;
+  onDismiss?: () => void;
 }) {
   return (
     <div
@@ -1534,7 +1595,19 @@ function RoomBanner({
       )}
     >
       <span className="min-w-0">{children}</span>
-      {action}
+      <span className="flex shrink-0 items-center gap-1">
+        {action}
+        {onDismiss ? (
+          <button
+            type="button"
+            onClick={onDismiss}
+            aria-label="关闭提示"
+            className="flex size-6 items-center justify-center rounded text-[15px] leading-none text-room-muted transition-colors hover:bg-room-panel-2 hover:text-room-ink"
+          >
+            ×
+          </button>
+        ) : null}
+      </span>
     </div>
   );
 }

@@ -696,9 +696,10 @@ async def test_回放_未登录401(anon_client):
 
 
 async def test_重连问候附在响应里不落库(client):
-    """?reconnect=true：答题中的场次在响应里附一句问候（重发当前题干作锚点）。
+    """?reconnect=true：答题中的场次附一句问候，重发**最后一条面试官消息**。
 
     只随本次响应返回、不落 checkpoint —— 连续刷新不堆叠，回放数据不受影响。
+    不能只重发 current_question.text：追问已问出时那是原始题（用户会重答已答过的题）。
     """
     interview_id, _ = await _create(client)
     await _send(client, interview_id, TURNS[0])  # 自我介绍 → 进入项目深挖，当前题在手
@@ -708,10 +709,13 @@ async def test_重连问候附在响应里不落库(client):
     assert len(greeted["chat_history"]) == len(plain["chat_history"]) + 1
     last = greeted["chat_history"][-1]
     assert last["role"] == "assistant" and "欢迎回来" in last["content"]
-    # 重发题干：问候里带当前题目全文（断线回来不用往上滚）
-    trace = (await client.get(f"/api/interviews/{interview_id}/trace")).json()
-    question = [e for e in trace["events"] if e["type"] == "ask"][-1]["detail"]["question"]
-    assert question in last["content"]
+    # 重发最后一条面试官消息（追问/当前题）：断线回来不用往上滚
+    last_prompt = next(
+        message["content"]
+        for message in reversed(plain["chat_history"])
+        if message["role"] == "assistant"
+    )
+    assert last_prompt in last["content"]
     # 不落 checkpoint：不带参数仍是原样；连续两次带参数也不堆叠
     assert (await client.get(f"/api/interviews/{interview_id}")).json()["chat_history"] == plain["chat_history"]
     assert (await client.get(f"/api/interviews/{interview_id}?reconnect=true")).json()["chat_history"] == greeted["chat_history"]

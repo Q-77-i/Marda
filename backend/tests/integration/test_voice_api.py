@@ -151,3 +151,49 @@ async def test_tts_上游失败_502_且文案可展示(monkeypatch, client):
 async def test_tts_未登录_401(install_tts, anon_client):
     r = await anon_client.post("/api/tts", json={"text": "你好"})
     assert r.status_code == 401
+
+
+async def test_tts_ticket_流式播放_TTL内可重复请求(install_tts, client):
+    """<audio> 预加载与播放可能各请求一次；单次票据会让第二次 404（实测回归）。"""
+    r = await client.post("/api/tts/ticket", json={"text": " 你好 "})
+    assert r.status_code == 200
+    ticket = r.json()["ticket"]
+
+    first = await client.get(f"/api/tts/stream/{ticket}")
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "audio/mpeg"
+    assert first.content == b"ID3\x01\x02\x03"
+
+    second = await client.get(f"/api/tts/stream/{ticket}")
+    assert second.status_code == 200
+    assert second.content == b"ID3\x01\x02\x03"
+
+    unknown = await client.get("/api/tts/stream/not-a-ticket")
+    assert unknown.status_code == 404
+
+
+async def test_tts_ticket_未登录_401(anon_client):
+    r = await anon_client.post("/api/tts/ticket", json={"text": "你好"})
+    assert r.status_code == 401
+
+
+# ---------- 转写智能校对 ----------
+
+
+async def test_asr_correct_返回修正文本(monkeypatch, client):
+    async def fake(text: str, question: str = "") -> str:
+        assert text == "先兆回再塞"
+        assert question == "问题"
+        return "先召回再筛"
+
+    monkeypatch.setattr(voice_api.transcript, "correct_text", fake)
+    r = await client.post(
+        "/api/asr/correct", json={"text": "先兆回再塞", "question": "问题"}
+    )
+    assert r.status_code == 200
+    assert r.json() == {"text": "先召回再筛"}
+
+
+async def test_asr_correct_未登录_401(anon_client):
+    r = await anon_client.post("/api/asr/correct", json={"text": "先兆回再塞"})
+    assert r.status_code == 401
