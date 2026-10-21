@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 
 import { PageHeader } from "@/components/page-header";
 import { PageShell } from "@/components/page-shell";
+import { ExpressionCard } from "@/components/expression-card";
 import { RecommendGroups } from "@/components/recommend-groups";
 import { DomainBars, ScoreRadar } from "@/components/report-charts";
 import { ReviewCard } from "@/components/review-card";
@@ -203,6 +204,9 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             {exportError}
           </StatusBanner>
         ) : null}
+
+        {/* 表达复盘（M16）：独立于 hasScores——降级/未评分的场次也能看语音指标 */}
+        {report.expression ? <ExpressionCard expression={report.expression} /> : null}
 
         {/* 未评分（P2-M9 降级）：整块分数区收起——全 0 雷达是假信号，不是「得 0 分」 */}
         {hasScores && (

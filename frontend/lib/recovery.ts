@@ -11,10 +11,17 @@
  */
 
 import type { ChatMessage, Session } from "@/lib/api";
+import type { SpeechCounters } from "@/lib/expression";
 
 /** 一次发出但没正常收尾的作答；baseline = 发送前本地已渲染的候选人气泡数。
- *  images（P2-M6）：该轮附带的 image_id 列表——重发复用它（图已上传，不重复落盘）。 */
-export type PendingTurn = { text: string; baseline: number; images?: string[] };
+ *  images（P2-M6）：该轮附带的 image_id 列表——重发复用它（图已上传，不重复落盘）。
+ *  speech（M16）：该轮语音指标——重发同样复用，别把重试变成「没说过话」。 */
+export type PendingTurn = {
+  text: string;
+  baseline: number;
+  images?: string[];
+  speech?: SpeechCounters;
+};
 
 export type Recovery =
   /** 再 POST 一次原文本：踢活失败节点，或补发从未送达的回答。 */

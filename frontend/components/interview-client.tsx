@@ -3,6 +3,7 @@
 import {
   ArrowUp,
   Check,
+  Code2,
   ImagePlus,
   Mic,
   Moon,
@@ -20,6 +21,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { cn } from "cn";
 
 import { CandidateTile, InterviewerTile, StageCard } from "@/components/interview-room";
+import { CodeWorkbench } from "@/components/code-workbench";
 import { InterviewWorkbench } from "@/components/interview-workbench";
 import { MessageBubble, type ChatItem } from "@/components/message-bubble";
 import { RoomTabs } from "@/components/room-tabs";
@@ -56,6 +58,7 @@ import { END_COMMAND, PHASE_LABELS } from "@/lib/constants";
 import { interviewerChip } from "@/lib/interview-room";
 import { phaseSteps } from "@/lib/interview-phases";
 import { degradedNotice } from "@/lib/degrade";
+import { SpeechAccumulator, type SpeechCounters } from "@/lib/expression";
 import { progressLabel } from "@/lib/format";
 import { compressImage, uploadImage } from "@/lib/image-client";
 import { reconcile, type PendingTurn } from "@/lib/recovery";
@@ -129,6 +132,9 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [roomTab, setRoomTab] = useState<RoomTab>("status");
   const [boardOpen, setBoardOpen] = useState(false);
   const [boardMounted, setBoardMounted] = useState(false);
+  /* 代码工作台（M15）：同样首次打开后保持挂载；与白板互斥（都是全屏覆盖层） */
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [codeMounted, setCodeMounted] = useState(false);
   /* 摄像头通道（P2-M7 FR-27）：默认关 + 记忆；画面只在本机，帧不上传、不落库、AI 不看 */
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraStarting, setCameraStarting] = useState(false);
@@ -163,6 +169,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const voiceModeRef = useRef(false);
   const recorderRef = useRef<AsrRecorder | null>(null);
   const waveRef = useRef<VoiceWaveHandle>(null);
+  /* 表达复盘（M16）：录音期间累积原始计数；发送时快照进消息，随草稿清账 */
+  const speechRef = useRef<SpeechAccumulator>(new SpeechAccumulator());
   const draftBaseRef = useRef(""); // 开录时的草稿：转写整体替换它之后那一段
   const ttsWarnedRef = useRef(false);
   const fallbackWarnedRef = useRef(false);
@@ -520,6 +528,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     const recorder = new AsrRecorder({
       /* 真实振幅 → 输入框左侧声波（P2-M13）：命令式写入，20Hz 不重渲染整页 */
       onLevel: (level) => waveRef.current?.setLevel(level),
+      /* 原始 RMS → 表达复盘（M16）：与动效共用采样，只记静音/长停顿 */
+      onSample: (rms) => speechRef.current.sample(rms),
       onPartial: (text) => {
         const next = mergeTranscript(draftBaseRef.current, text);
         draftRef.current = next;
@@ -530,7 +540,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         const merged = mergeTranscript(base, text);
         draftRef.current = merged;
         setDraft(merged);
-        if (!text.trim()) setNotice(EMPTY_TRANSCRIPT_HINT);
+        if (!text.trim()) {
+          setNotice(EMPTY_TRANSCRIPT_HINT);
+          speechRef.current.cancel();
+        } else {
+          speechRef.current.finalize(text);
+        }
         recorderRef.current = null;
         setRecording(false);
         setTranscribing(false);
@@ -542,6 +557,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             .then((corrected) => {
               const next = applyCorrection(base, text, corrected, draftRef.current);
               if (next === draftRef.current) return;
+              // 校对真的替换了草稿 → 表达指标的字数/口头禅跟着改（时长/停顿不变）
+              speechRef.current.updateLastTranscript(corrected);
               draftRef.current = next;
               setDraft(next);
               setNotice("已智能纠正转写，请确认后发送。");
@@ -552,6 +569,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         }
       },
       onError: (message) => {
+        speechRef.current.cancel();
         setNotice(message);
         recorderRef.current = null;
         setRecording(false);
@@ -561,10 +579,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     });
     try {
       await recorder.start();
+      speechRef.current.begin();
       recorderRef.current = recorder;
       setRecording(true);
     } catch (err) {
       recorder.cancel();
+      speechRef.current.cancel();
       setRecording(false);
       setTranscribing(false);
       if (err instanceof UnauthorizedError) notifyUnauthorized();
@@ -582,6 +602,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     setRecording(false);
     setConnecting(false);
     setTranscribing(true);
+    /* 时长在 stop 冻结：final 可能还要等 8s，不能把等待算成说话时长（M16） */
+    speechRef.current.stop();
     try {
       await recorder.stop();
     } finally {
@@ -690,7 +712,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   );
 
   const submit = useCallback(
-    async (content: string, appendUser: boolean, images: string[] = []) => {
+    async (
+      content: string,
+      appendUser: boolean,
+      images: string[] = [],
+      speech?: SpeechCounters,
+    ) => {
       const text = content.trim();
       if (!text || busyRef.current) return;
       // 发送前本地已有的候选人气泡数 = 服务端用户消息条数的下限（对账基准）
@@ -707,8 +734,13 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       }
       const failed = (message: string) => {
         setError(message);
-        // images 入 pending：重试重发同一批 id（图已上传，不重复落盘）
-        const turn: PendingTurn = { text, baseline, images: images.length > 0 ? images : undefined };
+        // images/speech 入 pending：重试重发同一批数据（图已上传，指标也不该丢）
+        const turn: PendingTurn = {
+          text,
+          baseline,
+          images: images.length > 0 ? images : undefined,
+          speech,
+        };
         applyPending(turn);
         void reconcileFailure(turn);
       };
@@ -725,6 +757,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             error: (e) => failed(e.message),
           }),
           images,
+          speech,
         );
       } catch (err) {
         // 401 由全局确认框接管，不再重复提示（重试也只会再 401）
@@ -758,7 +791,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const flushPending = (noticeText: string): boolean => {
     const stuck = pendingRef.current;
     if (!stuck) return false;
-    void submit(stuck.text, false, stuck.images ?? []);
+    void submit(stuck.text, false, stuck.images ?? [], stuck.speech);
     setNotice(noticeText);
     return true;
   };
@@ -772,12 +805,14 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const sendWithAttachments = async (
     text: string,
     files: Attachment[],
+    speech?: SpeechCounters,
   ): Promise<boolean> => {
     if (attaching) return false;
     if (files.length === 0) {
       draftRef.current = "";
       setDraft("");
-      void submit(text, true, []);
+      speechRef.current.reset();
+      void submit(text, true, [], speech);
       return true;
     }
     setAttaching(true);
@@ -789,7 +824,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setAttachments([]);
       draftRef.current = "";
       setDraft("");
-      void submit(text, true, ids);
+      speechRef.current.reset();
+      void submit(text, true, ids, speech);
       return true;
     } catch (err) {
       // 401 由全局确认框接管；其余（超限/网络）给文案，附件保留可重试
@@ -809,7 +845,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       return;
     }
     setNotice(null); // 提示语只服务它那一次动作，新一轮动作即收走
-    void sendWithAttachments(draft, attachments);
+    const speech = speechRef.current.snapshot();
+    void sendWithAttachments(draft, attachments, speech ?? undefined);
   };
 
   const handleEnd = () => {
@@ -824,7 +861,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     const stuck = pendingRef.current;
     if (!stuck) return;
     setNotice(null);
-    void submit(stuck.text, false, stuck.images ?? []); // appendUser=false：气泡已经在列表里
+    // appendUser=false：气泡已经在列表里；speech 跟着重发，别把重试变成「没说过话」
+    void submit(stuck.text, false, stuck.images ?? [], stuck.speech);
   };
 
   const finished = reportReady;
@@ -846,14 +884,24 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   /** 打开白板工作台：首次打开后保持挂载（收起不丢画布）；结束/只读场次不给开。 */
   const openBoard = () => {
     if (readonly || finished || loading) return;
+    setCodeOpen(false);
     setBoardMounted(true);
     setBoardOpen(true);
   };
 
-  /** 右栏切 Tab：切到白板即打开工作台（右侧 320px 放不下画布，画布在工作台里）。 */
+  /** 打开代码工作台（M15）：与白板互斥，两个全屏覆盖层不能叠着。 */
+  const openCode = () => {
+    if (readonly || finished || loading) return;
+    setBoardOpen(false);
+    setCodeMounted(true);
+    setCodeOpen(true);
+  };
+
+  /** 右栏切 Tab：白板/代码都打开各自的工作台（右侧 320px 放不下画布/编辑器）。 */
   const handleRoomTab = (tab: RoomTab) => {
     setRoomTab(tab);
     if (tab === "board") openBoard();
+    if (tab === "code") openCode();
   };
 
   /**
@@ -1127,6 +1175,16 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
               <Pencil className="size-3.5" strokeWidth={1.8} />
               <span className="hidden sm:inline">白板</span>
             </button>
+            <button
+              type="button"
+              onClick={openCode}
+              disabled={readonly || finished || loading}
+              title="打开代码工作台"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink disabled:pointer-events-none disabled:opacity-45 xl:hidden"
+            >
+              <Code2 className="size-3.5" strokeWidth={1.8} />
+              <span className="hidden sm:inline">代码</span>
+            </button>
             {readonly ? (
               <Link
                 href={`/report/${interviewId}`}
@@ -1264,6 +1322,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                     onChange={(e) => {
                       draftRef.current = e.target.value;
                       setDraft(e.target.value);
+                      // 用户把草稿清空 = 放弃这段作答：别让录制指标挂到下一段手打消息上（M16）
+                      if (!e.target.value.trim() && !recording && !transcribing) {
+                        speechRef.current.reset();
+                      }
                     }}
                     onCompositionStart={() => {
                       composingRef.current = true;
@@ -1503,11 +1565,34 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                   </p>
                 ) : null}
               </div>
-            ) : (
-              <div className="px-3 py-4 text-[10.5px] leading-relaxed text-room-muted">
-                代码工作台将在下一步接入；本轮先做语音动效与白板。
+            ) : roomTab === "code" ? (
+              <div className="px-3 py-3.5">
+                <div className="flex items-start gap-2.5">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-room-line bg-room-panel-2 text-room-accent">
+                    <Code2 className="size-4" strokeWidth={1.7} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-room-ink">机试代码工作台</p>
+                    <p className="mt-1 text-[10px] leading-relaxed text-room-muted">
+                      题库随机算法题 + 结构化点评与追问；独立练习，不进面试评分与报告。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={openCode}
+                  disabled={readonly || finished || loading}
+                  className="mt-3 h-8 w-full rounded-md bg-room-accent text-[11px] font-medium text-room-bg transition-colors hover:bg-room-accent/90 disabled:pointer-events-none disabled:opacity-45"
+                >
+                  {codeOpen ? "回到代码工作台" : "打开代码工作台"}
+                </button>
+                {readonly || finished ? (
+                  <p className="mt-2 text-[9.5px] leading-relaxed text-room-faint">
+                    面试已结束，无法再打开代码工作台。
+                  </p>
+                ) : null}
               </div>
-            )}
+            ) : null}
           </div>
         </div>
 
@@ -1546,6 +1631,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
           attaching={attaching}
           onSubmit={submitBoard}
         />
+      ) : null}
+
+      {codeMounted ? (
+        <CodeWorkbench open={codeOpen} onClose={() => setCodeOpen(false)} />
       ) : null}
     </div>
   );

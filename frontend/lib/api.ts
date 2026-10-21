@@ -6,6 +6,8 @@
  */
 
 import { authorizedFetch, responseError } from "@/lib/http";
+import type { CodingTurn } from "@/lib/coding";
+import type { ExpressionSummary, SpeechCounters, SpeechMetrics } from "@/lib/expression";
 import type { ResumeParseResult } from "@/lib/resume";
 import { postSSE, type SSEEvent } from "@/lib/sse";
 
@@ -114,6 +116,8 @@ export type PerQuestionComment = {
   covered_key_points?: string[];
   missed_key_points?: string[];
   reference_answer?: string | null;
+  /** 本题语音作答指标（M16）：无语音作答/老报告为 null 或缺省 */
+  speech?: SpeechMetrics | null;
 };
 export type StudyAdvice = { domain: string; advice: string };
 
@@ -149,6 +153,11 @@ export type ReportPayload = {
   total_comment: string;
   per_question_comments: PerQuestionComment[];
   study_advice: StudyAdvice[];
+  /**
+   * 表达复盘汇总（M16）：语速/长停顿/口头禅/语音作答时长。本场没有任何语音作答时
+   * 缺省（不落 0——没录过音和「说了 0 秒」是两件事）。老报告同样没有该字段。
+   */
+  expression?: ExpressionSummary | null;
 };
 
 export type ReportResponse = {
@@ -265,6 +274,23 @@ export async function createInterview(
   return interviewId;
 }
 
+/**
+ * 发送候选人消息的请求体（P2-M6 图 + M16 语音指标）。
+ *
+ * **无图无语音时仍是 `{content}`**——接入前的形状逐字不变；有值才加键。
+ * 纯函数导出给 vitest 钉死四种形状，避免以后改坏老路径。
+ */
+export function messageBody(
+  content: string,
+  images: string[] = [],
+  speech?: SpeechCounters | null,
+): { content: string; images?: string[]; speech?: SpeechCounters } {
+  const body: { content: string; images?: string[]; speech?: SpeechCounters } = { content };
+  if (images.length > 0) body.images = images;
+  if (speech) body.speech = speech;
+  return body;
+}
+
 /** 发送候选人消息，流式返回面试官后续（含追问/下一题/报告触发）。 */
 export async function sendMessage(
   interviewId: string,
@@ -272,10 +298,12 @@ export async function sendMessage(
   onEvent: (event: SSEEvent) => void,
   /** 图片通道（P2-M6）：随消息附带的 image_id 列表（先经 uploadImage 上传）；无图不带键 */
   images: string[] = [],
+  /** 语音指标（M16）：本稿的原始计数；纯手打消息不传 */
+  speech?: SpeechCounters | null,
 ): Promise<void> {
   await postSSE(
     `/api/interviews/${interviewId}/messages`,
-    images.length > 0 ? { content, images } : { content },
+    messageBody(content, images, speech),
     onEvent,
   );
 }
@@ -587,4 +615,80 @@ export async function patchPrivateQuestion(
   });
   if (!response.ok) throw new Error(await responseError(response));
   return response.json() as Promise<PrivateQuestion>;
+}
+
+// ---- 代码工作台（M15）：随机算法题 / 结构化点评 / 无状态追问 ----
+
+export type CodingQuestion = {
+  question_id: string;
+  text: string;
+  topic: string;
+  difficulty: string;
+  domain: string;
+};
+
+export type CodeIssue = {
+  severity: "error" | "warning" | "suggestion";
+  line: number | null;
+  reason: string;
+  fix: string;
+};
+
+export type CodeEdgeCase = {
+  input: string;
+  expected: string;
+  note?: string;
+};
+
+export type CodeComplexity = {
+  time: string;
+  space: string;
+  correct: boolean;
+  note?: string;
+};
+
+export type CodeReview = {
+  issues: CodeIssue[];
+  edge_cases: CodeEdgeCase[];
+  complexity: CodeComplexity;
+  follow_up: string;
+};
+
+export function getRandomCodingQuestion(): Promise<CodingQuestion> {
+  return getJSON<CodingQuestion>("/api/coding/questions/random");
+}
+
+export async function postCodingReview(body: {
+  question_id: string;
+  language: string;
+  code: string;
+}): Promise<{ question_id: string; language: string; review: CodeReview }> {
+  const response = await authorizedFetch("/api/coding/reviews", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<{
+    question_id: string;
+    language: string;
+    review: CodeReview;
+  }>;
+}
+
+export async function postCodingFollowup(body: {
+  question_id: string;
+  language: string;
+  code: string;
+  review: CodeReview;
+  message: string;
+  history: CodingTurn[];
+}): Promise<{ answer: string }> {
+  const response = await authorizedFetch("/api/coding/followups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(await responseError(response));
+  return response.json() as Promise<{ answer: string }>;
 }

@@ -2,6 +2,7 @@
 
 import type { Dim, PerQuestionComment } from "@/lib/api";
 import { DIMENSIONS, domainLabel } from "@/lib/constants";
+import { formatSpeechDuration, formatSpeechRate } from "@/lib/expression";
 import { formatScore, splitAnswerSegments } from "@/lib/format";
 
 /**
@@ -63,6 +64,16 @@ export function ReviewCard({
           )}
         </div>
       )}
+
+      {/* 本题语音指标（M16）：只有真的录过音才显示，文字作答不落 0 */}
+      {item.speech ? (
+        <p className="text-xs text-muted-foreground">
+          语音作答 {formatSpeechDuration(item.speech.duration_ms)} · 语速{" "}
+          {formatSpeechRate(item.speech.chars_per_min)} · 长停顿{" "}
+          {item.speech.pause_count} 次 · 口头禅 {item.speech.filler_count} 次
+          {item.speech.segments > 1 ? `（${item.speech.segments} 段）` : ""}
+        </p>
+      ) : null}
 
       {score && (
         <ul className="flex flex-wrap gap-x-4 gap-y-1">

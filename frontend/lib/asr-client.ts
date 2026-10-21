@@ -33,6 +33,11 @@ export type AsrHandlers = {
    * 用 AnalyserNode 读取，和 ASR 切片逻辑解耦；不传则完全不建这个节点。
    */
   onLevel?: (level: number) => void;
+  /**
+   * 原始 RMS（未压缩，约 20Hz）：表达复盘（M16）的静音/长停顿采样。
+   * 与 onLevel 共用同一个 AnalyserNode；只要二者之一存在就建。
+   */
+  onSample?: (rawRms: number) => void;
 };
 
 export class AsrRecorder {
@@ -103,9 +108,9 @@ export class AsrRecorder {
     source.connect(node);
     // 不接 destination：避免自己的声音被回放出去（回声/啸叫）
 
-    // 声波指示器（P2-M13）：并行接一个 AnalyserNode，20Hz 读 RMS。
-    // 与 pushAudio 的 100ms 切片解耦——转写走一条路，动效走另一条路，互不影响。
-    if (this.handlers.onLevel) {
+    // 声波指示器 + 表达采样（P2-M13 / M16）：并行接一个 AnalyserNode，20Hz 读原始 RMS。
+    // 与 pushAudio 的 100ms 切片解耦——转写走一条路，动效/指标走另一条路，互不影响。
+    if (this.handlers.onLevel || this.handlers.onSample) {
       const analyser = context.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.6;
@@ -116,8 +121,10 @@ export class AsrRecorder {
         const current = this.analyser;
         if (!current) return;
         current.getFloatTimeDomainData(buffer);
+        const raw = rms(buffer);
+        this.handlers.onSample?.(raw);
         // 平方根压缩 + 噪声地板：正常说话就能撑起柱条，安静房间不抖
-        this.handlers.onLevel?.(voiceLevel(rms(buffer)));
+        this.handlers.onLevel?.(voiceLevel(raw));
       }, 50);
     }
   }
