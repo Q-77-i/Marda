@@ -25,10 +25,10 @@ export function PageShell({
   return (
     <div className="min-h-[100dvh] md:grid md:grid-cols-[74px_minmax(0,1fr)] xl:grid-cols-[236px_minmax(0,1fr)]">
       <AppRail />
-      <main className="min-w-0">
+      <main className="min-w-0 md:col-start-2">
         <div
           className={cn(
-            "mx-auto flex w-full flex-col gap-5 px-5 py-5 md:px-8 md:py-6",
+            "mx-auto flex w-full flex-col gap-5 px-5 pt-[76px] pb-5 md:px-8 md:py-6",
             WIDTHS[width],
           )}
         >

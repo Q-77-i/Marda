@@ -40,7 +40,7 @@ export function AppRail() {
     .sort((a, b) => b.length - a.length)[0];
 
   return (
-    <aside className="rail-texture sticky top-0 z-30 flex h-14 w-full shrink-0 items-center gap-1 overflow-x-auto border-b border-rail-line bg-rail px-2 text-rail-foreground md:h-[100dvh] md:flex-col md:items-stretch md:overflow-visible md:border-r md:border-b-0 md:px-2.5 md:py-4 xl:w-[236px] xl:px-3.5">
+    <aside className="rail-texture fixed top-0 left-0 z-30 flex h-14 w-full items-center gap-1 overflow-x-auto border-b border-rail-line bg-rail px-2 text-rail-foreground md:h-[100dvh] md:w-[74px] md:flex-col md:items-stretch md:overflow-visible md:border-r md:border-b-0 md:px-2.5 md:py-4 xl:w-[236px] xl:px-3.5">
       <Link
         href="/"
         aria-label="Marda 码达"
