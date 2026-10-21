@@ -228,7 +228,7 @@ export function CodeWorkbench({ open, onClose }: { open: boolean; onClose: () =>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto lg:flex-row lg:overflow-hidden">
         <div className="flex min-h-[420px] min-w-0 flex-1 flex-col p-3 lg:min-h-0">
-          <div className="mb-2 flex-none rounded-lg border border-room-line bg-room-panel px-3 py-2">
+          <div className="mb-2 max-h-60 flex-none overflow-y-auto rounded-lg border border-room-line bg-room-panel px-3 py-2">
             {loadingQuestion ? (
               <p className="text-[11px] text-room-muted">正在抽题…</p>
             ) : questionError ? (
@@ -253,9 +253,34 @@ export function CodeWorkbench({ open, onClose }: { open: boolean; onClose: () =>
                   <span className="text-[9.5px] text-room-faint">{question.topic}</span>
                   <span className="font-mono text-[8.5px] text-room-faint">题库随机题</span>
                 </div>
-                <p className="mt-1.5 max-h-24 overflow-y-auto text-[11.5px] leading-relaxed text-room-ink-2">
+                <p className="mt-1.5 text-[12px] font-medium leading-relaxed text-room-ink">
                   {question.text}
                 </p>
+                {question.description ? (
+                  <p className="mt-1.5 whitespace-pre-wrap text-[11px] leading-relaxed text-room-ink-2">
+                    {question.description}
+                  </p>
+                ) : null}
+                {question.examples.length > 0 ? (
+                  <div className="mt-2 flex flex-col gap-1.5">
+                    <span className="font-mono text-[8px] tracking-[0.12em] text-room-faint uppercase">
+                      Examples
+                    </span>
+                    {question.examples.map((example, index) => (
+                      <pre
+                        key={index}
+                        className="whitespace-pre-wrap rounded-md border border-room-line bg-room-bg px-2 py-1.5 font-mono text-[10px] leading-relaxed text-room-muted"
+                      >
+                        {example}
+                      </pre>
+                    ))}
+                  </div>
+                ) : null}
+                {question.constraints ? (
+                  <p className="mt-1.5 text-[9.5px] leading-relaxed text-room-faint">
+                    约束：{question.constraints}
+                  </p>
+                ) : null}
               </>
             ) : (
               <p className="text-[11px] text-room-muted">暂无题目</p>

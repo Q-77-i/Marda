@@ -622,6 +622,12 @@ export async function patchPrivateQuestion(
 export type CodingQuestion = {
   question_id: string;
   text: string;
+  /** 自建题面目录的描述（M15 补强）；目录外的题为空串 */
+  description: string;
+  /** 具体输入/输出示例；每项是带换行的纯文本 */
+  examples: string[];
+  /** 数据范围/约束 */
+  constraints: string;
   topic: string;
   difficulty: string;
   domain: string;

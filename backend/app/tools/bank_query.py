@@ -98,18 +98,28 @@ CODING_DOMAIN = "algorithms"
 """代码工作台的题源域。**不在 ASKABLE_DOMAINS**（只存不考），故不能复用面试检索。"""
 
 
-def random_coding_question(db_path: Path) -> dict[str, Any] | None:
+def random_coding_question(
+    db_path: Path,
+    *,
+    question_ids: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Any] | None:
     """随机取一道公共、enabled 的算法题（M15）。
 
     只 select 题干/主题/难度：**answer / key_points / follow_ups 永不出 API**。
+    `question_ids` 用于「优先从有自建题面目录的题里抽」；目录外的题不参与。
     题库为空（没导入算法题）时返回 None，由 API 层映射 404。
     """
+    clauses = ["status='enabled'", "user_id IS NULL", "domain=?"]
+    params: list[str] = [CODING_DOMAIN]
+    if question_ids:
+        placeholders = ",".join("?" * len(question_ids))
+        clauses.append(f"id IN ({placeholders})")
+        params.extend(question_ids)
     with _connect(db_path) as conn:
         row = conn.execute(
             "SELECT id, question, topic, difficulty FROM questions"
-            " WHERE status='enabled' AND user_id IS NULL AND domain=?"
-            " ORDER BY RANDOM() LIMIT 1",
-            (CODING_DOMAIN,),
+            f" WHERE {' AND '.join(clauses)} ORDER BY RANDOM() LIMIT 1",
+            params,
         ).fetchone()
     if row is None:
         return None

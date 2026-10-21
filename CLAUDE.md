@@ -45,7 +45,7 @@
 - 语音：**豆包流式 ASR**（`WS /api/asr` 中继，v3 二进制协议）+ **edge-tts 播报**（三档降级）。**引擎与模态解耦**——语音只是新增一条音频通道，图/状态机/落库/SSE 事件表一条未动。**两把火山 key 不通用**（方舟 Bearer ≠ 豆包语音 X-Api-Key）
 - 视觉：**deepseek-flash 视觉**（代码截图先行）。图存磁盘 `data/uploads/`、state 只存 image_id；**图独立成附件消息、不改任何 prompt 模板**（无图路径逐字一致）
 - 白板（M14/M14b）：Excalidraw 导出 PNG 走既有图片通道；白板结构点评规则**只加在带图的附件说明里**（`NOTE_JUDGE_IMAGE_RULE`），不动 `JUDGE_TEMPLATE`——纯文字评分 prompt 逐字不变。报告官可能为「答非所问」丢掉缺失项，`build_per_question_comments` 会从评分官 comment 抽原句**确定性补回**（只对有图题、只抽含缺失语义的句子）
-- 代码工作台（M15）：**独立于面试状态机**——`/api/coding/questions/random|reviews|followups` 三个端点，随机算法题只出安全投影（不带 answer/key_points），点评是 flash 结构化输出（问题/具体反例/复杂度/一个追问），追问无状态；v1 不打分、不执行代码、不落库、不进报告
+- 代码工作台（M15）：**独立于面试状态机**——`/api/coding/questions/random|reviews|followups` 三个端点，随机算法题只出安全投影（不带 answer/key_points），点评是 flash 结构化输出（问题/具体反例/复杂度/一个追问），追问无状态；v1 不打分、不执行代码、不落库、不进报告。**题面用 `agents/coding_questions.py` 的自建目录补全**（题库很多题只有标题；git 只存题库 id 与我们自己的标题/描述/示例/约束）
 - 表达复盘（M16）：前端只上报原始计数（时长/字数/长停顿/口头禅/段数），语速与场次汇总在 `graph/rules/speech.py` 单点派生；随消息 `speech` 键进 state，报告 payload 落 `expression` 与逐题 `speech`，报告页/PDF 同一份数据。**不做面部**；ASR 可能漏语气词、长停顿是 RMS 估算，报告里如实标注
 
 ## 架构原则（面试要能讲出"为什么"）

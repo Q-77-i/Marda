@@ -39,9 +39,28 @@ async def test_随机题只返回安全字段(client):
 
     assert r.status_code == 200
     item = r.json()
-    assert set(item) == {"question_id", "text", "topic", "difficulty", "domain"}
+    assert set(item) == {
+        "question_id", "text", "description", "examples", "constraints",
+        "topic", "difficulty", "domain",
+    }
     assert item["domain"] == "algorithms"
     assert "答案" not in item and "key_points" not in item
+    # 不在自建目录里的题：题面字段为空，前端只显示题库原文
+    assert item["description"] == "" and item["examples"] == []
+
+
+async def test_随机题_目录内的题带完整题面(client):
+    """M15 补强：题库里的算法题只有标题也能做——自建目录补描述/示例/约束。"""
+    seed_algorithm_question("q_346abeed8c62")
+
+    r = await client.get("/api/coding/questions/random")
+
+    assert r.status_code == 200
+    item = r.json()
+    assert item["text"] == "反转链表"
+    assert "反转" in item["description"]
+    assert item["examples"] and "输入" in item["examples"][0]
+    assert item["constraints"]
 
 
 async def test_随机题_没有算法题时404(client):
@@ -73,6 +92,22 @@ async def test_代码点评_happy_path(client, fake_llm):
     assert "代码评审官" in system
     assert "q_algo 答案" in system  # 内部参考
     assert "head = head.next" in system
+
+
+async def test_代码点评_目录内的题用完整题面(client, fake_llm):
+    seed_algorithm_question("q_346abeed8c62")
+
+    r = await client.post("/api/coding/reviews", json={
+        "question_id": "q_346abeed8c62",
+        "language": "python",
+        "code": "def reverse(head):\n    return head\n",
+    })
+
+    assert r.status_code == 200
+    system = fake_llm.calls[-1]["system"]
+    assert "【反转链表】" in system
+    assert "输入" in system and "输出" in system
+    assert "约束" in system
 
 
 async def test_代码点评_题目不存在404(client):

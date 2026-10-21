@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from app import llm
 from app.agents.coding import followup_messages, review_messages
+from app.agents.coding_questions import CODING_PROBLEMS, format_problem
 from app.agents.schemas import CodeReview
 from app.api.auth import get_current_user
 from app.config import get_settings
@@ -60,13 +61,37 @@ def _question_or_404(question_id: str) -> dict:
 
 @router.get("/questions/random")
 async def random_question():
-    """随机一道公共算法题；只返回题干/主题/难度。"""
+    """随机一道公共算法题；只返回题干/主题/难度。
+
+    优先从**自建题面目录**抽（题库很多题只有标题，没法当机试题），目录外的题兜底；
+    响应带 `description / examples / constraints`，前端据此渲染完整题面。
+    """
+    db_path = get_settings().db_path
     question = await asyncio.to_thread(
-        bank_query.random_coding_question, get_settings().db_path
+        bank_query.random_coding_question, db_path, question_ids=list(CODING_PROBLEMS)
     )
     if question is None:
+        # 目录 id 不在当前库里（测试/旧库）：退回任意算法题
+        question = await asyncio.to_thread(bank_query.random_coding_question, db_path)
+    if question is None:
         raise HTTPException(status_code=404, detail="题库暂无可用算法题")
+    problem = CODING_PROBLEMS.get(question["question_id"])
+    if problem:
+        question.update({
+            "text": problem.title,
+            "description": problem.description,
+            "examples": list(problem.examples),
+            "constraints": problem.constraints,
+        })
+    else:
+        question.update({"description": "", "examples": [], "constraints": ""})
     return question
+
+
+def _review_question(question: dict) -> str:
+    """点评 prompt 的题面：自建目录优先，否则用题库原文。"""
+    problem = CODING_PROBLEMS.get(question["question_id"])
+    return format_problem(problem) if problem else question["question"]
 
 
 @router.post("/reviews")
@@ -78,7 +103,7 @@ async def review_code(req: CodingReviewRequest):
     try:
         review = await llm.chat_json(
             review_messages(
-                question=question["question"],
+                question=_review_question(question),
                 language=req.language,
                 code=req.code,
                 reference=question.get("answer") or "",
@@ -104,7 +129,7 @@ async def followup(req: CodingFollowupRequest):
     try:
         answer = await llm.chat(
             followup_messages(
-                question=question["question"],
+                question=_review_question(question),
                 language=req.language,
                 code=req.code,
                 review=req.review,
