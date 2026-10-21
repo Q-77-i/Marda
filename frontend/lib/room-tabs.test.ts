@@ -12,10 +12,10 @@ describe("右栏 Tab 数据", () => {
     expect(ROOM_TABS.map((tab) => tab.label)).toEqual(["状态", "白板", "代码"]);
   });
 
-  it("代码 Tab 本轮未就绪，状态与白板就绪", () => {
+  it("三项 Tab 都已就绪（M15 起代码工作台可用）", () => {
     expect(ROOM_TABS.find((tab) => tab.value === "status")?.ready).toBe(true);
     expect(ROOM_TABS.find((tab) => tab.value === "board")?.ready).toBe(true);
-    expect(ROOM_TABS.find((tab) => tab.value === "code")?.ready).toBe(false);
+    expect(ROOM_TABS.find((tab) => tab.value === "code")?.ready).toBe(true);
   });
 
   it("未知值回落到状态", () => {

@@ -18,6 +18,8 @@ const eslintConfig = [
       "out/**",
       "build/**",
       "next-env.d.ts",
+      // Monaco AMD 构建产物（dev/build 时从 node_modules 复制，不进仓库；别让 ESLint 扫）
+      "public/monaco/**",
     ],
   },
 ];

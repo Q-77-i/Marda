@@ -164,6 +164,7 @@ async def test_完整一场落库与报告(client):
     # 报告落库（SPEC §8：结束后一次写入）
     report = db.get_report(get_settings().db_path, interview_id)
     assert report["payload"]["answered_count"] == 2
+    assert "expression" not in report["payload"]  # M16：纯文字场次不落空壳
     assert set(report["payload"]["scores"]) == {
         "technical_depth", "fundamentals", "project_experience", "communication", "problem_solving",
     }
@@ -792,3 +793,57 @@ async def test_创建难度非法值422(client):
         "position": "Agent/AI 工程师", "question_count": 5, "difficulty": "L9",
     })
     assert r.status_code == 422
+
+
+# ---- 表达复盘（M16）：语音指标随消息进评分记录，再进报告 ----
+
+async def _send_with(client, interview_id: str, content: str, **extra) -> list[dict]:
+    async with client.stream(
+        "POST", f"/api/interviews/{interview_id}/messages",
+        json={"content": content, **extra},
+    ) as r:
+        assert r.status_code == 200
+        return await _events(r)
+
+
+async def test_语音指标进报告_纯文字题不落指标(client):
+    interview_id, _ = await _create(client)
+    # 自我介绍不进评分：这里即使带语音也不该出现在报告里（当前测试没带，顺带验证形状）
+    await _send(client, interview_id, TURNS[0])
+    speech = {
+        "duration_ms": 42000, "chars": 180, "pause_count": 2,
+        "pause_ms": 5000, "filler_count": 3, "segments": 1,
+    }
+    # 第一题首答带语音；后续追问补充/第二题是纯文字
+    await _send_with(client, interview_id, TURNS[1], speech=speech)
+    for turn in TURNS[2:]:
+        await _send(client, interview_id, turn)
+
+    payload = (await client.get(f"/api/interviews/{interview_id}/report")).json()["report"]
+
+    assert payload["expression"]["spoken_question_count"] == 1
+    assert payload["expression"]["chars"] == 180
+    assert payload["expression"]["chars_per_min"] == 257.1
+    assert payload["per_question_comments"][0]["speech"]["chars_per_min"] == 257.1
+    assert payload["per_question_comments"][1]["speech"] is None
+    assert payload["expression"]["note"]  # 限制说明随 payload 下发
+
+
+async def test_语音指标_非法规格422(client):
+    interview_id, _ = await _create(client)
+
+    r = await client.post(
+        f"/api/interviews/{interview_id}/messages",
+        json={"content": "回答", "speech": {
+            "duration_ms": 1000, "chars": 10, "pause_count": 2, "pause_ms": 1000,
+        }},
+    )
+    assert r.status_code == 422  # 2×2s > 1s
+
+    r = await client.post(
+        f"/api/interviews/{interview_id}/messages",
+        json={"content": "回答", "speech": {
+            "duration_ms": 1000, "chars": 10, "pause_count": 1, "pause_ms": 2000,
+        }},
+    )
+    assert r.status_code == 422  # pause_ms > duration_ms

@@ -92,6 +92,52 @@ def get_question(db_path: Path, question_id: str) -> dict[str, Any] | None:
     return _item(row) if row else None
 
 
+# ---- 代码工作台（M15）：algorithms 域只存不考，独立于面试出题检索 ----
+
+CODING_DOMAIN = "algorithms"
+"""代码工作台的题源域。**不在 ASKABLE_DOMAINS**（只存不考），故不能复用面试检索。"""
+
+
+def random_coding_question(db_path: Path) -> dict[str, Any] | None:
+    """随机取一道公共、enabled 的算法题（M15）。
+
+    只 select 题干/主题/难度：**answer / key_points / follow_ups 永不出 API**。
+    题库为空（没导入算法题）时返回 None，由 API 层映射 404。
+    """
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT id, question, topic, difficulty FROM questions"
+            " WHERE status='enabled' AND user_id IS NULL AND domain=?"
+            " ORDER BY RANDOM() LIMIT 1",
+            (CODING_DOMAIN,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "question_id": row["id"],
+        "text": row["question"],
+        "topic": row["topic"] or "",
+        "difficulty": row["difficulty"] or "",
+        "domain": CODING_DOMAIN,
+    }
+
+
+def get_coding_question_for_review(db_path: Path, question_id: str) -> dict[str, Any] | None:
+    """按 id 取一道算法题（含参考答案/关键点），**仅供代码点评 prompt 内部使用**。
+
+    与 `get_question` 的差别：多一层 `domain='algorithms'` 约束——别的域的题不能
+    进代码工作台；返回值含 answer/key_points，调用方不得把它们放进 API 响应。
+    """
+    where, params = _where({"domain": CODING_DOMAIN})
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            f"SELECT {_FIELDS} FROM questions WHERE id=? AND {where}",
+            (question_id, *params),
+        ).fetchone()
+    return _item(row) if row else None
+
+
+
 def fetch_sources(db_path: Path, question_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
     """按 id 批量取来源明细（一题多源，按 id 分组）。"""
     if not question_ids:

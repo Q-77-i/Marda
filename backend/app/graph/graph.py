@@ -28,6 +28,7 @@ from app.graph.nodes.closing import CLOSING_QUESTION_LIMIT
 from app.domain import QUESTION_TYPE_BEHAVIORAL
 from app.graph.rules.advance import is_end_command, meets_end_quota
 from app.graph.rules.follow_up import Decision, decide_follow_up, remedy_used_total
+from app.graph.rules.speech import SPEECH_FIELDS
 from app.graph.state import InterviewState, Phase
 
 
@@ -44,10 +45,38 @@ def parse_resume(payload: Any) -> tuple[str, list[str]]:
     return (str(payload) if payload else ""), []
 
 
+def parse_speech(payload: Any) -> dict | None:
+    """resume 载荷 → 语音原始计数（M16，纯函数，可单测）。
+
+    只接受六个非负整数字段（前端 SpeechCounters 的形状）；缺字段/类型错/前后不一致
+    一律返回 None——表达指标是增强，不因一份脏载荷卡住整轮作答。
+    """
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("speech")
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, int] = {}
+    for key in SPEECH_FIELDS:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return None
+        out[key] = value
+    if out["pause_ms"] > out["duration_ms"] or out["pause_count"] * 2000 > out["pause_ms"]:
+        return None
+    return out
+
+
 def pause_node(state: InterviewState) -> dict:
     """单 interrupt 点：resume 时拿到用户输入写入 state，供 route 分发。"""
-    content, images = parse_resume(interrupt({"waiting": "user_input"}))
-    return {"user_input": content, "current_images": images}
+    payload = interrupt({"waiting": "user_input"})
+    content, images = parse_resume(payload)
+    return {
+        "user_input": content,
+        "current_images": images,
+        # 文字消息会把它覆盖成 None：上一轮的语音指标不能重复计入下一题（M16）
+        "current_speech": parse_speech(payload),
+    }
 
 
 def route(state: InterviewState) -> str:

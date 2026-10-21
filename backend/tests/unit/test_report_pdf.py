@@ -336,3 +336,44 @@ def test_学习建议域key渲染成中文标签():
 
     assert "价值观与动机" in text
     assert "values_motivation" not in text
+
+
+# ---- 表达复盘（M16）：有语音才有这一节，逐题也有一行 ----
+
+def test_表达复盘PDF含语速停顿口头禅与逐题语音行():
+    payload = _payload(
+        expression={
+            "spoken_question_count": 1,
+            "duration_ms": 130000,
+            "chars": 300,
+            "chars_per_min": 138.6,
+            "pause_count": 2,
+            "pause_ms": 5000,
+            "filler_count": 3,
+            "segments": 2,
+            "note": "语速与停顿由录音音量与 ASR 转写估算。",
+        },
+    )
+    payload["per_question_comments"][0]["speech"] = {
+        "duration_ms": 130000,
+        "chars": 300,
+        "chars_per_min": 138.6,
+        "pause_count": 2,
+        "pause_ms": 5000,
+        "filler_count": 3,
+        "segments": 2,
+    }
+
+    text = _pdf_text(render_report_pdf(payload))
+
+    assert "表达复盘" in text
+    assert "平均语速" in text and "139字/分" in text  # PDF 四舍五入到整数
+    assert "长停顿" in text and "口头禅" in text
+    assert "语音作答2分10秒" in text
+    assert "ASR转写估算" in text
+
+
+def test_无语音作答PDF没有表达复盘段():
+    text = _pdf_text(render_report_pdf(_payload()))
+    assert "表达复盘" not in text
+    assert "口头禅" not in text

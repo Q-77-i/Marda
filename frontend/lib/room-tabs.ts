@@ -10,14 +10,14 @@ export type RoomTab = "status" | "board" | "code";
 export type RoomTabMeta = {
   value: RoomTab;
   label: string;
-  /** 本轮是否可用；代码工作台是 M15，未就绪的 Tab 渲染成不可点。 */
+  /** 是否可用；未就绪的 Tab 渲染成不可点（目前三项都已就绪）。 */
   ready: boolean;
 };
 
 export const ROOM_TABS: readonly RoomTabMeta[] = [
   { value: "status", label: "状态", ready: true },
   { value: "board", label: "白板", ready: true },
-  { value: "code", label: "代码", ready: false },
+  { value: "code", label: "代码", ready: true },
 ];
 
 export function normalizeRoomTab(value: string | null): RoomTab {

@@ -83,6 +83,8 @@ PURPOSE_LABELS = {
     "report": "报告",
     "profile": "自我介绍提炼",
     "closing": "收尾",
+    "coding_review": "代码点评",
+    "coding_followup": "代码追问",
 }
 """LLM 调用用途 → 中文（`llm.*(purpose=...)` 的取值域，成本报告按它分组）。
 

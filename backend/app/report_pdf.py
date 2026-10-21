@@ -25,6 +25,7 @@ from app.graph.rules.aggregate import (
     dims_for,
     overall_score,
 )
+from app.graph.rules.speech import format_duration_cn
 from app.graph.state import FOLLOWUP_ANSWER_MARKER
 
 
@@ -212,8 +213,25 @@ def _advice_label(domain: str | None, dims: tuple[str, ...]) -> str:
     return DOMAIN_LABELS.get(key, key)
 
 
+def _expression_context(raw: dict | None) -> dict | None:
+    """场次表达复盘（M16）→ PDF 文案；无语音作答返回 None（模板整节收起）。"""
+    if not raw:
+        return None
+    rate = raw.get("chars_per_min")
+    return {
+        "duration": format_duration_cn(int(raw.get("duration_ms") or 0)),
+        "chars_per_min": round(rate) if isinstance(rate, (int, float)) else None,
+        "pause_count": int(raw.get("pause_count") or 0),
+        "pause": format_duration_cn(int(raw.get("pause_ms") or 0)),
+        "filler_count": int(raw.get("filler_count") or 0),
+        "spoken_question_count": int(raw.get("spoken_question_count") or 0),
+        "note": raw.get("note") or "",
+    }
+
+
 def _question_context(item: dict, index: int, dims: tuple[str, ...] = FIVE_DIMS) -> dict:
     score = item.get("score") or {}
+    speech = item.get("speech") or None
     return {
         "label": _question_label(item, index),
         "domain": DOMAIN_LABELS.get(item.get("domain") or "", item.get("domain") or ""),
@@ -227,6 +245,18 @@ def _question_context(item: dict, index: int, dims: tuple[str, ...] = FIVE_DIMS)
         "missed": item.get("missed_key_points") or [],
         "comment": item.get("comment") or "",
         "reference_answer": item.get("reference_answer") or "",
+        # 本题语音指标（M16）：无语音作答为 None，模板不渲染这一行
+        "speech": {
+            "duration": format_duration_cn(int(speech.get("duration_ms") or 0)),
+            "chars_per_min": (
+                round(speech["chars_per_min"])
+                if isinstance(speech.get("chars_per_min"), (int, float))
+                else None
+            ),
+            "pause_count": int(speech.get("pause_count") or 0),
+            "pause": format_duration_cn(int(speech.get("pause_ms") or 0)),
+            "filler_count": int(speech.get("filler_count") or 0),
+        } if speech else None,
     }
 
 
@@ -286,6 +316,8 @@ def _build_context(payload: dict, created_at: str) -> dict:
             else [DOMAIN_LABELS.get(domain, domain) for domain in payload.get("weaknesses") or []]
         ),
         "total_comment": payload.get("total_comment") or "",
+        # 表达复盘（M16）：与分数卡并列独立；无语音作答 → None，模板整节收起
+        "expression": _expression_context(payload.get("expression")),
         "questions": [
             _question_context(item, index, dims)
             for index, item in enumerate(payload.get("per_question_comments") or [])

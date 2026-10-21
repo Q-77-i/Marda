@@ -275,11 +275,14 @@ class Service:
         content: str,
         user_id: str,
         images: list[str] | None = None,
+        speech: dict | None = None,
     ) -> AsyncIterator[dict]:
         """resume 图到下一 interrupt 或结束；防御性复查（route 已查过）。
 
         图片通道（P2-M6）：带图时 resume 载荷是 `{content, images}`；**无图仍是裸字符串**
         ——接入前的形状逐字不变（parse_resume 两种都接）。
+
+        语音指标（M16）：与图同款按需加键；无图无语音时仍是裸字符串。
         """
         await self._require_owner(interview_id, user_id)
         values = await self._current_values(interview_id)
@@ -288,7 +291,13 @@ class Service:
         if values.get("status") == "finished":
             raise InterviewFinishedError(interview_id)
         config = run_config(interview_id, values["question_count"])
-        payload: Any = {"content": content, "images": list(images)} if images else content
+        payload: Any = content
+        if images or speech:
+            payload = {"content": content}
+            if images:
+                payload["images"] = list(images)
+            if speech:
+                payload["speech"] = dict(speech)
         async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
             yield event
 

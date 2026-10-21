@@ -124,3 +124,52 @@ def test_分面计数(db_path):
 def test_供给统计按难度域聚合(db_path):
     supply = bank_query.difficulty_supply(db_path)
     assert supply == {"L1": {"rag": 1}, "L2": {"rag": 1}, "L3": {"memory": 1}}  # draft 不计
+
+
+def test_代码工作台随机题_只出公共启用的算法题(db_path):
+    """M15：题源固定 algorithms，私有/draft/别的域都不许出现。"""
+    insert_questions(db_path, [
+        question_row("q_algo", domain="algorithms", difficulty="L2"),
+        question_row("q_algo_draft", domain="algorithms", status="draft"),
+        question_row("q_algo_priv", domain="algorithms", user_id="u1"),
+    ])
+
+    ids = set()
+    for _ in range(20):  # 随机 20 次，任何一次抽到非公共题都算失败
+        item = bank_query.random_coding_question(db_path)
+        assert item is not None
+        ids.add(item["question_id"])
+    assert ids == {"q_algo"}
+
+
+def test_代码工作台随机题_不泄露答案与关键点(db_path):
+    """随机题是安全投影：answer / key_points / follow_ups 永不出 API。"""
+    insert_questions(db_path, [question_row("q_algo", domain="algorithms")])
+
+    item = bank_query.random_coding_question(db_path)
+
+    assert item is not None
+    assert set(item) == {"question_id", "text", "topic", "difficulty", "domain"}
+    assert item["domain"] == "algorithms"
+
+
+def test_代码点评取题_只认算法域且带内部参考(db_path):
+    insert_questions(db_path, [
+        question_row("q_algo", domain="algorithms"),
+        question_row("q_algo_draft", domain="algorithms", status="draft"),
+    ])
+
+    item = bank_query.get_coding_question_for_review(db_path, "q_algo")
+    assert item is not None
+    assert item["answer"] and item["key_points"] == ["k1", "k2"]  # 内部参考仅此路径返回
+
+    # 别的域 / draft / 不存在一律 None（API 层映射 404）
+    assert bank_query.get_coding_question_for_review(db_path, "q1") is None
+    assert bank_query.get_coding_question_for_review(db_path, "q_algo_draft") is None
+    assert bank_query.get_coding_question_for_review(db_path, "q_不存在") is None
+
+
+def test_没有算法题时随机返回None(tmp_path):
+    path = tmp_path / "empty.sqlite3"
+    create_tables(path)
+    assert bank_query.random_coding_question(path) is None
