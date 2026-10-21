@@ -736,6 +736,7 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 
 - **入口与定位**：面试间右栏「代码」Tab（窄屏顶栏按钮）；题库随机算法题 + Monaco + 结构化点评 + 追问。**不读写 interview、不进 checkpointer、不落库、不进报告**；代码不发给面试官。
 - **题源**：`domain='algorithms'`、`status='enabled'`、公共题（22 道）。随机端点只 select 题干/主题/难度，**answer/key_points/follow_ups 永不出 API**；只有点评内部才取参考答案（`bank_query.get_coding_question_for_review`）。
+- **题面补全（M15 补强）**：题库里很多算法题只有标题或答案，直接当机试题无法作答（实测「最小合法子串」只有五个字，且其答案实际是「最长有效括号」）。`agents/coding_questions.py` 提供**自建题面目录**（题库 id + 我们撰写的标题/描述/示例/约束；git 只存 id 与我们自己的文本），随机题优先从目录抽，目录外的题回退题库原文；`GET /questions/random` 响应带 `description / examples / constraints`，点评 prompt 也用同一份题面。
 - **三个端点**：`GET /api/coding/questions/random`（没有算法题 → 404 中文）· `POST /api/coding/reviews`（`{question_id, language, code}`；语言 ∈ python/java/cpp/javascript，code ≤8000）· `POST /api/coding/followups`（带上次点评与最近 10 条历史，无状态）。LLM 失败 → 503 中文可重试。
 - **点评**：flash + `chat_json(CodeReview)`，`max_tokens=3000`；`issues[]`（severity/line/reason/fix，可为空）、`edge_cases[]`（**至少一条具体输入/期望输出**）、`complexity`（时间/空间/是否正确）、`follow_up`（只问一个）。追问走 `chat`，`max_tokens=1200`。
 - **前端**：Monaco 经 `next/dynamic(ssr:false)` 懒加载，走同源 `/monaco/vs`（`scripts/copy-monaco-assets.mjs` 从 node_modules 复制，gitignore、ESLint 忽略）；工作台复用白板的全屏覆盖层形态，首次打开后保持挂载；代码与点评只在内存，v1 不持久化。
@@ -842,7 +843,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 ### 9.5 代码工作台与表达复盘（M15/M16）
 
-- **代码工作台**：右栏「状态 / 白板 / 代码」三 Tab 全部就绪；代码 Tab 与窄屏顶栏按钮打开全屏覆盖层（`CodeWorkbench`），与白板互斥、首次打开后保持挂载。Monaco 懒加载、同源 `/monaco/vs`；左侧题目/语言/编辑器，右侧点评面板（问题 / 具体反例 / 复杂度 / 面试官追问 + 追问输入）；代码改动后旧点评标「已过期」。**生产构建不含 Monaco 包体**（首开才加载静态资源）。
+- **代码工作台**：右栏「状态 / 白板 / 代码」三 Tab 全部就绪；代码 Tab 与窄屏顶栏按钮打开全屏覆盖层（`CodeWorkbench`），与白板互斥、首次打开后保持挂载（**回放/已结束场次也可独立练习**，代码不写本场记录）。Monaco 懒加载、同源 `/monaco/vs`；左侧题面卡（标题 / 描述 / 示例 / 约束）+ 语言 + 编辑器，右侧点评面板（问题 / 具体反例 / 复杂度 / 面试官追问 + 追问输入）；代码改动后旧点评标「已过期」。**生产构建不含 Monaco 包体**（首开才加载静态资源）。
 - **表达复盘**：报告页在统计条之后渲染 `ExpressionCard`（语音时长 / 平均语速 / 长停顿 / 口头禅 + 限制说明），**不依赖 `hasScores`**；逐题复盘卡加一行「语音作答 / 语速 / 长停顿 / 口头禅（段数）」。PDF 用同一 payload 的「表达复盘」卡与逐题行。
 
 ## 10. 测试与验收
@@ -861,7 +862,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（898 个，不需要任何密钥）· `cd frontend && pnpm test`（326 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（904 个，不需要任何密钥）· `cd frontend && pnpm test`（326 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。
 

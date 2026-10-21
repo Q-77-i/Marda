@@ -147,7 +147,7 @@ backend/.venv/bin/python data/scripts/check_redline.py --all  # 全量自查
 
 ```bash
 cd backend
-uv run pytest -q                              # 898 个测试（不需要任何密钥）
+uv run pytest -q                              # 904 个测试（不需要任何密钥）
 uv run python scripts/smoke_api.py            # 真链路走 HTTP 跑一场：报告 / PDF / 回放 / 推荐 / 档案核对
 uv run python scripts/smoke_e2e.py            # 组合场：一场里语音进 / 语音出 / 截图 / 文字全跑通
 uv run python scripts/smoke_degraded.py       # 降级链：假上游一律 503，一场面试仍能走完并如实标注

@@ -173,3 +173,16 @@ def test_没有算法题时随机返回None(tmp_path):
     path = tmp_path / "empty.sqlite3"
     create_tables(path)
     assert bank_query.random_coding_question(path) is None
+
+
+def test_代码工作台随机题_可按目录id过滤(db_path):
+    """M15 补强：随机题优先从有自建题面的 id 里抽，目录外的题不参与。"""
+    insert_questions(db_path, [
+        question_row("q_algo", domain="algorithms"),
+        question_row("q_algo2", domain="algorithms"),
+    ])
+
+    for _ in range(10):
+        item = bank_query.random_coding_question(db_path, question_ids=["q_algo"])
+        assert item is not None
+        assert item["question_id"] == "q_algo"
