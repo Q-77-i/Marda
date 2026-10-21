@@ -280,6 +280,24 @@ export async function sendMessage(
   );
 }
 
+/**
+ * 语音转写智能校对（P2-M13 追加）：只修同音/术语。
+ * 调用方在没有用户编辑时替换草稿；失败保留原文。
+ */
+export async function correctTranscript(
+  text: string,
+  question: string | null,
+): Promise<string> {
+  const response = await authorizedFetch("/api/asr/correct", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, question: (question ?? "").slice(0, 2000) }),
+  });
+  if (!response.ok) throw new Error(await responseError(response));
+  const data = (await response.json()) as { text?: string };
+  return typeof data.text === "string" && data.text.trim() ? data.text : text;
+}
+
 async function getJSON<T>(url: string): Promise<T> {
   const response = await authorizedFetch(url);
   if (!response.ok) throw new Error(await responseError(response));

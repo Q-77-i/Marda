@@ -38,6 +38,17 @@ def test_配置帧_头部与_gzip_JSON():
     assert body["request"]["enable_punc"] is True
 
 
+def test_配置帧带技术热词上下文():
+    """热词走 v3 corpus.context，且必须是 JSON 字符串（不是对象）。"""
+    payload = asr.request_payload("u1")
+    context = payload["request"]["corpus"]["context"]
+    assert isinstance(context, str)
+    words = [item["word"] for item in json.loads(context)["hotwords"]]
+    assert "先召回再筛" in words
+    assert "静默失败" in words
+    assert "候选位" in words
+
+
 def test_音频帧_普通帧带正序号_末帧不带序号字段():
     normal = asr.build_audio_frame(b"\x01\x02" * 100, 7)
     mt, flags, _ = header_of(normal)

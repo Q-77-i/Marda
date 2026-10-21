@@ -151,3 +151,25 @@ async def test_tts_上游失败_502_且文案可展示(monkeypatch, client):
 async def test_tts_未登录_401(install_tts, anon_client):
     r = await anon_client.post("/api/tts", json={"text": "你好"})
     assert r.status_code == 401
+
+
+# ---------- 转写智能校对 ----------
+
+
+async def test_asr_correct_返回修正文本(monkeypatch, client):
+    async def fake(text: str, question: str = "") -> str:
+        assert text == "先兆回再塞"
+        assert question == "问题"
+        return "先召回再筛"
+
+    monkeypatch.setattr(voice_api.transcript, "correct_text", fake)
+    r = await client.post(
+        "/api/asr/correct", json={"text": "先兆回再塞", "question": "问题"}
+    )
+    assert r.status_code == 200
+    assert r.json() == {"text": "先召回再筛"}
+
+
+async def test_asr_correct_未登录_401(anon_client):
+    r = await anon_client.post("/api/asr/correct", json={"text": "先兆回再塞"})
+    assert r.status_code == 401

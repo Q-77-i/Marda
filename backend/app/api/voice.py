@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from app import db, security
 from app.api.auth import get_current_user
 from app.config import get_settings
-from app.tools import asr, tts
+from app.tools import asr, transcript, tts
 
 router = APIRouter(prefix="/api", tags=["voice"])
 
@@ -40,6 +40,24 @@ FORWARD_TIMEOUT = 2.0  # stop 之后等转发任务把 final 送出浏览器的�
 class TtsRequest(BaseModel):
     # 上限与 tools/tts.MAX_TEXT 对齐：超长在工具层截断，这里只挡明显异常的请求体
     text: str = Field(min_length=1, max_length=4000)
+
+
+class CorrectRequest(BaseModel):
+    # ASR final 一般远短于 4000；question 只用于校对语境
+    text: str = Field(min_length=1, max_length=4000)
+    question: str = Field(default="", max_length=2000)
+
+
+@router.post("/asr/correct")
+async def correct_transcript(
+    req: CorrectRequest, user: dict = Depends(get_current_user)
+) -> dict[str, str]:
+    """ASR 转写保守校对（P2-M13）：失败返回 502，前端保留原文、不打断面试。"""
+    try:
+        text = await transcript.correct_text(req.text, req.question)
+    except transcript.TranscriptError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"text": text}
 
 
 @router.post("/tts")
