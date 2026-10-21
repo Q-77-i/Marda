@@ -20,10 +20,8 @@ from app import db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
-from app.service import InterviewFinishedError, InterviewNotFoundError
-from app.tools import images
-from app.tools import recommend
-from app.tools import resumes
+from app.service import InterviewFinishedError, InterviewNotFoundError, Service
+from app.tools import images, recommend, resumes
 
 router = APIRouter(
     prefix="/api/interviews", tags=["interviews"], dependencies=[Depends(get_current_user)]
@@ -69,7 +67,7 @@ class MessageRequest(BaseModel):
 async def create_interview(
     req: CreateRequest, request: Request, user: dict = Depends(get_current_user)
 ):
-    service = request.app.state.service
+    service: Service = request.app.state.service
     interview_id = uuid.uuid4().hex
     db_path = get_settings().db_path
     # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
@@ -109,7 +107,7 @@ async def create_interview(
 async def send_message(
     interview_id: str, req: MessageRequest, request: Request, user: dict = Depends(get_current_user)
 ):
-    service = request.app.state.service
+    service: Service = request.app.state.service
     if not req.content.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
     try:
@@ -143,7 +141,7 @@ async def get_interview(
     reconnect: bool = False,
 ):
     """会话恢复数据（SPEC §7）。reconnect=true：答题中的场次附一句重连问候（P1-M4.7-D）。"""
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         return await service.get_session(interview_id, user["id"], reconnect=reconnect)
     except InterviewNotFoundError as exc:
@@ -154,7 +152,7 @@ async def get_interview(
 async def get_interview_report(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         row = await service.get_report(interview_id, user["id"])
     except InterviewNotFoundError as exc:  # 不存在与越权同为 404（不泄露存在性）
@@ -173,7 +171,7 @@ async def export_interview_report_pdf(
     每次现渲染、不落盘缓存——报告本身不可变，且渲染是纯 CPU 的确定性转换
     （阻塞主循环，故丢线程池）；LLM 那份 60s 的耗时预算属于报告生成，不在这一步。
     """
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         row = await service.get_report(interview_id, user["id"])
     except InterviewNotFoundError as exc:
@@ -202,7 +200,7 @@ async def get_interview_recommendations(
     行为面（P1-M11 D5）：推荐检索的是六大技术域，行为面场次没有可推的域——
     直接返回空分组，不做无效检索（前端也不渲染推荐卡）。
     """
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         row = await service.get_report(interview_id, user["id"])
     except InterviewNotFoundError as exc:
@@ -229,7 +227,7 @@ async def get_interview_trace(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
     """决策回放事件流（FR-21）：未结束的场次同样可查。"""
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         return await service.get_trace(interview_id, user["id"])
     except InterviewNotFoundError as exc:
@@ -238,7 +236,8 @@ async def get_interview_trace(
 
 @router.get("")
 async def list_interviews(request: Request, user: dict = Depends(get_current_user)):
-    return await request.app.state.service.list_interviews(user["id"])
+    service: Service = request.app.state.service
+    return await service.list_interviews(user["id"])
 
 
 @router.delete("/{interview_id}", status_code=204)
@@ -246,7 +245,7 @@ async def delete_interview(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
     """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。"""
-    service = request.app.state.service
+    service: Service = request.app.state.service
     try:
         await service.delete_interview(interview_id, user["id"])
     except InterviewNotFoundError as exc:

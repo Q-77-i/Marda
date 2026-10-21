@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Request
 
 from app.api.auth import get_current_user
+from app.service import Service
 
 router = APIRouter(prefix="/api/profile", tags=["profile"], dependencies=[Depends(get_current_user)])
 
@@ -21,4 +22,5 @@ async def get_profile(request: Request, user: dict = Depends(get_current_user)):
     没有场次时返回零态结构（不是 404）——「还没有数据」是正常状态，前端据 session_count
     渲染空态 + 引导，而不是当成错误。
     """
-    return await request.app.state.service.get_profile(user["id"])
+    service: Service = request.app.state.service
+    return await service.get_profile(user["id"])

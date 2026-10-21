@@ -260,11 +260,14 @@
   }
 }
 
-/* 深色左栏的细点阵纹理；只在固定栏上使用，不铺在滚动容器上。 */
+/*
+ * 深色左栏的细点阵纹理；只在固定栏上使用，不铺在滚动容器上。
+ * 定位与溢出交给使用方：AppRail 是 sticky，登录面板是 relative。
+ * 这里不能再写 position: relative / overflow: hidden——未分层 CSS 会盖掉
+ * Tailwind 的 sticky 与 overflow 工具类，左栏就会跟着页面滚走。
+ */
 .rail-texture {
-  position: relative;
   isolation: isolate;
-  overflow: hidden;
 }
 
 .rail-texture::before {
