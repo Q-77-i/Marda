@@ -56,3 +56,12 @@ export function latestQuestionText(
   }
   return null;
 }
+
+/** 刷新恢复的工作台面板（页面 URL ?panel=）。 */
+export type RoomPanel = "board" | "code";
+
+/** 从 `location.search` 读面板参数；未知值/缺省返回 null（停在面试间）。 */
+export function panelFromSearch(search: string): RoomPanel | null {
+  const value = new URLSearchParams(search).get("panel");
+  return value === "board" || value === "code" ? value : null;
+}

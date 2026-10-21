@@ -155,7 +155,7 @@ uv run python scripts/smoke_mcp.py            # MCP：stdio 子进程 + 真握�
 uv run python scripts/eval_retrieval_run.py   # 检索基线：四变体 × golden（需 Qdrant + 嵌入容器）
 uv run python scripts/eval_judge_gate.py      # 评分门禁：超阈值非零退出（改评分 prompt 后必跑）
 
-cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 326 个 + lint + 构建
+cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 333 个 + lint + 构建
 ```
 
 **离线评估不进 pytest 常规套件**（要真 Qdrant + 嵌入 + LLM，且门禁余量取自指标自身波动，会被上游抖动误伤）：检索侧出 NDCG / RAGAS 指标，评分侧出 σ̄（同题同答重复评 K 次的自波动）、MAE（vs 独立标注）与三档单调性。**先量噪声地板再读差值**——低于地板的「变化」不构成结论。命令与口径见 [SPEC §4.13](docs/SPEC.md)。

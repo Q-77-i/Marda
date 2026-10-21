@@ -831,7 +831,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 两个安置点里都是**两个等大的 tile**：面试官（monogram 人像框 + 状态徽标）与「我」（摄像头画面，关闭时同尺寸占位 + 「开启摄像头」入口——对等感不塌）。状态徽标由现有状态派生（`lib/interview-room.ts` 的 `interviewerChip`，vitest 钉优先级：已结束 > 播报 > 聆听 > 思考 > 回应 > 等待）——**不引入新会话状态、不新增后端字段**。
 
-- **摄像头 = UI 模拟**：**帧不上传、不落库、AI 不看**——全仓画面只有 `getUserMedia → video.srcObject` 一条路；**轨道收摊是单一出口 `stopStream`**（关闭 / 离开页面 / 面试结束三处共用，漏一处摄像头灯就常亮）；「我」tile 角标如实交代（「仅本机可见，不上传」）；**权限被拒 / 无设备 / 被占用按 DOMException 分流文案**（`lib/camera.ts` 的 `cameraErrorMessage`），失败**不改偏好**。默认关 + localStorage 记忆（`marda.cameraMode`），只读回放与已结束场次不恢复；取流约束用 ideal 不用 exact、`audio` 显式 false。
+- **摄像头 = UI 模拟**：**帧不上传、不落库、AI 不看**——全仓画面只有 `getUserMedia → video.srcObject` 一条路；**轨道收摊是单一出口 `stopStream`**（关闭 / 离开页面 / 面试结束三处共用，漏一处摄像头灯就常亮）；「我」tile 角标如实交代（「仅本机可见，不上传」）；**权限被拒 / 无设备 / 被占用按 DOMException 分流文案**（`lib/camera.ts` 的 `cameraErrorMessage`），失败**不改偏好**。**默认关；localStorage 只记住「上次开过」用于按钮提示（「恢复摄像头」），不在页面加载时自动取流**——Safari 无用户手势调用 `getUserMedia` 会每次弹权限框；只读回放与已结束场次不恢复；取流约束用 ideal 不用 exact、`audio` 显式 false。
 - **控制条**在输入区（语音作答 / 摄像头 / 附截图 ｜ 发送，激活态 = filled）；容器 `flex-wrap`，窄屏整组换行、不把按钮压变形。
 
 ### 9.4 设计系统与窄屏
@@ -845,6 +845,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 - **代码工作台**：右栏「状态 / 白板 / 代码」三 Tab 全部就绪；代码 Tab 与窄屏顶栏按钮打开全屏覆盖层（`CodeWorkbench`），与白板互斥、首次打开后保持挂载（**回放/已结束场次也可独立练习**，代码不写本场记录）。Monaco 懒加载、同源 `/monaco/vs`；左侧题面卡（标题 / 描述 / 示例 / 约束）+ 语言 + 编辑器，右侧点评面板（问题 / 具体反例 / 复杂度 / 面试官追问 + 追问输入）；代码改动后旧点评标「已过期」。**生产构建不含 Monaco 包体**（首开才加载静态资源）。
 - **表达复盘**：报告页在统计条之后渲染 `ExpressionCard`（语音时长 / 平均语速 / 长停顿 / 口头禅 + 限制说明），**不依赖 `hasScores`**；逐题复盘卡加一行「语音作答 / 语速 / 长停顿 / 口头禅（段数）」。PDF 用同一 payload 的「表达复盘」卡与逐题行。
+- **刷新恢复**：打开的工作台面板写页面 URL `?panel=code|board`；代码工作台快照（题目 / 语言 / 代码 / 点评 / 追问）与白板场景（Excalidraw `serializeAsJSON`）按场次存 localStorage，刷新后回到原工作台且内容还在。只读/已结束场次白板不开（它会提交消息），代码工作台可开；快照格式坏了整份丢弃、重新抽题，不炸工作台。
 
 ## 10. 测试与验收
 
@@ -862,7 +863,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（904 个，不需要任何密钥）· `cd frontend && pnpm test`（326 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（904 个，不需要任何密钥）· `cd frontend && pnpm test`（333 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。
 
@@ -898,6 +899,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-22 | 刷新体验补强 | §9.3 摄像头不在加载时自动取流；§9.5 工作台面板/代码快照/白板场景刷新恢复；§10 计数 |
 | 2026-10-21 | 多模态扩展（M13–M16） | §2 树补 coding / speech / 前端组件 · §3 调用点 10 个 · §4.1 State 补 `speech` / `current_speech` · §4.6 报告补逐题 `speech` 与顶层 `expression` · §7 messages 补 `speech`、新增 §7.5 代码工作台与 §7.6 表达复盘、§7.2 补白板结构点评 · §9.5 工作台与报告 UI · §10 计数与多模态验证 · §11 风险 19 |
 | 2026-10-21 | 界面重塑（P3-UI） | §9 前端设计：左栏工作台 / 面试间明暗双主题 / 题库三栏 / 设计令牌与共享件 / 窄屏导航；§9.1 页面要点同步 |
 | 2026-10-05 | 文档减负（第二轮）+ 交付后修 CI 红 | 全文精简（§1 重写为现状 + 读法 · 各节压掉过程叙述 · §12 改本索引）· **顺带修两处漏记**：§7 补私有题库三端点、§8 DDL 补 `questions.user_id`（隔离字段此前未写进 schema）· **§4.7 补「落盘必须是同步的」**（`durability="sync"`，修掉节点时间线的概率性） |

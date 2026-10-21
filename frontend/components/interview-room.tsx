@@ -68,12 +68,15 @@ export function CandidateTile({
   supported,
   starting,
   onToggle,
+  remembered = false,
   className,
 }: {
   stream: MediaStream | null;
   supported: boolean;
   starting: boolean;
   onToggle: () => void;
+  /** 上次开过摄像头：只把按钮文案改成「恢复摄像头」，不自动取流 */
+  remembered?: boolean;
   className?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -118,7 +121,7 @@ export function CandidateTile({
               disabled={starting}
               className="text-[9.5px] text-room-accent underline underline-offset-2 hover:text-room-ink disabled:opacity-50"
             >
-              {starting ? "连接中…" : "开启摄像头"}
+              {starting ? "连接中…" : remembered ? "恢复摄像头" : "开启摄像头"}
             </button>
           ) : (
             <span className="text-center text-[9px] leading-tight text-room-faint">
@@ -142,6 +145,7 @@ export function StageCard({
   supported,
   starting,
   onToggle,
+  remembered = false,
 }: {
   chip: string;
   speaking?: boolean;
@@ -149,6 +153,7 @@ export function StageCard({
   supported: boolean;
   starting: boolean;
   onToggle: () => void;
+  remembered?: boolean;
 }) {
   return (
     <div className="px-4 pt-3 md:px-6">
@@ -163,6 +168,7 @@ export function StageCard({
             supported={supported}
             starting={starting}
             onToggle={onToggle}
+            remembered={remembered}
             className="flex-1"
           />
         </div>

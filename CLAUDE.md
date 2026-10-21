@@ -79,6 +79,7 @@
 5. **白板点评的验收是手工探针**：评分门禁的 golden 是纯文字样本，只能证明「文字评分不回归」，证明不了「模型读了架构图」。真实探针 = 上传一张缺组件/连线的图，查 trace 的 judge comment 是否点名缺失项
 6. **FakeLLM 路由顺序**：「报告官」必须排在「评分官」之前——M14b 起报告 prompt 里会出现「评分官点评」，先匹配评分官会把报告调用误路由成评分 JSON
 7. **Chrome 155 的 `--use-file-for-fake-audio-capture` 在本机实测无声**（headless/headful 的 RMS 都是 0）：浏览器侧要机械验证语音链路，改用页面内覆写 `getUserMedia` + 同源 WAV → `MediaStreamDestination`，再经真实 AudioWorklet → ASR；探针证据在 `docs/private/m16-verify/`
+8. **刷新恢复与摄像头**：摄像头**不在页面加载时自动取流**——Safari 无手势 `getUserMedia` 会每次刷新弹权限；`marda.cameraMode` 只驱动「恢复摄像头」按钮提示。工作台面板写 URL `?panel=code|board`，代码快照与白板场景按场次存 localStorage（`parseSavedCodeWorkbench` / `parseWhiteboardScene`）；快照格式坏了整份丢弃、重新抽题，不炸工作台
 
 ## 开发纪律
 
