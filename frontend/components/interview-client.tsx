@@ -6,6 +6,7 @@ import {
   ImagePlus,
   Mic,
   Moon,
+  Pencil,
   ShieldCheck,
   Square,
   Sun,
@@ -19,7 +20,10 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { cn } from "cn";
 
 import { CandidateTile, InterviewerTile, StageCard } from "@/components/interview-room";
+import { InterviewWorkbench } from "@/components/interview-workbench";
 import { MessageBubble, type ChatItem } from "@/components/message-bubble";
+import { RoomTabs } from "@/components/room-tabs";
+import { VoiceWave, type VoiceWaveHandle } from "@/components/voice-wave";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -70,6 +74,9 @@ import {
   micDisabled,
   micErrorMessage,
 } from "@/lib/voice";
+import { micLabel, voiceWaveState } from "@/lib/voice-wave";
+import { latestQuestionText, type RoomTab } from "@/lib/room-tabs";
+import { boardSubmitText } from "@/lib/whiteboard";
 import {
   StreamBuffer,
   applyStreamAction,
@@ -111,9 +118,15 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [voiceMode, setVoiceMode] = useState(false);
   const [recording, setRecording] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  /* 已停止录音、正在等最终转写（P2-M13）：独立态，避免「结束录音」按钮一直挂着 */
+  const [transcribing, setTranscribing] = useState(false);
   /* 图片通道（P2-M6 FR-26）：选择的截图先压缩（预览即上传物），发送时上传拿 id 再发消息 */
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attaching, setAttaching] = useState(false);
+  /* 右栏 Tab（P2-M13）：状态 / 白板 / 代码；白板工作台首次打开后保持挂载，收起不丢画布 */
+  const [roomTab, setRoomTab] = useState<RoomTab>("status");
+  const [boardOpen, setBoardOpen] = useState(false);
+  const [boardMounted, setBoardMounted] = useState(false);
   /* 摄像头通道（P2-M7 FR-27）：默认关 + 记忆；画面只在本机，帧不上传、不落库、AI 不看 */
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraStarting, setCameraStarting] = useState(false);
@@ -143,6 +156,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
      闭包里的 state 是旧的，而 delta 到达时要按「此刻」的开关决定播不播 */
   const voiceModeRef = useRef(false);
   const recorderRef = useRef<AsrRecorder | null>(null);
+  const waveRef = useRef<VoiceWaveHandle>(null);
   const draftBaseRef = useRef(""); // 开录时的草稿：转写整体替换它之后那一段
   const ttsWarnedRef = useRef(false);
   const speakerRef = useRef<Speaker | null>(null);
@@ -489,19 +503,24 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     setNotice(null);
     draftBaseRef.current = draft;
     setConnecting(true);
+    setTranscribing(false);
     const recorder = new AsrRecorder({
+      /* 真实振幅 → 输入框左侧声波（P2-M13）：命令式写入，20Hz 不重渲染整页 */
+      onLevel: (level) => waveRef.current?.setLevel(level),
       onPartial: (text) => setDraft(mergeTranscript(draftBaseRef.current, text)),
       onFinal: (text) => {
         setDraft(mergeTranscript(draftBaseRef.current, text));
         if (!text.trim()) setNotice(EMPTY_TRANSCRIPT_HINT);
         recorderRef.current = null;
         setRecording(false);
+        setTranscribing(false);
         setConnecting(false);
       },
       onError: (message) => {
         setNotice(message);
         recorderRef.current = null;
         setRecording(false);
+        setTranscribing(false);
         setConnecting(false);
       },
     });
@@ -511,6 +530,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setRecording(true);
     } catch (err) {
       recorder.cancel();
+      setRecording(false);
+      setTranscribing(false);
       if (err instanceof UnauthorizedError) notifyUnauthorized();
       else setNotice(micErrorMessage(err));
     } finally {
@@ -521,9 +542,17 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const stopRecording = useCallback(async () => {
     const recorder = recorderRef.current;
     if (!recorder) return;
-    setConnecting(true); // 等末段转写回来（超时由客户端兜底）
-    await recorder.stop();
+    /* 停录后立刻进入「整理中」：按钮不能再写「结束录音」，
+       发送也要被挡住，等 final 把最后一段转写落框 */
+    setRecording(false);
     setConnecting(false);
+    setTranscribing(true);
+    try {
+      await recorder.stop();
+    } finally {
+      setTranscribing(false);
+      setConnecting(false);
+    }
   }, []);
 
   /* 附件镜像：卸载清理要读「此刻」的附件列表（卸载回调闭包里读不到 state） */
@@ -688,12 +717,15 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
    * 上传失败 → 错误提示 + 附件与草稿都保留（不静默丢图、不把没图的回答发出去）；
    * 上传成功但消息流失败/卡住 → 重试复用同一批 id（PendingTurn 带 images），不重复落盘。
    */
-  const sendWithAttachments = async (text: string, files: Attachment[]) => {
-    if (attaching) return;
+  const sendWithAttachments = async (
+    text: string,
+    files: Attachment[],
+  ): Promise<boolean> => {
+    if (attaching) return false;
     if (files.length === 0) {
       setDraft("");
       void submit(text, true, []);
-      return;
+      return true;
     }
     setAttaching(true);
     setError(null);
@@ -704,17 +736,21 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       setAttachments([]);
       setDraft("");
       void submit(text, true, ids);
+      return true;
     } catch (err) {
       // 401 由全局确认框接管；其余（超限/网络）给文案，附件保留可重试
       if (!(err instanceof UnauthorizedError)) {
         setError(err instanceof Error ? err.message : "图片上传失败，请重试");
       }
+      return false;
     } finally {
       setAttaching(false);
     }
   };
 
   const handleSend = () => {
+    // Enter 也会走到这里：录音/整理中不能把半截转写发出去（发送键禁用只是视觉层）
+    if (recording || transcribing) return;
     if (flushPending("上一轮的回答还没提交成功，已先为你重发；看到面试官回应后再发这条。")) {
       return;
     }
@@ -750,16 +786,54 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     busy,
   });
 
+  const currentQuestion = latestQuestionText(messages, true);
+  const waveState = voiceWaveState({ recording, connecting, transcribing });
+
+  /** 打开白板工作台：首次打开后保持挂载（收起不丢画布）；结束/只读场次不给开。 */
+  const openBoard = () => {
+    if (readonly || finished || loading) return;
+    setBoardMounted(true);
+    setBoardOpen(true);
+  };
+
+  /** 右栏切 Tab：切到白板即打开工作台（右侧 320px 放不下画布，画布在工作台里）。 */
+  const handleRoomTab = (tab: RoomTab) => {
+    setRoomTab(tab);
+    if (tab === "board") openBoard();
+  };
+
+  /**
+   * 白板提交：导出 PNG → 走既有图片通道上传 → 作为下一条回答的附件发送。
+   * 与截图完全同一条管线（后端零改动）；失败时保留工作台与画布，可重试。
+   */
+  const submitBoard = async (blob: Blob): Promise<boolean> => {
+    if (busy || loading || finished || readonly || attaching) return false;
+    if (
+      flushPending(
+        "上一轮的回答还没提交成功，已先为你重发；看到面试官回应后再提交白板。",
+      )
+    ) {
+      return false;
+    }
+    const file: Attachment = { blob, url: URL.createObjectURL(blob) };
+    const ok = await sendWithAttachments(boardSubmitText(draft), [file]);
+    if (!ok) URL.revokeObjectURL(file.url);
+    return ok;
+  };
+
   const phaseState = phaseSteps(phase);
-  const composerHint = connecting
-    ? "正在连接语音…"
-    : recording
-      ? "正在听你说，说完点「结束录音」"
-      : cameraStarting
-        ? "正在打开摄像头…"
-        : busy
-          ? "面试官正在回应…"
-          : "答案越具体，评分与点评越准确";
+  const composerHint =
+    waveState === "connecting"
+      ? "正在连接语音…"
+      : waveState === "recording"
+        ? "正在听你说，说完点「结束录音」"
+        : waveState === "transcribing"
+          ? "正在整理转写，稍等…"
+          : cameraStarting
+            ? "正在打开摄像头…"
+            : busy
+              ? "面试官正在回应…"
+              : "答案越具体，评分与点评越准确";
 
   return (
     <div
@@ -784,7 +858,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       </AlertDialog>
 
       {/* 左栏：会话、阶段、结束 */}
-      <aside className="hidden h-full min-h-0 flex-col overflow-y-auto border-r border-rail-line bg-rail text-rail-foreground xl:flex">
+      <aside className="hidden h-full min-h-0 flex-col overflow-y-auto border-r border-rail-line bg-rail text-rail-foreground [&>*]:shrink-0 xl:flex">
         <Link href="/" className="flex items-center gap-2.5 px-3.5 py-5">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary text-sm font-bold tracking-[-0.05em] text-primary-foreground">
             M
@@ -919,7 +993,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             <button
               type="button"
               onClick={handleEnd}
-              disabled={busy || finished || loading || recording}
+              disabled={busy || finished || loading || recording || transcribing}
               className="flex h-[38px] w-full items-center justify-center gap-2 rounded-lg border border-white/20 text-[12px] text-[#d7d9de] transition-colors hover:border-white/40 hover:bg-white/5 disabled:pointer-events-none disabled:opacity-45"
             >
               <Square className="size-3.5" strokeWidth={1.8} />
@@ -989,6 +1063,16 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                 <span className="hidden sm:inline">语音播报</span>
               </button>
             ) : null}
+            <button
+              type="button"
+              onClick={openBoard}
+              disabled={readonly || finished || loading}
+              title="打开白板"
+              className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink disabled:pointer-events-none disabled:opacity-45 xl:hidden"
+            >
+              <Pencil className="size-3.5" strokeWidth={1.8} />
+              <span className="hidden sm:inline">白板</span>
+            </button>
             {readonly ? (
               <Link
                 href={`/report/${interviewId}`}
@@ -1000,7 +1084,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
               <button
                 type="button"
                 onClick={handleEnd}
-                disabled={busy || finished || loading || recording}
+                disabled={busy || finished || loading || recording || transcribing}
                 className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink disabled:pointer-events-none disabled:opacity-45 xl:hidden"
               >
                 <Square className="size-3" strokeWidth={1.8} />
@@ -1150,13 +1234,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                     <div className="flex items-center gap-0.5">
                       <RoomTool
                         icon={Mic}
-                        label={
-                          recording
-                            ? "结束录音"
-                            : connecting
-                              ? "连接中…"
-                              : "语音作答"
-                        }
+                        label={micLabel(waveState)}
                         pressed={recording}
                         onClick={
                           recording
@@ -1166,6 +1244,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                         disabled={micDisabled({
                           recording,
                           connecting,
+                          transcribing,
                           supported: micSupported,
                           busy,
                           finished,
@@ -1176,6 +1255,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                             : "当前浏览器不支持录音，请用文字作答"
                         }
                       />
+                      <VoiceWave ref={waveRef} state={waveState} className="ml-1" />
                       <RoomTool
                         icon={Video}
                         label={cameraStarting ? "连接中…" : "摄像头"}
@@ -1228,7 +1308,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                           busy ||
                           loading ||
                           !draft.trim() ||
-                          blocksSubmit(recording)
+                          blocksSubmit(recording || transcribing)
                         }
                         className="inline-flex h-[30px] items-center gap-1.5 rounded-md bg-room-accent px-3 text-[11.5px] font-medium text-room-bg transition-colors hover:bg-room-accent/90 disabled:pointer-events-none disabled:opacity-45"
                       >
@@ -1252,7 +1332,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       </main>
 
       {/* 右栏：舞台、信号、答题提示 */}
-      <aside className="hidden min-h-0 flex-col gap-3 overflow-y-auto border-l border-room-line bg-room-bg p-4 xl:flex">
+      <aside className="hidden min-h-0 flex-col gap-3 overflow-y-auto border-l border-room-line bg-room-bg p-4 [&>*]:shrink-0 xl:flex">
         <div className="flex items-center justify-between gap-2 px-0.5">
           <span className="font-mono text-[8.5px] tracking-[0.14em] text-room-faint uppercase">
             Stage / live
@@ -1298,29 +1378,78 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         </div>
 
         <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
-          <div className="border-b border-room-line px-3 py-2 font-mono text-[8.5px] tracking-[0.12em] text-room-faint uppercase">
-            Session signals
+          <RoomTabs value={roomTab} onChange={handleRoomTab} />
+          <div
+            id="room-tab-panel"
+            role="tabpanel"
+            aria-labelledby={`room-tab-${roomTab}`}
+          >
+            {roomTab === "status" ? (
+              <>
+                {currentQuestion ? (
+                  <div className="border-b border-room-line px-3 py-2.5">
+                    <div className="font-mono text-[8px] tracking-[0.12em] text-room-faint uppercase">
+                      Current question
+                    </div>
+                    <p className="mt-1 line-clamp-3 text-[10.5px] leading-relaxed text-room-ink">
+                      {currentQuestion}
+                    </p>
+                  </div>
+                ) : null}
+                {[
+                  ["当前阶段", PHASE_LABELS[phase]],
+                  ["已答题目", `${answered} / ${total}`],
+                  ["语音播报", voiceMode ? "开启" : "关闭"],
+                  ["摄像头", cameraOn ? "开启" : "关闭"],
+                  ["本场状态", readonly ? "只读回放" : finished ? "生成报告" : "进行中"],
+                ].map(([label, value], index) => (
+                  <div
+                    key={label}
+                    className={cn(
+                      "flex items-center justify-between gap-2 px-3 py-2 text-[10.5px]",
+                      index > 0 && "border-t border-room-line",
+                    )}
+                  >
+                    <span className="text-room-muted">{label}</span>
+                    <b className="font-mono text-[9.5px] font-medium text-room-ink">
+                      {value}
+                    </b>
+                  </div>
+                ))}
+              </>
+            ) : roomTab === "board" ? (
+              <div className="px-3 py-3.5">
+                <div className="flex items-start gap-2.5">
+                  <span className="flex size-8 shrink-0 items-center justify-center rounded-md border border-room-line bg-room-panel-2 text-room-accent">
+                    <Pencil className="size-4" strokeWidth={1.7} />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-medium text-room-ink">架构图白板</p>
+                    <p className="mt-1 text-[10px] leading-relaxed text-room-muted">
+                      画完导出成图片，随下一条回答提交；面试官会结合图点评。
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={openBoard}
+                  disabled={readonly || finished || loading}
+                  className="mt-3 h-8 w-full rounded-md bg-room-accent text-[11px] font-medium text-room-bg transition-colors hover:bg-room-accent/90 disabled:pointer-events-none disabled:opacity-45"
+                >
+                  {boardOpen ? "回到白板" : "打开白板"}
+                </button>
+                {readonly || finished ? (
+                  <p className="mt-2 text-[9.5px] leading-relaxed text-room-faint">
+                    面试已结束，无法再提交白板。
+                  </p>
+                ) : null}
+              </div>
+            ) : (
+              <div className="px-3 py-4 text-[10.5px] leading-relaxed text-room-muted">
+                代码工作台将在下一步接入；本轮先做语音动效与白板。
+              </div>
+            )}
           </div>
-          {[
-            ["当前阶段", PHASE_LABELS[phase]],
-            ["已答题目", `${answered} / ${total}`],
-            ["语音播报", voiceMode ? "开启" : "关闭"],
-            ["摄像头", cameraOn ? "开启" : "关闭"],
-            ["本场状态", readonly ? "只读回放" : finished ? "生成报告" : "进行中"],
-          ].map(([label, value], index) => (
-            <div
-              key={label}
-              className={cn(
-                "flex items-center justify-between gap-2 px-3 py-2 text-[10.5px]",
-                index > 0 && "border-t border-room-line",
-              )}
-            >
-              <span className="text-room-muted">{label}</span>
-              <b className="font-mono text-[9.5px] font-medium text-room-ink">
-                {value}
-              </b>
-            </div>
-          ))}
         </div>
 
         <div className="overflow-hidden rounded-lg border border-room-line bg-room-panel">
@@ -1343,9 +1472,22 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         </div>
 
         <p className="px-0.5 text-[9.5px] leading-relaxed text-room-faint">
-          摄像头画面只在本机渲染，不上传、不落库，模型不会读取。截图会随回答提交，用于代码题判分。
+          摄像头画面只在本机渲染，不上传、不落库，模型不会读取。截图/白板会随回答提交，用于评分与追问。
         </p>
       </aside>
+
+      {boardMounted ? (
+        <InterviewWorkbench
+          open={boardOpen}
+          onClose={() => setBoardOpen(false)}
+          question={currentQuestion}
+          error={error}
+          notice={notice}
+          disabled={busy || loading || finished || readonly}
+          attaching={attaching}
+          onSubmit={submitBoard}
+        />
+      ) : null}
     </div>
   );
 }

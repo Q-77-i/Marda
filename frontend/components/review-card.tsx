@@ -58,7 +58,7 @@ export function ReviewCard({
               但要让用户看到「传过的图没有丢」；图本体在面试页回放里 */}
           {(item.image_count ?? 0) > 0 && (
             <p className="text-xs text-muted-foreground">
-              本题回答含 {item.image_count} 张截图
+              本题回答含 {item.image_count} 张图
             </p>
           )}
         </div>

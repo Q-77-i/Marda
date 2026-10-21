@@ -75,7 +75,7 @@ function Thumbnail({
       title="点击查看大图"
     >
       {/* eslint-disable-next-line @next/next/no-img-element -- 鉴权 blob 图，next/image 不适用 */}
-      <img src={url} alt="候选人上传的截图" className="max-h-32 w-auto" />
+      <img src={url} alt="候选人提交的图" className="max-h-32 w-auto" />
     </button>
   );
 }
@@ -105,7 +105,7 @@ export function MessageImages({
           {/* eslint-disable-next-line @next/next/no-img-element -- 同上 */}
           <img
             src={zoomed}
-            alt="候选人上传的截图（大图）"
+            alt="候选人提交的图（大图）"
             className="max-h-[90dvh] max-w-full rounded-lg shadow-lg"
           />
         </div>

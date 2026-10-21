@@ -90,13 +90,21 @@ export function mergeTranscript(base: string, transcript: string): string {
 export type VoiceUiState = {
   recording: boolean;
   connecting: boolean;
+  /** 已停止录音、正在等最终转写（此时既不能开新录音，也不能发送） */
+  transcribing?: boolean;
   supported: boolean;
   busy: boolean;
 };
 
-/** 录音键是否可点：面试官说话时（busy）不给开麦；不支持/连接中不给点。 */
+/** 录音键是否可点：面试官说话时（busy）不给开麦；不支持/连接中/整理中不给点。 */
 export function canStartRecording(state: VoiceUiState): boolean {
-  return state.supported && !state.recording && !state.connecting && !state.busy;
+  return (
+    state.supported &&
+    !state.recording &&
+    !state.connecting &&
+    !state.transcribing &&
+    !state.busy
+  );
 }
 
 /** 发送/结束面试是否该被录音挡住：录着音就发，会把「还没说完」的半截话发出去。 */
@@ -113,6 +121,7 @@ export function blocksSubmit(recording: boolean): boolean {
 export function micDisabled(state: VoiceUiState & { finished: boolean }): boolean {
   if (state.finished) return true;
   if (state.recording) return false; // 录音中永远可点（这就是「结束录音」）
+  if (state.transcribing) return true; // 整理中：等终稿落框，不能开新录音
   return !canStartRecording(state);
 }
 
