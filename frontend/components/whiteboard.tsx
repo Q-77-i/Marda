@@ -1,14 +1,22 @@
 "use client";
 
-import { Excalidraw, exportToBlob, getNonDeletedElements } from "@excalidraw/excalidraw";
+import {
+  Excalidraw,
+  exportToBlob,
+  getNonDeletedElements,
+  serializeAsJSON,
+} from "@excalidraw/excalidraw";
 import type {
   AppState,
   BinaryFiles,
   ExcalidrawImperativeAPI,
+  ExcalidrawInitialDataState,
 } from "@excalidraw/excalidraw/types";
 import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
 import "@excalidraw/excalidraw/index.css";
 import { useEffect, useMemo, useRef } from "react";
+
+import { parseWhiteboardScene } from "@/lib/whiteboard";
 
 /**
  * 白板画布（P2-M14）：Excalidraw 的最小封装。
@@ -34,14 +42,90 @@ export type WhiteboardHandle = {
 export function Whiteboard({
   onElementsChange,
   onReady,
+  storageKey,
 }: {
   onElementsChange: (count: number) => void;
   onReady?: (handle: WhiteboardHandle) => void;
+  /** 按场次保存的场景键（刷新恢复）；由工作台传 `marda.whiteboard.{interviewId}` */
+  storageKey: string;
 }) {
   const apiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const elementsRef = useRef<readonly ExcalidrawElement[]>([]);
   const appStateRef = useRef<AppState | null>(null);
   const filesRef = useRef<BinaryFiles>({});
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const saved = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return parseWhiteboardScene(window.localStorage.getItem(storageKey));
+    } catch {
+      return null;
+    }
+  }, [storageKey]);
+
+  /* 刷新恢复：Excalidraw 的 serializeAsJSON 是官方场景格式；500ms 防抖落 localStorage。
+     隐私模式/配额不足静默失败，画布照常可用。 */
+  const scheduleSave = (
+    elements: readonly ExcalidrawElement[],
+    appState: AppState,
+    files: BinaryFiles,
+  ) => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      try {
+        window.localStorage.setItem(
+          storageKey,
+          serializeAsJSON(elements, appState, files, "local"),
+        );
+      } catch {
+        // 存储不可用：只是刷新后不恢复
+      }
+    }, 500);
+  };
+
+  useEffect(() => {
+    const flush = () => {
+      try {
+        window.localStorage.setItem(
+          storageKey,
+          serializeAsJSON(
+            elementsRef.current,
+            appStateRef.current ?? {},
+            filesRef.current,
+            "local",
+          ),
+        );
+      } catch {
+        // 同上：恢复是增强，不阻塞白板
+      }
+    };
+    const onBeforeUnload = () => flush();
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      flush();
+    };
+  }, [storageKey]);
+
+  const initialData = useMemo<ExcalidrawInitialDataState>(
+    () =>
+      saved
+        ? {
+            elements: saved.elements as ExcalidrawInitialDataState["elements"],
+            appState: saved.appState as ExcalidrawInitialDataState["appState"],
+            files: saved.files as ExcalidrawInitialDataState["files"],
+          }
+        : {
+            appState: {
+              viewBackgroundColor: "#ffffff",
+              showWelcomeScreen: false,
+              theme: "light",
+            },
+          },
+    [saved],
+  );
 
   const handle = useMemo<WhiteboardHandle>(
     () => ({
@@ -79,13 +163,7 @@ export function Whiteboard({
         excalidrawAPI={(api) => {
           apiRef.current = api;
         }}
-        initialData={{
-          appState: {
-            viewBackgroundColor: "#ffffff",
-            showWelcomeScreen: false,
-            theme: "light",
-          },
-        }}
+        initialData={initialData}
         theme="light"
         langCode="zh-CN"
         autoFocus
@@ -94,6 +172,7 @@ export function Whiteboard({
           appStateRef.current = appState;
           filesRef.current = files;
           onElementsChange(getNonDeletedElements(elements).length);
+          scheduleSave(elements, appState, files);
         }}
         renderTopRightUI={() => null}
         UIOptions={{

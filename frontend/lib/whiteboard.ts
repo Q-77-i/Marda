@@ -18,3 +18,39 @@ export function boardSubmitText(draft: string): string {
   const text = draft.trim();
   return text || BOARD_DEFAULT_TEXT;
 }
+
+/** 白板场景快照（Excalidraw `serializeAsJSON` 产物的子集）；用于刷新恢复。 */
+export type SavedWhiteboardScene = {
+  elements: unknown[];
+  appState: Record<string, unknown>;
+  files: Record<string, unknown>;
+};
+
+/**
+ * 解析 localStorage 里的白板场景（纯函数，便于 vitest）。
+ * 格式坏/版本不对/没有 elements → 返回 null（画布按空白开始，不炸工作台）。
+ */
+export function parseWhiteboardScene(raw: string | null): SavedWhiteboardScene | null {
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw) as {
+      elements?: unknown;
+      appState?: unknown;
+      files?: unknown;
+    };
+    if (!Array.isArray(data.elements)) return null;
+    return {
+      elements: data.elements,
+      appState:
+        data.appState && typeof data.appState === "object"
+          ? (data.appState as Record<string, unknown>)
+          : {},
+      files:
+        data.files && typeof data.files === "object"
+          ? (data.files as Record<string, unknown>)
+          : {},
+    };
+  } catch {
+    return null;
+  }
+}

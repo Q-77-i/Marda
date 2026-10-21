@@ -36,6 +36,7 @@ export function InterviewWorkbench({
   disabled,
   attaching,
   onSubmit,
+  storageKey,
 }: {
   open: boolean;
   onClose: () => void;
@@ -45,6 +46,8 @@ export function InterviewWorkbench({
   disabled: boolean;
   attaching: boolean;
   onSubmit: (blob: Blob) => Promise<boolean>;
+  /** 白板场景按场次存 localStorage（刷新恢复） */
+  storageKey: string;
 }) {
   const [elementCount, setElementCount] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -122,7 +125,11 @@ export function InterviewWorkbench({
 
       <div className="min-h-0 flex-1 p-3">
         <div className="h-full min-h-[320px] overflow-hidden rounded-lg border border-room-line bg-white">
-          <Whiteboard onElementsChange={setElementCount} onReady={setBoard} />
+          <Whiteboard
+            onElementsChange={setElementCount}
+            onReady={setBoard}
+            storageKey={storageKey}
+          />
         </div>
       </div>
 

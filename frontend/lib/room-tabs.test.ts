@@ -4,6 +4,7 @@ import {
   ROOM_TABS,
   latestQuestionText,
   normalizeRoomTab,
+  panelFromSearch,
   roomTabLabel,
 } from "@/lib/room-tabs";
 
@@ -59,5 +60,15 @@ describe("当前题目", () => {
     ];
     expect(latestQuestionText(messages, true)).toBe("当前题目");
     expect(latestQuestionText(messages)).toBeNull();
+  });
+});
+
+describe("刷新恢复面板", () => {
+  it("只认 board / code，未知值回落面试间", () => {
+    expect(panelFromSearch("?panel=code")).toBe("code");
+    expect(panelFromSearch("?panel=board&x=1")).toBe("board");
+    expect(panelFromSearch("?panel=status")).toBeNull();
+    expect(panelFromSearch("?panel=")).toBeNull();
+    expect(panelFromSearch("")).toBeNull();
   });
 });

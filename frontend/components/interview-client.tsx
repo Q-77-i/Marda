@@ -80,7 +80,7 @@ import {
   micErrorMessage,
 } from "@/lib/voice";
 import { micLabel, voiceWaveState } from "@/lib/voice-wave";
-import { latestQuestionText, type RoomTab } from "@/lib/room-tabs";
+import { latestQuestionText, panelFromSearch, type RoomPanel, type RoomTab } from "@/lib/room-tabs";
 import { boardSubmitText } from "@/lib/whiteboard";
 import {
   StreamBuffer,
@@ -101,6 +101,15 @@ const createAssistant = (id: string, content: string): ChatItem => ({
 
 /** 待发送的截图（P2-M6）：压缩后的 blob（要上传的那个）与预览 objectURL。 */
 type Attachment = { blob: Blob; url: string };
+
+/** 把打开的工作台写进页面 URL（刷新恢复）；replaceState 不产生历史记录。 */
+function writePanelQuery(panel: RoomPanel | null) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  if (panel) url.searchParams.set("panel", panel);
+  else url.searchParams.delete("panel");
+  window.history.replaceState(null, "", url.toString());
+}
 
 export function InterviewClient({ interviewId }: { interviewId: string }) {
   const router = useRouter();
@@ -138,6 +147,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   /* 摄像头通道（P2-M7 FR-27）：默认关 + 记忆；画面只在本机，帧不上传、不落库、AI 不看 */
   const [cameraStream, setCameraStream] = useState<MediaStream | null>(null);
   const [cameraStarting, setCameraStarting] = useState(false);
+  /* 上次是否开过摄像头：只用于按钮文案「恢复摄像头」，**绝不自动取流** */
+  const [cameraRemembered, setCameraRemembered] = useState(false);
   /* 面试间舞台：面试官 tile 的「正在播报」徽标（TTS 状态回调驱动） */
   const [speakerSpeaking, setSpeakerSpeaking] = useState(false);
   /* 左栏会话信息：岗位来自会话快照；类型不回传，故只展示岗位与阶段 */
@@ -155,7 +166,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const cameraStreamRef = useRef<MediaStream | null>(null);
   const cameraStartingRef = useRef(false); // 连点防护：starting 期间第二次点击直接拦住
-  const cameraRestoreTriedRef = useRef(false); // 记忆的「开」每次进页面只自动恢复一次
+  const panelRestoredRef = useRef(false); // 刷新恢复工作台面板只试一次
   const nearBottomRef = useRef(true);
   const messagesRef = useRef<ChatItem[]>([]);
   const pendingRef = useRef<PendingTurn | null>(null);
@@ -249,8 +260,10 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
 
   const cameraOn = cameraStream !== null;
 
-  /** 记忆摄像头开关（localStorage；隐私模式等不可用时静默为「本次有效」）。 */
+  /** 记忆摄像头开关（localStorage；隐私模式等不可用时静默为「本次有效」）。
+   *  只驱动按钮提示（「恢复摄像头」），**不再触发自动取流**。 */
   const rememberCamera = (on: boolean) => {
+    setCameraRemembered(on);
     try {
       window.localStorage.setItem(CAMERA_MODE_KEY, on ? "1" : "0");
     } catch {
@@ -357,20 +370,35 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     }
   }, []);
 
-  /* 摄像头偏好（默认关 + 记忆，P2-M7 决策②）：若记住「开」则进面试页自动恢复
-     （浏览器已授权时无弹窗）；会话加载完成、且是进行中的场次才恢复；
-     只尝试一次——重同步（reconcile）与重渲染都不再触发 */
+  /* 摄像头偏好（P2-M7）：只读「上次是否开过」用于按钮提示（「恢复摄像头」），
+     **不自动调 getUserMedia**——Safari 在页面加载时无用户手势取流会重新弹权限框，
+     之前授权过也照弹。用户点击摄像头按钮后再取流，权限框只在主动操作时出现。 */
   useEffect(() => {
-    if (loading || readonly || reportReady || error || cameraRestoreTriedRef.current) return;
-    cameraRestoreTriedRef.current = true;
-    let remembered = false;
     try {
-      remembered = window.localStorage.getItem(CAMERA_MODE_KEY) === "1";
+      setCameraRemembered(window.localStorage.getItem(CAMERA_MODE_KEY) === "1");
     } catch {
-      remembered = false;
+      setCameraRemembered(false);
     }
-    if (remembered) void startCamera();
-  }, [loading, readonly, reportReady, error, startCamera]);
+  }, []);
+
+  /* 刷新恢复：打开中的工作台写在 URL ?panel=；会话加载完成后再开。
+     白板在只读/已结束场次不能开（它会提交消息）；代码工作台可以。 */
+  useEffect(() => {
+    if (loading || error || panelRestoredRef.current) return;
+    panelRestoredRef.current = true;
+    const panel = panelFromSearch(window.location.search);
+    if (panel === "code") {
+      setRoomTab("code");
+      setCodeMounted(true);
+      setCodeOpen(true);
+    } else if (panel === "board" && !readonly && !reportReady) {
+      setRoomTab("board");
+      setBoardMounted(true);
+      setBoardOpen(true);
+    } else if (panel === "board") {
+      writePanelQuery(null);
+    }
+  }, [loading, error, readonly, reportReady]);
 
   /* 面试结束（报告就绪）或只读回放：摄像头必须真的关掉，不只是藏起来 */
   useEffect(() => {
@@ -885,16 +913,20 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const openBoard = () => {
     if (readonly || finished || loading) return;
     setCodeOpen(false);
+    setRoomTab("board");
     setBoardMounted(true);
     setBoardOpen(true);
+    writePanelQuery("board");
   };
 
   /** 打开代码工作台（M15）：独立练习，**只读回放也允许**（不发消息、不写本场记录）。 */
   const openCode = () => {
     if (loading) return;
     setBoardOpen(false);
+    setRoomTab("code");
     setCodeMounted(true);
     setCodeOpen(true);
+    writePanelQuery("code");
   };
 
   /** 右栏切 Tab：白板/代码都打开各自的工作台（右侧 320px 放不下画布/编辑器）。 */
@@ -1215,6 +1247,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             supported={cameraSupported}
             starting={cameraStarting}
             onToggle={toggleCamera}
+            remembered={cameraRemembered}
           />
         </div>
 
@@ -1379,7 +1412,13 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                       <VoiceWave ref={waveRef} state={waveState} className="ml-1" />
                       <RoomTool
                         icon={Video}
-                        label={cameraStarting ? "连接中…" : "摄像头"}
+                        label={
+                          cameraStarting
+                            ? "连接中…"
+                            : cameraRemembered && !cameraOn
+                              ? "恢复摄像头"
+                              : "摄像头"
+                        }
                         pressed={cameraOn}
                         onClick={toggleCamera}
                         disabled={
@@ -1487,6 +1526,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             supported={cameraSupported}
             starting={cameraStarting}
             onToggle={toggleCamera}
+            remembered={cameraRemembered}
             className="rounded-none border-0"
           />
           <div className="flex items-center justify-between border-t border-room-line px-2.5 py-2 font-mono text-[8px] text-room-muted">
@@ -1623,18 +1663,29 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       {boardMounted ? (
         <InterviewWorkbench
           open={boardOpen}
-          onClose={() => setBoardOpen(false)}
+          onClose={() => {
+            setBoardOpen(false);
+            writePanelQuery(null);
+          }}
           question={currentQuestion}
           error={error}
           notice={notice}
           disabled={busy || loading || finished || readonly}
           attaching={attaching}
           onSubmit={submitBoard}
+          storageKey={`marda.whiteboard.${interviewId}`}
         />
       ) : null}
 
       {codeMounted ? (
-        <CodeWorkbench open={codeOpen} onClose={() => setCodeOpen(false)} />
+        <CodeWorkbench
+          open={codeOpen}
+          onClose={() => {
+            setCodeOpen(false);
+            writePanelQuery(null);
+          }}
+          storageKey={`marda.coding.${interviewId}`}
+        />
       ) : null}
     </div>
   );

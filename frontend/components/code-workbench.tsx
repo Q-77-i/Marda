@@ -10,7 +10,7 @@ import {
   Send,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { cn } from "cn";
 
 import {
@@ -27,8 +27,10 @@ import {
   reviewBody,
   severityLabel,
   starterCode,
+  parseSavedCodeWorkbench,
   type CodingLanguage,
   type CodingTurn,
+  type SavedCodeWorkbench,
 } from "@/lib/coding";
 import {
   getRandomCodingQuestion,
@@ -57,21 +59,63 @@ const CodeEditor = dynamic(
  * 独立于面试状态机：自己抽题、自己点评、不读写 interview。首次打开后保持挂载
  * （open=false 只是 hidden），收起再打开不丢代码与点评。
  */
-export function CodeWorkbench({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const [question, setQuestion] = useState<CodingQuestion | null>(null);
+export function CodeWorkbench({
+  open,
+  onClose,
+  storageKey,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** 按场次保存的快照键（刷新恢复）；由面试间传 `marda.coding.{interviewId}` */
+  storageKey: string;
+}) {
+  const saved = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    try {
+      return parseSavedCodeWorkbench(window.localStorage.getItem(storageKey));
+    } catch {
+      return null;
+    }
+  }, [storageKey]);
+
+  const [question, setQuestion] = useState<CodingQuestion | null>(saved?.question ?? null);
   const [loadingQuestion, setLoadingQuestion] = useState(false);
   const [questionError, setQuestionError] = useState<string | null>(null);
-  const [language, setLanguage] = useState<CodingLanguage>("python");
-  const [code, setCode] = useState(() => starterCode("python"));
-  const [review, setReview] = useState<CodeReview | null>(null);
-  const [reviewedCode, setReviewedCode] = useState<string | null>(null);
+  const [language, setLanguage] = useState<CodingLanguage>(saved?.language ?? "python");
+  const [code, setCode] = useState(saved?.code ?? starterCode(saved?.language ?? "python"));
+  const [review, setReview] = useState<CodeReview | null>(saved?.review ?? null);
+  const [reviewedCode, setReviewedCode] = useState<string | null>(saved?.reviewedCode ?? null);
   const [reviewing, setReviewing] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
-  const [turns, setTurns] = useState<CodingTurn[]>([]);
-  const [followupDraft, setFollowupDraft] = useState("");
+  const [turns, setTurns] = useState<CodingTurn[]>(saved?.turns ?? []);
+  const [followupDraft, setFollowupDraft] = useState(saved?.followupDraft ?? "");
   const [sendingFollowup, setSendingFollowup] = useState(false);
   const [followupError, setFollowupError] = useState<string | null>(null);
   const loadingRef = useRef(false);
+
+  /* 刷新恢复：代码 / 点评 / 追问 / 当前题目都按场次落 localStorage。
+     300ms 防抖；隐私模式或配额不足时静默失败，工作台照常可用。 */
+  useEffect(() => {
+    if (!question) return;
+    const timer = setTimeout(() => {
+      try {
+        const snapshot: SavedCodeWorkbench = {
+          version: 1,
+          question,
+          language,
+          code,
+          review,
+          reviewedCode,
+          turns,
+          followupDraft,
+        };
+        window.localStorage.setItem(storageKey, JSON.stringify(snapshot));
+      } catch {
+        // 存储不可用：只是刷新后不恢复
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [storageKey, question, language, code, review, reviewedCode, turns, followupDraft]);
 
   const loadQuestion = useCallback(async (lang: CodingLanguage) => {
     if (loadingRef.current) return;

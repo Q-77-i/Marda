@@ -11,6 +11,7 @@ import {
   followupBody,
   isReviewStale,
   lineLabel,
+  parseSavedCodeWorkbench,
   reviewBody,
   severityLabel,
   starterCode,
@@ -100,5 +101,95 @@ describe("点评展示", () => {
     expect(isReviewStale(null, "x = 1")).toBe(false);
     expect(isReviewStale("x = 1", "x = 1")).toBe(false);
     expect(isReviewStale("x = 1", "x = 2")).toBe(true);
+  });
+});
+
+describe("代码工作台刷新快照", () => {
+  const question = {
+    question_id: "q_346abeed8c62",
+    text: "反转链表",
+    description: "给定单链表，反转并返回新头节点。",
+    examples: ["输入：1 -> 2\n输出：2 -> 1"],
+    constraints: "节点数 0-5000。",
+    topic: "手撕算法",
+    difficulty: "L1",
+    domain: "algorithms",
+  };
+  const review = {
+    issues: [],
+    edge_cases: [{ input: "head=[]", expected: "None", note: "" }],
+    complexity: { time: "O(n)", space: "O(1)", correct: true, note: "" },
+    follow_up: "空链表怎么处理？",
+  };
+
+  it("完整快照原样恢复", () => {
+    const parsed = parseSavedCodeWorkbench(JSON.stringify({
+      version: 1,
+      question,
+      language: "java",
+      code: "class Solution {}",
+      review,
+      reviewedCode: "class Solution {}",
+      turns: [{ role: "user", content: "为什么？" }, { role: "assistant", content: "看边界" }],
+      followupDraft: "继续",
+    }));
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.question.text).toBe("反转链表");
+    expect(parsed?.language).toBe("java");
+    expect(parsed?.code).toBe("class Solution {}");
+    expect(parsed?.review?.follow_up).toBe("空链表怎么处理？");
+    expect(parsed?.turns).toHaveLength(2);
+    expect(parsed?.followupDraft).toBe("继续");
+  });
+
+  it("旧快照缺题面字段时归一为空，仍可恢复代码", () => {
+    const parsed = parseSavedCodeWorkbench(JSON.stringify({
+      version: 1,
+      question: { question_id: "q_346abeed8c62", text: "反转链表" },
+      language: "ruby",
+      code: "x = 1",
+      review: null,
+      reviewedCode: null,
+      turns: [],
+    }));
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.question.description).toBe("");
+    expect(parsed?.question.examples).toEqual([]);
+    expect(parsed?.question.constraints).toBe("");
+    expect(parsed?.language).toBe("python"); // 未知语言回落
+    expect(parsed?.code).toBe("x = 1");
+  });
+
+  it("坏 JSON / 版本不符 / 缺关键字段整份丢弃", () => {
+    expect(parseSavedCodeWorkbench(null)).toBeNull();
+    expect(parseSavedCodeWorkbench("not-json")).toBeNull();
+    expect(parseSavedCodeWorkbench(JSON.stringify({ version: 2 }))).toBeNull();
+    expect(parseSavedCodeWorkbench(JSON.stringify({
+      version: 1, question: { question_id: "q", text: "t" }, code: 1, turns: [],
+    }))).toBeNull();
+    expect(parseSavedCodeWorkbench(JSON.stringify({
+      version: 1, question: { question_id: "q", text: "t" }, code: "x", turns: "bad",
+    }))).toBeNull();
+  });
+
+  it("坏点评丢弃但代码保留；坏对话项被过滤", () => {
+    const parsed = parseSavedCodeWorkbench(JSON.stringify({
+      version: 1,
+      question,
+      language: "python",
+      code: "x = 1",
+      review: { broken: true },
+      reviewedCode: "old",
+      turns: [{ role: "user", content: "ok" }, { role: "system", content: "drop" }, null],
+      followupDraft: 42,
+    }));
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.review).toBeNull();
+    expect(parsed?.code).toBe("x = 1");
+    expect(parsed?.turns).toEqual([{ role: "user", content: "ok" }]);
+    expect(parsed?.followupDraft).toBe("");
   });
 });
