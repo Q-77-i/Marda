@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseChineseVoice } from "@/lib/tts";
+import { chooseChineseVoice, takeFirstSentence } from "@/lib/tts";
+
+describe("首句切分（TTS 提前合成）", () => {
+  it("在标点处切出首句，保留剩余", () => {
+    expect(
+      takeFirstSentence("你提到的对抗性用例很扎实，但我想听听另一面：如果重做"),
+    ).toEqual({
+      sentence: "你提到的对抗性用例很扎实，但我想听听另一面：",
+      rest: "如果重做",
+    });
+  });
+
+  it("短句并到下一句，避免为碎片单独请求 TTS", () => {
+    const result = takeFirstSentence("好。这一句足够长。");
+    expect(result?.sentence).toBe("好。这一句足够长。");
+  });
+
+  it("没有完整句子返回 null（继续攒）", () => {
+    expect(takeFirstSentence("还没有说完")).toBeNull();
+    expect(takeFirstSentence("好。")).toBeNull();
+  });
+});
 
 describe("浏览器语音降级", () => {
   it("优先 zh-CN", () => {

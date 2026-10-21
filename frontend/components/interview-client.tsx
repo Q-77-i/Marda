@@ -613,12 +613,19 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const degradedBadge = degradedNotice(degraded);
 
   const handlers: SSEHandlers = {
-    // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算
-    delta_start: () => applyAction(streamBuf.start()),
-    delta_chunk: ({ text }) => applyAction(streamBuf.chunk(text)),
+    // 流式三件套（P2-M4）：start 开气泡 → chunk 追加 → delta 用终稿结算。
+    // 语音播报同时吃这条流：首句一到标点就开始 TTS（P2-M13 优化），不等 final。
+    delta_start: () => {
+      if (voiceModeRef.current) speakerRef.current?.begin();
+      applyAction(streamBuf.start());
+    },
+    delta_chunk: ({ text }) => {
+      if (voiceModeRef.current) speakerRef.current?.push(text);
+      applyAction(streamBuf.chunk(text));
+    },
     delta: ({ text }) => {
+      if (voiceModeRef.current) speakerRef.current?.finish(text);
       applyAction(streamBuf.delta(text));
-      speak(text);
     },
     question: (q) => {
       // 出题节点同一更新内先发 delta 再发 question → 挂到最后一条面试官消息上
