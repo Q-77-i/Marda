@@ -81,6 +81,8 @@ export class Speaker {
   constructor(
     private readonly onError?: (message: string) => void,
     private readonly onSpeakingChange?: (speaking: boolean) => void,
+    /** edge-tts 失败、浏览器系统音接上时提示一次（系统音音色差，不能静默切换） */
+    private readonly onFallback?: () => void,
   ) {}
 
   /** 正在播报？（页面据此决定是否让位：开始录音时先停播） */
@@ -199,21 +201,13 @@ export class Speaker {
       return;
     }
     if (!audio) {
-      // 第一档失败 → 浏览器第二档（失败则提示一次，跳过该段）
-      const item: SpeechSegment = { text, audio: null };
-      this.current = item;
-      void this.prepareNext();
-      const spoken = await this.speakWithBrowser(text);
-      if (generation !== this.generation) return;
-      if (this.current === item) this.current = null;
-      if (!spoken) this.onError?.("语音播报失败");
-      this.pump();
+      await this.fallbackBrowser(text, generation);
       return;
     }
     this.playAudio(text, audio);
   }
 
-  private playAudio(text: string, audio: HTMLAudioElement): void {
+  private playAudio(text: string, audio: HTMLAudioElement, retried = false): void {
     const item: SpeechSegment = { text, audio };
     this.current = item;
     audio.onended = () => {
@@ -224,10 +218,7 @@ export class Speaker {
     audio.onerror = () => {
       if (this.current !== item) return;
       this.finishCurrent(item);
-      void this.speakWithBrowser(text).then((spoken) => {
-        if (!spoken) this.onError?.("语音播报失败");
-        this.pump();
-      });
+      void this.recoverSegment(text, retried);
     };
     void audio
       .play()
@@ -239,11 +230,35 @@ export class Speaker {
       .catch(() => {
         if (this.current !== item) return;
         this.finishCurrent(item);
-        void this.speakWithBrowser(text).then((spoken) => {
-          if (!spoken) this.onError?.("语音播报失败");
-          this.pump();
-        });
+        void this.recoverSegment(text, retried);
       });
+  }
+
+  /** 播放失败先换一张新票据重试一次（API 重启/票据过期/预加载吃票），再降级系统音。 */
+  private async recoverSegment(text: string, retried: boolean): Promise<void> {
+    const generation = this.generation;
+    if (!retried) {
+      const audio = await this.createAudio(text);
+      if (generation === this.generation && !this.current && audio) {
+        this.playAudio(text, audio, true);
+        return;
+      }
+      if (audio) this.disposeAudio(audio);
+    }
+    await this.fallbackBrowser(text, generation);
+  }
+
+  private async fallbackBrowser(text: string, generation: number): Promise<void> {
+    if (generation !== this.generation || this.current) return;
+    const item: SpeechSegment = { text, audio: null };
+    this.current = item;
+    void this.prepareNext();
+    const spoken = await this.speakWithBrowser(text);
+    if (generation !== this.generation) return;
+    if (this.current === item) this.current = null;
+    if (!spoken) this.onError?.("语音播报失败");
+    else this.onFallback?.();
+    this.pump();
   }
 
   private finishCurrent(item: SpeechSegment): void {

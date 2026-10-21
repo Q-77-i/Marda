@@ -118,10 +118,10 @@ async def create_tts_ticket(
 
 @router.get("/tts/stream/{ticket}")
 async def stream_speech(ticket: str) -> StreamingResponse:
-    """票据 → 流式 MP3：浏览器 `<audio>` 边收边播，去掉「整段下载完再播」的等待。"""
+    """票据 → 流式 MP3：`<audio>` 的预加载与播放可能各请求一次，故 TTL 内可重复使用。"""
     now = time.time()
     _prune_tts_tickets(now)
-    item = _TTS_TICKETS.pop(ticket, None)
+    item = _TTS_TICKETS.get(ticket)
     if item is None:
         raise HTTPException(status_code=404, detail="语音播报链接已失效，请重试")
     text, expires = item

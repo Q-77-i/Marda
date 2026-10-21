@@ -165,6 +165,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const waveRef = useRef<VoiceWaveHandle>(null);
   const draftBaseRef = useRef(""); // 开录时的草稿：转写整体替换它之后那一段
   const ttsWarnedRef = useRef(false);
+  const fallbackWarnedRef = useRef(false);
   const speakerRef = useRef<Speaker | null>(null);
   if (speakerRef.current === null) {
     speakerRef.current = new Speaker(
@@ -176,6 +177,12 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       },
       // 面试官 tile 的「正在播报」徽标（P2-M7 舞台）：回调只在真的起变化时触发
       setSpeakerSpeaking,
+      () => {
+        // 系统音音色明显差：降级发生时明确提示，不静默切换
+        if (fallbackWarnedRef.current) return;
+        fallbackWarnedRef.current = true;
+        setNotice("语音合成异常，已临时切换系统语音；题目以文字为准。");
+      },
     );
   }
 

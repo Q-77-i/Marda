@@ -153,18 +153,23 @@ async def test_tts_未登录_401(install_tts, anon_client):
     assert r.status_code == 401
 
 
-async def test_tts_ticket_流式播放_单次有效(install_tts, client):
+async def test_tts_ticket_流式播放_TTL内可重复请求(install_tts, client):
+    """<audio> 预加载与播放可能各请求一次；单次票据会让第二次 404（实测回归）。"""
     r = await client.post("/api/tts/ticket", json={"text": " 你好 "})
     assert r.status_code == 200
     ticket = r.json()["ticket"]
 
-    stream = await client.get(f"/api/tts/stream/{ticket}")
-    assert stream.status_code == 200
-    assert stream.headers["content-type"] == "audio/mpeg"
-    assert stream.content == b"ID3\x01\x02\x03"
+    first = await client.get(f"/api/tts/stream/{ticket}")
+    assert first.status_code == 200
+    assert first.headers["content-type"] == "audio/mpeg"
+    assert first.content == b"ID3\x01\x02\x03"
 
-    again = await client.get(f"/api/tts/stream/{ticket}")
-    assert again.status_code == 404
+    second = await client.get(f"/api/tts/stream/{ticket}")
+    assert second.status_code == 200
+    assert second.content == b"ID3\x01\x02\x03"
+
+    unknown = await client.get("/api/tts/stream/not-a-ticket")
+    assert unknown.status_code == 404
 
 
 async def test_tts_ticket_未登录_401(anon_client):
