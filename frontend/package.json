@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --turbopack",
-    "build": "next build --turbopack",
+    "dev": "node scripts/copy-excalidraw-assets.mjs && next dev --turbopack",
+    "build": "node scripts/copy-excalidraw-assets.mjs && next build --turbopack",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
+    "@excalidraw/excalidraw": "0.18.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cn": "^0.3.0",

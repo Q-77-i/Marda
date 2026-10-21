@@ -18,6 +18,7 @@ import {
   floatToPcm16,
   pcmBytes,
 } from "@/lib/voice";
+import { rms, voiceLevel } from "@/lib/voice-wave";
 
 /** 停止后等 final 的上限（与后端 finish 超时同量级）：超时用最后一段 partial 收尾。 */
 const FINAL_TIMEOUT_MS = 8000;
@@ -27,6 +28,11 @@ export type AsrHandlers = {
   onPartial: (text: string) => void;
   onFinal: (text: string) => void;
   onError: (message: string) => void;
+  /**
+   * 实时振幅（0..1，约 20Hz）：驱动输入框左侧的声波指示器（P2-M13）。
+   * 用 AnalyserNode 读取，和 ASR 切片逻辑解耦；不传则完全不建这个节点。
+   */
+  onLevel?: (level: number) => void;
 };
 
 export class AsrRecorder {
@@ -34,6 +40,8 @@ export class AsrRecorder {
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
   private node: AudioWorkletNode | null = null;
+  private analyser: AnalyserNode | null = null;
+  private levelTimer: ReturnType<typeof setInterval> | null = null;
   private pending: Uint8Array[] = []; // WS 建连期间攒下的片（连上就补发，不丢开头）
   private tail: number[] = []; // 不足一片的余量样本（跨 buffer 续接）
   private lastPartial = "";
@@ -94,6 +102,24 @@ export class AsrRecorder {
     const source = context.createMediaStreamSource(this.stream as MediaStream);
     source.connect(node);
     // 不接 destination：避免自己的声音被回放出去（回声/啸叫）
+
+    // 声波指示器（P2-M13）：并行接一个 AnalyserNode，20Hz 读 RMS。
+    // 与 pushAudio 的 100ms 切片解耦——转写走一条路，动效走另一条路，互不影响。
+    if (this.handlers.onLevel) {
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.6;
+      this.analyser = analyser;
+      source.connect(analyser);
+      const buffer = new Float32Array(analyser.fftSize);
+      this.levelTimer = setInterval(() => {
+        const current = this.analyser;
+        if (!current) return;
+        current.getFloatTimeDomainData(buffer);
+        // 平方根压缩 + 噪声地板：正常说话就能撑起柱条，安静房间不抖
+        this.handlers.onLevel?.(voiceLevel(rms(buffer)));
+      }, 50);
+    }
   }
 
   /** 采集到的 Float32（设备采样率）→ 16k → 攒满一片就发。 */
@@ -174,6 +200,12 @@ export class AsrRecorder {
 
   /** 收摊：麦克风轨道、AudioContext、WS 一个都不留（不关轨道浏览器会一直显示录音中）。 */
   private async teardown(): Promise<void> {
+    if (this.levelTimer) {
+      clearInterval(this.levelTimer);
+      this.levelTimer = null;
+    }
+    this.analyser?.disconnect();
+    this.analyser = null;
     this.node?.port.close();
     this.node = null;
     this.stream?.getTracks().forEach((track) => track.stop());

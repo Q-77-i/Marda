@@ -91,9 +91,15 @@ describe("按钮与文案", () => {
     expect(canStartRecording({ ...base, supported: false })).toBe(false);
   });
 
-  it("录音期间挡发送（半截话不该发出去）", () => {
+  it("录音/整理期间挡发送（半截话不该发出去）", () => {
     expect(blocksSubmit(true)).toBe(true);
     expect(blocksSubmit(false)).toBe(false);
+  });
+
+  it("转写整理中：不能开新录音、录音键禁用", () => {
+    const idle = { recording: false, connecting: false, supported: true, busy: false };
+    expect(canStartRecording({ ...idle, transcribing: true })).toBe(false);
+    expect(micDisabled({ ...idle, transcribing: true, finished: false })).toBe(true);
   });
 
   it("录音键禁用判据：**录音中永远可点**（否则用户按不停、录音收不了尾）", () => {

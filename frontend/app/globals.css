@@ -285,6 +285,13 @@
   mask-image: linear-gradient(to bottom, #000, transparent 70%);
 }
 
+/* 白板工作台：极简模式——只隐藏 Excalidraw 主菜单入口。
+   不要在 CSS 里隐藏侧栏：Excalidraw 仍按侧栏宽度给画布留了不可交互的左区，
+   隐藏了反而形成“看不见的死区”。侧栏交给 Excalidraw 自己开合。 */
+.whiteboard-shell .main-menu-trigger {
+  display: none;
+}
+
 /* 面试官播报波形：只在 TTS 真播报时出现，减少动效偏好下由全局兜底停住。 */
 @keyframes room-wave {
   0%,
