@@ -22,6 +22,8 @@
 
 四条输入通道共用同一套引擎：文字 · **语音**（豆包流式识别 + edge-tts 播报，转写可改再发）· **截图**（评分官看图）· **摄像头**（UI 模拟，**帧不上传、不落库、AI 不看**）。面试页即**面试间**：左阶段栏 / 中对话时间线 / 右面试官与候选人舞台；亮场默认、可切暗场，状态徽标全部由现有状态派生——**多模态只是新增通道，图 / 状态机 / 落库 / SSE 事件表一条未动**。
 
+右栏另有两个独立工作台：**白板**（Excalidraw 导出 PNG 走图片通道，评分官会指出架构图缺失的组件/连线）与**代码工作台**（Monaco + 题库算法题 + 结构化点评与追问，独立于面试状态机，v1 不打分、不执行、不落库）。报告新增**表达复盘**：语速 / 长停顿（≥2s）/ 口头禅 / 每题语音时长，全部来自现有 ASR，不做面部。
+
 ![报告：五维能力雷达 + 短板域；未评分不产 0 分](docs/assets/report-charts.png)
 
 ![能力档案：五维雷达 / 总分曲线 / 知识域热力图 / 短板变化](docs/assets/profile.png)
@@ -34,6 +36,7 @@
 - **RAG 是 Agent 的一个工具**：出题走「题库检索 → 难度放宽 → LLM 生成」三级降级；混合检索 = dense + sparse 服务端 RRF + rerank，**rerank 按查询形态开关**（多漏点长查询实测净贡献为负即不用，短查询保留）。语料 1568 题、一题可多源、来源四要素带 license。→ [SPEC §5](docs/SPEC.md)
 - **质量是量出来的，不是感觉出来的**：检索侧四变体离线基线（NDCG / RAGAS，**噪声地板先量后用**）；评分侧自研一致性 harness + **门禁**（σ̄ / MAE 阈值，超限非零退出）。→ [SPEC §4.13](docs/SPEC.md)
 - **全过程可回放**：决策回放事件流（出题 / 评分 / 追问 / 换题的决策与原因）+ 节点时间线（**零写入**派生自 checkpoint 历史，补上决策事件里没有的节点）；一次面试 = Langfuse 一个 trace，成本按场次读回。→ [SPEC §4.7](docs/SPEC.md)
+- **多模态不止语音**：白板结构点评（评分官对架构图指出缺失组件/连线，评语进报告）、代码工作台（Monaco + 题库算法题 + 结构化 Code Review + 追问，**独立于状态机**）、表达复盘（语速/停顿/口头禅/每题时长，纯代码统计、无面部）。三个功能都只加通道与展示，不改面试状态机与评分 schema。→ [SPEC §7.5](docs/SPEC.md)
 - **断了也能用**：并发闸门 + 熔断 + 降级链——上游不可用时开场 / 出题 / 评分 / 报告全部走确定性兜底（**不调 LLM**），面试照常走完并**如实标注**；**未评分不产 0 分**，能力档案排除并说明。只降级「重试治不好」的失败，内容类错误仍走用户重试。→ [SPEC §3](docs/SPEC.md)
 - **语料合规是红线**：开源语料白名单 + 每条带 `source/license/url`；个人题库与私有上传只本地使用，**派生文本同样不入 git**——提交前跑 `check_redline.py` 机械反查（两侧归一成中文骨架后滑 12 字窗口比对）。
 
@@ -87,7 +90,7 @@ cd frontend && pnpm install && pnpm dev                          # http://localh
 | 嵌入 | **本地 BGE-M3**（1024d，独立容器） | 一次前向出稠密 + 稀疏，省掉独立 BM25；模型自持，重嵌不依赖外部服务 |
 | 向量库 | **Qdrant** 1.19 | 原生稀疏 + 服务端 RRF，混合检索不用换库 |
 | 后端 | FastAPI + uvicorn + sse-starlette | Python 生态 + SSE 原生支持 |
-| 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts | App Router + AI 生态组件最全 |
+| 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts + **Monaco** | App Router + AI 生态组件最全；代码工作台的 Monaco 走同源 `/monaco/vs` 静态资源，不依赖 CDN |
 | 可观测 | **Langfuse**（云形态） | 一次面试一个 trace：调用 / 成本按场次可查，面试过程可解释 |
 | 语音 | **豆包流式识别** + **edge-tts** | 交互命门用付费流式（低延迟部分转写），播报用免费够用的；都只在独立通道上，挂了降级回文字 |
 | 数据 | SQLite（业务库 + checkpointer 两个文件） | 单机 demo 形态；真要换 PG，业务库只有七表、checkpointer 有官方 saver |
@@ -144,7 +147,7 @@ backend/.venv/bin/python data/scripts/check_redline.py --all  # 全量自查
 
 ```bash
 cd backend
-uv run pytest -q                              # 837 个测试（不需要任何密钥）
+uv run pytest -q                              # 898 个测试（不需要任何密钥）
 uv run python scripts/smoke_api.py            # 真链路走 HTTP 跑一场：报告 / PDF / 回放 / 推荐 / 档案核对
 uv run python scripts/smoke_e2e.py            # 组合场：一场里语音进 / 语音出 / 截图 / 文字全跑通
 uv run python scripts/smoke_degraded.py       # 降级链：假上游一律 503，一场面试仍能走完并如实标注
@@ -152,7 +155,7 @@ uv run python scripts/smoke_mcp.py            # MCP：stdio 子进程 + 真握�
 uv run python scripts/eval_retrieval_run.py   # 检索基线：四变体 × golden（需 Qdrant + 嵌入容器）
 uv run python scripts/eval_judge_gate.py      # 评分门禁：超阈值非零退出（改评分 prompt 后必跑）
 
-cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 260 个 + lint + 构建
+cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 326 个 + lint + 构建
 ```
 
 **离线评估不进 pytest 常规套件**（要真 Qdrant + 嵌入 + LLM，且门禁余量取自指标自身波动，会被上游抖动误伤）：检索侧出 NDCG / RAGAS 指标，评分侧出 σ̄（同题同答重复评 K 次的自波动）、MAE（vs 独立标注）与三档单调性。**先量噪声地板再读差值**——低于地板的「变化」不构成结论。命令与口径见 [SPEC §4.13](docs/SPEC.md)。

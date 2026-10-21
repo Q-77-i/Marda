@@ -27,9 +27,9 @@ marda/
 │   │   ├── observability.py      # Langfuse 接入（trace 上下文 / 无 key 降级）
 │   │   ├── reliability.py        # 并发闸门 + 断路器（P2-M9）
 │   │   ├── domain.py             # 知识域定义（配额 / 映射单一来源）
-│   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice / resumes（SSE 在 interviews，WS 在 voice）
-│   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接/降级/节点时间线）
-│   │   ├── agents/               # prompts.py / schemas.py / fallbacks.py（兜底题）
+│   │   ├── api/                  # interviews / auth / bank / bank_private / profile / voice / resumes / coding（SSE 在 interviews，WS 在 voice）
+│   │   ├── graph/                # state.py / graph.py / nodes/（含 judge.py）/ rules/（追问/难度/配额/推进/聚合/衔接/降级/节点时间线/语音指标）
+│   │   ├── agents/               # prompts.py / schemas.py / coding.py（代码点评消息构造）/ fallbacks.py（兜底题）
 │   │   ├── tools/                # question_search / hybrid_search / embedding / rerank / bank_query / bank_private / private_parse / recommend / profile / question_text / asr / tts / resumes / images
 │   │   ├── templates/            # report.html.j2（PDF 模板）
 │   │   ├── report_pdf.py         # 报告 PDF 渲染（jinja2 + weasyprint + 手绘雷达 SVG）
@@ -41,11 +41,13 @@ marda/
 │   ├── scripts/                  # smoke ×9（llm / graph / api / voice / vision / e2e / degraded / mcp / resume）
 │   │                             #   + eval 八件（build_golden / retrieval_run / ragas_context / judge_golden / judge_run / judge_gate / judge_vision / cost_report）
 │   └── tests/                    # unit/ integration/ fixtures/
-├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts（pnpm）
+├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts + Monaco（pnpm）
 │   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
 │   ├── components/               # 页面客户端组件 + 共享件（PageShell / PageHeader / EmptyState / ErrorState / StatusBanner / InlinePanel）+ ui/
 │   ├── public/asr-worklet.js     # 录音采集 worklet（AudioWorklet 只能加载独立文件）
-│   └── lib/                      # sse / stream-render / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice / asr-client / tts / resume / camera / camera-client / interview-room
+│   ├── public/monaco/            # Monaco AMD 构建产物（dev/build 时从 node_modules 复制，gitignore）
+│   ├── scripts/                  # copy-excalidraw-assets / copy-monaco-assets（构建前复制静态资产）
+│   └── lib/                      # sse / stream-render / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice / asr-client / tts / resume / camera / camera-client / interview-room / coding / expression
 ├── data/
 │   ├── scripts/                  # 语料管道（bootstrap / mapping / bank / parse_md / parse_xmind / parse_open / combine / enrich / ingest）
 │   │                             #   + 运维脚本（apply_overrides / apply_difficulty / annotate_difficulty / enable_behavioral / check_redline）
@@ -58,7 +60,7 @@ marda/
 └── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
 ```
 
-**依赖**：后端 fastapi / uvicorn / sse-starlette / langgraph==1.2.11 / langchain==1.4.0 / langgraph-checkpoint-sqlite==3.1.1 / openai SDK / pydantic(+settings) / tenacity / httpx / qdrant-client / pypdf / pyjwt / python-multipart / weasyprint + jinja2 / langfuse==4.9.1 / edge-tts + websockets。评测依赖（ragas 等）与 `mcp>=2,<3` 在 dev 组，容器 `uv sync --no-dev` 不进镜像。前端 next@15 / react 19 / tailwindcss v4 / shadcn-ui / framer-motion / recharts。
+**依赖**：后端 fastapi / uvicorn / sse-starlette / langgraph==1.2.11 / langchain==1.4.0 / langgraph-checkpoint-sqlite==3.1.1 / openai SDK / pydantic(+settings) / tenacity / httpx / qdrant-client / pypdf / pyjwt / python-multipart / weasyprint + jinja2 / langfuse==4.9.1 / edge-tts + websockets。评测依赖（ragas 等）与 `mcp>=2,<3` 在 dev 组，容器 `uv sync --no-dev` 不进镜像。前端 next@15 / react 19 / tailwindcss v4 / shadcn-ui / framer-motion / recharts / @monaco-editor/react + monaco-editor。
 
 ## 3. LLM 集成（llm.py）
 
@@ -69,7 +71,7 @@ marda/
   - `chat_json(messages, *, schema: type[BaseModel]) -> BaseModel`：结构化类（评分 / 提炼 / 报告 / 简历 / 难度标注）。**非流式**——`json_object` + schema 注入 prompt + Pydantic 校验 + 失败重请求 1 次；结构化输出没有增量语义。
   - 两者共有的重试边界：空输出重请求 1 次**只在一个字都没吐时**——已吐字的重发会把同一段说两遍。
 - 重试：429/5xx tenacity 指数退避。**流式的重试只覆盖建连段**：一旦开始吐字，重试就是重复输出，中途断流直接抛（用户侧「重试」= 重跑失败节点，§7）。
-- `purpose` 参数 → Langfuse 的 `name`（**只在启用时传**：原生 openai SDK 会把 `name` 当未知参数塞进请求体、DeepSeek 侧 400）。8 个调用点给稳定值（opening / ask / followup / judge / report / profile / closing / extract）。
+- `purpose` 参数 → Langfuse 的 `name`（**只在启用时传**：原生 openai SDK 会把 `name` 当未知参数塞进请求体、DeepSeek 侧 400）。10 个调用点给稳定值（opening / ask / followup / judge / report / profile / closing / extract / coding_review / coding_followup）。
 - 调用点全部走 `LLMError` 自定义异常 → API 层转 SSE error 事件。
 - **单一实现纪律**：展示类文案只有 `chat` 一条路径——流式与非流式若各写一套，关 thinking / 空输出重请求 / 错误映射三处会各自漂移。
 
@@ -124,6 +126,7 @@ class QuestionRecord(BaseModel):
     followup_log: list[str] = []   # 评分节点需要追问记录（§4.5）
     answer: str | None = None      # 我的回答（含追问轮）：首答 + 「【追问补充】」标记追加（FR-25 复盘分段依据）
     image_ids: list[str] = []      # FR-26：该题回答附带的截图 id（跨追问轮累积；只存 id，文件在磁盘）
+    speech: dict | None = None     # M16：该题语音原始计数（跨追问轮累加；普通 dict，不碰 checkpointer 白名单）
     score: ScoreItem | BehavioralScoreItem | None = None   # 按字段集自动落到对应模型（两套维度必填字段不重叠）
     skipped: bool = False; from_bank: bool = True
     question_type: str = "tech"    # 题型语义（tech/scenario/behavioral 均计入问答轮次，编号见 §4.6；默认值兼容旧 checkpoint）
@@ -144,6 +147,7 @@ class InterviewState(BaseModel):
     answered_questions: list[QuestionRecord] = []  # 报告聚合数据来源
     user_input: str = ""                 # resume 消息（route 分发依据）
     current_images: list[str] = []       # 本轮消息附带的截图 id（pause 节点写入，评分/追问消费后归并到题）
+    current_speech: dict | None = None   # M16：本轮语音计数（pause 节点写入；文字消息覆盖成 None，judge 在 LLM 前并入题）
     closing_question_count: int = 0      # 反问计数（上限 1-2）
     chat_history: list[dict] = []        # 完整对话流水（回放 + SSE 差分的单一来源，不截断）
     report: dict | None = None
@@ -152,6 +156,8 @@ class InterviewState(BaseModel):
 ```
 
 Checkpointer：`langgraph.checkpoint.sqlite.AsyncSqliteSaver`（独立 sqlite 文件），`thread_id = interview_id`。
+
+**M16 语音字段的兼容口径**：`speech` 是六个非负整数的普通 dict（`duration_ms / chars / pause_count / pause_ms / filler_count / segments`），不是 Pydantic 模型——不触碰 checkpointer 的序列化白名单；旧 checkpoint 没有这两个键，默认 `None` 仍可验证。文字消息把 `current_speech` 覆盖成 `None`，避免上一轮指标重复计入下一题。
 
 ### 4.2 图结构
 
@@ -338,8 +344,11 @@ def update_difficulty(state) -> None:
 | `score` | 五维得分 | — |
 | `covered_key_points` / `missed_key_points` | 评分官输出 | — |
 | `reference_answer` | 题库题按 question_id 取参考答案 | 项目深挖题 → `null`，前端不渲染（无权威答案，硬编反而误导） |
+| `speech`（M16） | 本题语音原始计数 + 后端派生的 `chars_per_min` | 纯文字作答 → `null`，前端不渲染 |
 
 组装口径与元信息一致，条数恒等于已答题目数。已结束场次的回放复用 `GET /api/interviews/{id}`（chat_history），只读模式为纯前端。
+
+**M16 表达复盘（报告 payload 顶层）**：本场至少一题有语音时才落 `expression`（无语音不落空壳）——`{spoken_question_count, duration_ms, chars, chars_per_min, pause_count, pause_ms, filler_count, segments, note}`；全部由 `graph/rules/speech.py` 单点派生（前端只上报原始计数）。报告页/PDF 与逐题 `speech` 同一份数据；`note` 如实写明「ASR 可能漏语气词、长停顿是 RMS 估算、文字作答不计入」。
 
 实现口径：
 
@@ -636,7 +645,7 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 | POST /api/auth/login | 同上 | `{token, username}`；账号不存在与密码错误同为 **401**（文案一致，不泄露账号是否注册） |
 | GET /api/auth/me | — | `{id, username}`（前端刷新后校验 token 用） |
 | POST /api/interviews | `{position, question_count, difficulty, interview_type, resume_id?}`（**2–20，默认 10**；difficulty ∈ `adaptive`/`L1`/`L2`/`L3`，默认 `adaptive`，非法值 422；**interview_type ∈ `tech`/`behavioral`，默认 `tech`，行为面 question_count > 10 → 422**；**resume_id 可选**——先经 `POST /api/resumes` 解析，非本人/不存在 404） | SSE 流（首事件 meta 携带 interview_id；thread_id = interview_id）；创建后立即执行开场 |
-| POST /api/interviews/{id}/messages | `{content, images?}`（images = 已上传的 image_id 列表，**≤3**；文字仍必填——图是回答的补充证据，不单独成答） | SSE 流（见事件表）；带图时评分/追问/生成题/收尾反问的 LLM 调用会收到图附件 |
+| POST /api/interviews/{id}/messages | `{content, images?, speech?}`（images = 已上传的 image_id 列表，**≤3**；文字仍必填——图是回答的补充证据，不单独成答；**speech 可选** = M16 语音原始计数，`SpeechStats` 六个非负整数，`pause_ms ≤ duration_ms`、`pause_count×2000 ≤ pause_ms`，非法 422） | SSE 流（见事件表）；带图时评分/追问/生成题/收尾反问的 LLM 调用会收到图附件 |
 | POST /api/interviews/{id}/images | multipart `file`（PNG/JPEG/WebP，**按 magic bytes 判定**不信任 Content-Type；≤8MB；每场 ≤30 张） | **201** `{image_id}`（服务端 uuid4 hex）；不存在/他人 404、已结束 409、非图片 400、超限 413 |
 | GET /api/interviews/{id}/images/{image_id} | — | 图片字节（`nosniff` + `private` 缓存头）；他人/不存在/坏 id 一律 404；**已结束场次仍可取**（回放要显示图） |
 | GET /api/interviews/{id} | 可选 `?reconnect=true` | 会话状态：phase / answered_count / question_count / 历史消息（供刷新恢复 UI）+ `stalled` + `degraded_reasons`（本场已发生的降级原因——SSE 同因只发一次，刷新/中途进入靠它补横幅）；带 reconnect 时在 `chat_history` 末尾**附加**一句重连问候 + 当前题干（只随本次响应返回、不落库，§4.8） |
@@ -699,6 +708,7 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 - **风控与口径**：文件缺失/损坏 → 跳过该图 + warning、**退化为纯文字**（绝不因图丢文件拒答）；图是面试内容组成部分、**必须落盘**（与语音「音频不落盘」刻意不同，否则回放/复盘丢证据）；**报告页只显示逐题图片计数**，图本体在面试页回放看，PDF 不含图。
 - **Langfuse**：drop-in 自动把 base64 图转成**媒体引用**（`@@@langfuseMedia:...@@@`），trace 零 base64、无需脱敏。含图调用成本 ≈ ¥0.0007/次。
 - **评分官用图监控**：`scripts/eval_judge_vision.py`（手动跑，**推荐在容器内跑**——checkpoints 是 WAL，宿主机直读会 malformed）统计「judge 输出是否引用图内独有信息」的比率；**连续 3 场带图场次零引用 → 建议降级为「评分官不看图」**，由数据支撑、由人拍板。
+- **白板结构点评（M14b）**：白板仍是图片通道（Excalidraw 导出 PNG），**不改评分 schema**。规则只加在**带图的附件说明**里（`NOTE_JUDGE_IMAGE_RULE`：若为架构图，指出缺失的 1-2 个关键组件/连线），`JUDGE_TEMPLATE` 逐字不动——纯文字评分 prompt 与评测门禁零漂移。报告官可能为「答非所问」丢掉缺失项：`build_per_question_comments` 从评分官 comment 抽含「架构图/白板 + 缺失语义」的原句，**确定性补成「白板点评：…」**（只对有图题；报告点评已含缺失语义则不重复）。验收是**手工探针**（评分门禁 golden 是纯文字样本，证明不了模型读了图）。
 
 ### 7.3 简历通道（FR-28）
 
@@ -721,6 +731,21 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 - **只公共题**：一律走带 `user_id IS NULL` 的查询；私有题与归档题连 `get_question` 也不可探测（不区分「不存在 / 别人的私有题」，同 §7 的 404 口径）。
 - **错误如实回报（探针实测的 SDK 行为）**：工具内未捕获的异常会被 SDK 换成「Error executing tool X」——原始信息只在服务端日志里、**模型看不到原因**。故工具边界统一转 `ToolError("人话原因 + 出路")`。
 - **验证**：集成测试用 in-memory 客户端（真协议、无进程）；`smoke_mcp.py` 起 **stdio 子进程**对真库只读跑三工具。
+
+### 7.5 代码工作台（M15，独立于状态机）
+
+- **入口与定位**：面试间右栏「代码」Tab（窄屏顶栏按钮）；题库随机算法题 + Monaco + 结构化点评 + 追问。**不读写 interview、不进 checkpointer、不落库、不进报告**；代码不发给面试官。
+- **题源**：`domain='algorithms'`、`status='enabled'`、公共题（22 道）。随机端点只 select 题干/主题/难度，**answer/key_points/follow_ups 永不出 API**；只有点评内部才取参考答案（`bank_query.get_coding_question_for_review`）。
+- **三个端点**：`GET /api/coding/questions/random`（没有算法题 → 404 中文）· `POST /api/coding/reviews`（`{question_id, language, code}`；语言 ∈ python/java/cpp/javascript，code ≤8000）· `POST /api/coding/followups`（带上次点评与最近 10 条历史，无状态）。LLM 失败 → 503 中文可重试。
+- **点评**：flash + `chat_json(CodeReview)`，`max_tokens=3000`；`issues[]`（severity/line/reason/fix，可为空）、`edge_cases[]`（**至少一条具体输入/期望输出**）、`complexity`（时间/空间/是否正确）、`follow_up`（只问一个）。追问走 `chat`，`max_tokens=1200`。
+- **前端**：Monaco 经 `next/dynamic(ssr:false)` 懒加载，走同源 `/monaco/vs`（`scripts/copy-monaco-assets.mjs` 从 node_modules 复制，gitignore、ESLint 忽略）；工作台复用白板的全屏覆盖层形态，首次打开后保持挂载；代码与点评只在内存，v1 不持久化。
+- **成本归因**：`purpose=coding_review` / `coding_followup`（成本报告按环节分组；不在面试 turn_span 内，按场次读回不含这两类调用）。
+
+### 7.6 表达复盘（M16，只算不评）
+
+- **指标来源**：录音期间的 20Hz 原始 RMS + ASR final 转写；前端 `lib/expression.ts` 只产**原始计数**（`duration_ms / chars / pause_count / pause_ms / filler_count / segments`），随消息 `speech` 键上传；**语速（chars/min）与场次汇总只在后端 `graph/rules/speech.py` 派生**。
+- **口径**：字数 = Unicode 字母/数字（不含空格/标点）；长停顿 = RMS 低于本段 p10×2.5（夹在 0.008–0.04）且持续 ≥2s 的**内部**静音段（去掉开头/结尾）；口头禅 = 转写中 `嗯/呃/额/那个/就是/然后` 的出现次数（ASR 可能漏掉）；每题时长 = 该题多轮语音消息时长之和，文字作答不计入。**时长在 stop 时冻结**（final 可能再等 8s），计数字段一律整数（后端 `SpeechStats` 是 int）。
+- **报告**：`QuestionRecord.speech` 跨追问轮累加（judge 在 LLM 调用前合并，评分降级也保留）；报告 payload 逐题 `speech`（含 `chars_per_min`）+ 顶层 `expression`；报告页「表达复盘」卡独立于 `hasScores`，逐题复盘卡加一行语音指标；PDF 同一节 + 逐题一行。**不做面部、不进五维分数**。
 
 ## 8. 数据库（SQLite；PG 迁移已取消）
 
@@ -815,6 +840,11 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 - **卡片材质两档**：面板 = `rounded-xl + 1px border`（表头带分隔线，无阴影、无 ring），内嵌面板 = `rounded-lg border + bg-muted/30`。共享件：`AppRail` / `PageShell` / `PageHeader` / `MonoLabel` / `StatStrip` / `Segmented` / `EmptyState` / `ErrorState` / `StatusBanner` / `InlinePanel`。
 - **窄屏导航**：移动端固定顶部图标条（56px），内容区预留 76px 顶部偏移；左栏在 1280px 以下折叠为 74px 图标栏，题库详情栏在 1280px 以下改为行内展开，面试间右侧舞台在 1280px 以下收回顶部卡片。验收 = 500px 视口截图（登录 / 仪表盘 / 题库 / 面试间）；320px 未覆盖。
 
+### 9.5 代码工作台与表达复盘（M15/M16）
+
+- **代码工作台**：右栏「状态 / 白板 / 代码」三 Tab 全部就绪；代码 Tab 与窄屏顶栏按钮打开全屏覆盖层（`CodeWorkbench`），与白板互斥、首次打开后保持挂载。Monaco 懒加载、同源 `/monaco/vs`；左侧题目/语言/编辑器，右侧点评面板（问题 / 具体反例 / 复杂度 / 面试官追问 + 追问输入）；代码改动后旧点评标「已过期」。**生产构建不含 Monaco 包体**（首开才加载静态资源）。
+- **表达复盘**：报告页在统计条之后渲染 `ExpressionCard`（语音时长 / 平均语速 / 长停顿 / 口头禅 + 限制说明），**不依赖 `hasScores`**；逐题复盘卡加一行「语音作答 / 语速 / 长停顿 / 口头禅（段数）」。PDF 用同一 payload 的「表达复盘」卡与逐题行。
+
 ## 10. 测试与验收
 
 **分层**：`tests/unit/`（纯逻辑 + FakeLLM 注入跑整图，无密钥无网络）→ `tests/integration/`（httpx ASGITransport + 临时库）→ 冒烟脚本（真链路，手动跑）→ `evals/`（离线评测，显式命令，**不进 pytest**，见 §4.13）。
@@ -826,11 +856,12 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | API | `test_api`（httpx）：SSE 事件序、报告、历史、回放（未结束可查 / 他人场次 404 / 未登录 401）、**重发不重复计分**（图停在失败节点，resume = 重跑该节点） |
 | 可观测 | `test_observability`（注入 InMemorySpanExporter 离线跑）：一场一 trace（多轮 resume 同 trace_id）、generation 归父、无 key 零开销 |
 | 数据与语料 | `test_parse_md` / `test_parse_open` / `test_ingest_sqlite`：老库迁移幂等、多源明细、全量同步删除、**私有题不被管道重跑删除** |
-| 前端（vitest） | 只覆盖 lib 纯逻辑：SSE 分帧、打字机 FIFO、恢复两路决策、题库筛选分页与容量判据、档案整形、文件名与展示格式化 |
+| 前端（vitest） | 只覆盖 lib 纯逻辑：SSE 分帧、打字机 FIFO、恢复两路决策、题库筛选分页与容量判据、档案整形、文件名与展示格式化、代码工作台请求体、表达指标（阈值/停顿/多段累计/整数校验） |
+| 多模态扩展（M13–M16） | 白板附件规则与报告确定性补回；`/api/coding/*`（安全投影 / 422 / 503 / 追问）；`speech` 整数校验与报告汇总；PDF 表达复盘节。浏览器探针：Monaco 零 CDN + 18 个同源 `/monaco/vs` 请求；合成麦克风 → `/messages` 载荷含 `speech`（实测 `pause_count=1`、整数计数） |
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（837 个，不需要任何密钥）· `cd frontend && pnpm test`（260 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（898 个，不需要任何密钥）· `cd frontend && pnpm test`（326 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
 **CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。
 
@@ -858,6 +889,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 16. 上游保护与降级链：**断路器只计「上游不可用」类失败**（内容类失败计入会把已知的偶发非法 JSON 误判成上游故障）；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口），且**未评分不产 0 分**；降级内容全部是确定性兜底，**不许在其中调 LLM**；闸门与熔断状态在**进程内存**（多 worker 不共享）
 17. MCP 与红线门禁：MCP **只做 stdio、只暴露公共题**，工具内异常必须转 `ToolError`——未捕获异常会被 SDK 换成「Error executing tool X」，**模型看不到原因**；`mcp` 只许 `app/mcp_server/` import（单测扫描钉死）。**红线检查器的语料取值要按列的存储形态取**：`key_points` 是 JSON **文本**，把它当可迭代不报错、只是静默少查一路（已改成显式解析 + 单测）
 18. 上游调用命名：`llm.*(purpose=...)` → drop-in 的 `name` **只在 Langfuse 启用时传**——原生 openai SDK 会把 `name` 当未知参数塞进请求体（400）。成本读回（`fetch_trace_observations` / `summarize_observations`）是 smoke_api 与 `cost_report.py` 的**同一份实现**（别写第二份）
+19. 多模态扩展（M13–M16）：Monaco **只走同源 `/monaco/vs`**（复制脚本 + gitignore + ESLint 忽略，不走 CDN）；`SpeechStats` 是 int，前端 `pause_ms` 必须取整；文字消息清空 `current_speech`；白板点评验收靠**手工探针**（评分门禁 golden 纯文字，证明不了读图）；Chrome 155 的 fake-audio 文件标志在本机实测无声，浏览器语音探针用页面内覆写 `getUserMedia` + 同源 WAV
 
 ## 12. 改动索引
 
@@ -865,6 +897,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-10-21 | 多模态扩展（M13–M16） | §2 树补 coding / speech / 前端组件 · §3 调用点 10 个 · §4.1 State 补 `speech` / `current_speech` · §4.6 报告补逐题 `speech` 与顶层 `expression` · §7 messages 补 `speech`、新增 §7.5 代码工作台与 §7.6 表达复盘、§7.2 补白板结构点评 · §9.5 工作台与报告 UI · §10 计数与多模态验证 · §11 风险 19 |
 | 2026-10-21 | 界面重塑（P3-UI） | §9 前端设计：左栏工作台 / 面试间明暗双主题 / 题库三栏 / 设计令牌与共享件 / 窄屏导航；§9.1 页面要点同步 |
 | 2026-10-05 | 文档减负（第二轮）+ 交付后修 CI 红 | 全文精简（§1 重写为现状 + 读法 · 各节压掉过程叙述 · §12 改本索引）· **顺带修两处漏记**：§7 补私有题库三端点、§8 DDL 补 `questions.user_id`（隔离字段此前未写进 schema）· **§4.7 补「落盘必须是同步的」**（`durability="sync"`，修掉节点时间线的概率性） |
 | 2026-10-05 | P2-M12 节点级 Trace | §2 树补 `rules/timeline` · **§4.7 新增「节点时间线」段** · §4.4 单列出题池记录难度取场次难度 · §7 `/trace` 补 `nodes` · §9 回放页 · §10 计数 |
