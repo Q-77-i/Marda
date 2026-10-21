@@ -889,9 +889,9 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     setBoardOpen(true);
   };
 
-  /** 打开代码工作台（M15）：与白板互斥，两个全屏覆盖层不能叠着。 */
+  /** 打开代码工作台（M15）：独立练习，**只读回放也允许**（不发消息、不写本场记录）。 */
   const openCode = () => {
-    if (readonly || finished || loading) return;
+    if (loading) return;
     setBoardOpen(false);
     setCodeMounted(true);
     setCodeOpen(true);
@@ -1178,7 +1178,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
             <button
               type="button"
               onClick={openCode}
-              disabled={readonly || finished || loading}
+              disabled={loading}
               title="打开代码工作台"
               className="inline-flex h-7 items-center gap-1.5 rounded-md border border-room-line px-2 text-[10.5px] text-room-muted transition-colors hover:border-room-line-strong hover:text-room-ink disabled:pointer-events-none disabled:opacity-45 xl:hidden"
             >
@@ -1581,14 +1581,14 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                 <button
                   type="button"
                   onClick={openCode}
-                  disabled={readonly || finished || loading}
+                  disabled={loading}
                   className="mt-3 h-8 w-full rounded-md bg-room-accent text-[11px] font-medium text-room-bg transition-colors hover:bg-room-accent/90 disabled:pointer-events-none disabled:opacity-45"
                 >
                   {codeOpen ? "回到代码工作台" : "打开代码工作台"}
                 </button>
                 {readonly || finished ? (
                   <p className="mt-2 text-[9.5px] leading-relaxed text-room-faint">
-                    面试已结束，无法再打开代码工作台。
+                    回放/已结束场次也可独立练习；代码不写入本场记录。
                   </p>
                 ) : null}
               </div>
