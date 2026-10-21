@@ -191,15 +191,17 @@ export class Speaker {
 
   private async startSegment(text: string): Promise<void> {
     const generation = this.generation;
+    /* 先占住 current：createAudio 是异步的。若此时 finish/enqueue 再触发一次 pump，
+       第二个 segment 会并发启动，随后被 current 判定丢弃 —— 用户只听到第一句
+       （2026-10-21 实测：点“语音播报”后只有「欢迎回来…」）。 */
+    const pending: SpeechSegment = { text, audio: null };
+    this.current = pending;
     const audio = await this.createAudio(text);
-    if (generation !== this.generation) {
+    if (generation !== this.generation || this.current !== pending) {
       if (audio) this.disposeAudio(audio);
       return;
     }
-    if (this.current) {
-      if (audio) this.disposeAudio(audio);
-      return;
-    }
+    this.current = null;
     if (!audio) {
       await this.fallbackBrowser(text, generation);
       return;
@@ -210,16 +212,43 @@ export class Speaker {
   private playAudio(text: string, audio: HTMLAudioElement, retried = false): void {
     const item: SpeechSegment = { text, audio };
     this.current = item;
-    audio.onended = () => {
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const clearWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = null;
+    };
+    const advance = () => {
+      clearWatchdog();
       if (this.current !== item) return;
       this.finishCurrent(item);
       this.pump();
     };
+    audio.onended = advance;
     audio.onerror = () => {
+      clearWatchdog();
       if (this.current !== item) return;
       this.finishCurrent(item);
       void this.recoverSegment(text, retried);
     };
+    /* 流式 MP3 没有 Content-Length，个别浏览器不派发 ended：按文本估时兜底推进，
+       避免“第一句播完后再也没有下一句”。 */
+    const armWatchdog = () => {
+      clearWatchdog();
+      const seconds =
+        Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration
+          : Math.max(4, text.length * 0.35);
+      watchdog = setTimeout(
+        () => {
+          if (this.current !== item) return;
+          if (audio.ended || audio.paused) advance();
+          else armWatchdog();
+        },
+        Math.max(4000, seconds * 1000 + 4000),
+      );
+    };
+    audio.onloadedmetadata = armWatchdog;
+    if (audio.readyState >= 1) armWatchdog();
     void audio
       .play()
       .then(() => {
@@ -228,6 +257,7 @@ export class Speaker {
         void this.prepareNext();
       })
       .catch(() => {
+        clearWatchdog();
         if (this.current !== item) return;
         this.finishCurrent(item);
         void this.recoverSegment(text, retried);
