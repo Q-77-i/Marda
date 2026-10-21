@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.domain import INTERVIEW_BEHAVIORAL
 from app.graph.rules import degrade
 from app.graph.rules.difficulty import update_difficulty
+from app.graph.rules.speech import merge_speech
 from app.graph.state import (
     InterviewState,
     TraceEvent,
@@ -68,7 +69,11 @@ def judge_messages(
     )}]
     if image_parts:
         messages.append(
-            image_store.attachment_message(list(image_parts), image_store.NOTE_JUDGE)
+            image_store.attachment_message(
+                list(image_parts),
+                # M14b：白板结构点评规则只随图出现；纯文字路径逐字不变
+                image_store.NOTE_JUDGE + "\n" + image_store.NOTE_JUDGE_IMAGE_RULE,
+            )
         )
     return messages
 
@@ -84,6 +89,10 @@ async def judge_node(state: InterviewState) -> dict:
     for image_id in state.current_images:
         if image_id not in question.image_ids:
             question.image_ids.append(image_id)
+    # 语音指标归并（M16）：在 LLM 调用**之前**——评分降级/失败也要留下表达指标；
+    # 跨追问轮累加（同一题多次作答的时长/字数/停顿相加）
+    if state.current_speech:
+        question.speech = merge_speech(question.speech, state.current_speech)
     image_parts = await asyncio.to_thread(
         image_store.load_image_parts, get_settings().upload_dir, state.interview_id, question.image_ids
     )

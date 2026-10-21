@@ -6,7 +6,9 @@ ScoreItem 定义在 graph/state.py（SPEC §4.1 归属 state），这里放其�
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from typing import Literal
+
+from pydantic import BaseModel, Field
 
 
 class ProfileExtraction(BaseModel):
@@ -53,3 +55,41 @@ class ReportLLM(BaseModel):
     total_comment: str
     per_question_comments: list[PerQuestionComment]
     study_advice: list[StudyAdvice]
+
+
+# ---- 代码工作台（M15）：LLM 结构化点评 ----
+
+
+class CodeIssue(BaseModel):
+    """单条代码问题（M15）：行号可缺省（模型给不出准确行号时宁可没有）。"""
+
+    severity: Literal["error", "warning", "suggestion"] = "warning"
+    line: int | None = Field(default=None, ge=1)
+    reason: str = Field(min_length=1, max_length=800)
+    fix: str = Field(min_length=1, max_length=800)
+
+
+class CodeEdgeCase(BaseModel):
+    """具体反例（M15）：input/expected 必须是可复现的实例，不接受「注意边界」这类空话。"""
+
+    input: str = Field(min_length=1, max_length=300)
+    expected: str = Field(min_length=1, max_length=300)
+    note: str = Field(default="", max_length=300)
+
+
+class CodeComplexity(BaseModel):
+    """候选代码实际复杂度判断（M15）。"""
+
+    time: str = Field(min_length=1, max_length=100)
+    space: str = Field(min_length=1, max_length=100)
+    correct: bool
+    note: str = Field(default="", max_length=300)
+
+
+class CodeReview(BaseModel):
+    """代码点评结构化输出（M15）：至少给一条具体反例，追问只问一个最关键的问题。"""
+
+    issues: list[CodeIssue] = Field(default_factory=list, max_length=15)
+    edge_cases: list[CodeEdgeCase] = Field(min_length=1, max_length=8)
+    complexity: CodeComplexity
+    follow_up: str = Field(min_length=1, max_length=400)

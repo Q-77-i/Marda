@@ -56,11 +56,33 @@ class CreateRequest(BaseModel):
         return self
 
 
+class SpeechStats(BaseModel):
+    """语音作答原始计数（M16 FR-30）：前端只报原始数，语速与汇总由后端派生。"""
+
+    duration_ms: int = Field(ge=0, le=1_800_000)
+    chars: int = Field(ge=0, le=20_000)
+    pause_count: int = Field(default=0, ge=0, le=1_000)
+    pause_ms: int = Field(default=0, ge=0, le=1_800_000)
+    filler_count: int = Field(default=0, ge=0, le=20_000)
+    segments: int = Field(default=1, ge=0, le=100)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> SpeechStats:
+        if self.pause_ms > self.duration_ms:
+            raise ValueError("pause_ms 不能超过 duration_ms")
+        # 每条长停顿至少 2 秒；总数对不上说明载荷被伪造/算错
+        if self.pause_count * 2000 > self.pause_ms:
+            raise ValueError("pause_ms 与 pause_count 不一致")
+        return self
+
+
 class MessageRequest(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     # 图片通道（P2-M6 FR-26）：随消息附带的 image_id 列表（先经 POST /images 上传）；
     # 文字仍必填——图是回答的补充证据，不单独成答（避免空回答进评分）
     images: list[str] = Field(default_factory=list, max_length=images.MAX_IMAGES_PER_MESSAGE)
+    # 语音指标（M16 FR-30）：本稿的原始计数；纯手打消息不带（报告按「未用语音」处理）
+    speech: SpeechStats | None = None
 
 
 @router.post("")
@@ -126,7 +148,13 @@ async def send_message(
             if path is None:
                 raise HTTPException(status_code=400, detail="图片不存在或已失效，请重新上传")
     return EventSourceResponse(
-        service.send_message(interview_id, req.content.strip(), user["id"], images=req.images),
+        service.send_message(
+            interview_id,
+            req.content.strip(),
+            user["id"],
+            images=req.images,
+            speech=req.speech.model_dump() if req.speech else None,
+        ),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),

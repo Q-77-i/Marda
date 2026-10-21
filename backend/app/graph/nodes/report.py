@@ -18,6 +18,7 @@ from app.graph.rules.aggregate import (
     normalize_advice_domain,
     report_domain_options,
 )
+from app.graph.rules.speech import expression_summary
 from app.graph.state import (
     InterviewState,
     Phase,
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 async def report_node(state: InterviewState) -> dict:
     behavioral = state.interview_type == INTERVIEW_BEHAVIORAL
     aggregation = aggregate_scores(state.answered_questions, interview_type=state.interview_type)
+    # 表达复盘（M16）：纯代码汇总；本场没有语音作答 → None，payload 不落空壳
+    expression = expression_summary([q.speech for q in state.answered_questions])
     llm_part = await _report_text(state, behavioral=behavioral)
     reference_answers = await _load_reference_answers(state.answered_questions)
     scored = [q for q in state.answered_questions if q.score]
@@ -73,6 +76,9 @@ async def report_node(state: InterviewState) -> dict:
             for a in llm_part.study_advice
         ] if llm_part else [],
     }
+    # 表达复盘（M16）：只有本场真的用过语音才落这个键（老报告/纯文字场次形状不变）
+    if expression:
+        report["expression"] = expression
     if scored:
         # 总分（P1-M10 D1）：落进 payload 供报告页/PDF/能力档案共用，避免三处各算一遍
         report["overall"] = aggregation["overall"]
@@ -153,9 +159,23 @@ def _format_records(questions: list[QuestionRecord], *, behavioral: bool = False
         dims_text = ""
         if q.score:
             dims_text = "；五维 " + "/".join(str(getattr(q.score, dim)) for dim in dims)
+        # M14b：有图的题给报告官一个显式标记——白板结构点评（评分官 comment 里）
+        # 才能被保留进逐题点评，而不是只停在 trace
+        image_note = (
+            f"（本题回答含 {len(q.image_ids)} 张图，其中可能有白板架构图）"
+            if q.image_ids
+            else ""
+        )
+        # M14b：把评分官的白板点评单独标成「必须保留」，否则报告官容易为「一句话点评」
+        # 把它挤掉（实测过一次：图被提到，但缺失的检索链路没进报告）
+        board_review = (
+            f"\n白板/架构图点评（报告必须保留其中的具体缺失项）：{q.score.comment}"
+            if q.image_ids and q.score
+            else ""
+        )
         lines.append(
             f"第{index}题（{q.domain}/{q.topic}，难度 {q.difficulty}）：{q.text}\n"
-            f"回答：{q.answer or '（未作答）'}{dims_text}\n"
-            f"点评：{q.score.comment if q.score else ''}"
+            f"回答：{q.answer or '（未作答）'}{dims_text}{image_note}\n"
+            f"点评：{q.score.comment if q.score else ''}{board_review}"
         )
     return "\n\n".join(lines)

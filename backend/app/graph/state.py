@@ -139,6 +139,10 @@ class QuestionRecord(BaseModel):
     answer: str | None = None
     # 该题回答附带的图（P2-M6 FR-26）：image_id 列表，跨追问轮累积；只存 id 不存路径/字节
     image_ids: list[str] = []
+    # 该题的语音作答原始计数（M16 FR-30）：跨追问轮累加（duration_ms/chars/pause_* /
+    # filler_count/segments）。**普通 dict 而非 Pydantic 模型**：不触碰 checkpointer 的
+    # 序列化白名单；老 checkpoint 无此字段 → None，报告按「未用语音」处理
+    speech: dict | None = None
     score: ScoreItem | BehavioralScoreItem | None = None
     skipped: bool = False
     from_bank: bool = True
@@ -182,6 +186,9 @@ class InterviewState(BaseModel):
     # 本轮用户消息附带的图（P2-M6）：pause 节点从 resume 载荷写入，评分/追问消费；
     # 下一条消息到达时被整体覆盖，不需要显式清空
     current_images: list[str] = []
+    # 本轮用户消息的语音计数（M16）：pause 节点写入；文字消息会覆盖成 None，
+    # 防止上一轮的指标被重复计入下一题。由 judge 节点并入 current_question.speech
+    current_speech: dict | None = None
     closing_question_count: int = 0
     chat_history: list[dict] = []
     report: dict | None = None

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import re
+
 from app.domain import (
     COUNTED_QUESTION_TYPES,
     DOMAIN_LABELS,
     DOMAIN_WEIGHTS,
     INTERVIEW_BEHAVIORAL,
 )
+from app.graph.rules.speech import derive_speech
 from app.graph.state import BehavioralScoreItem, QuestionRecord, ScoreItem
 
 # 五维键与中文标签同源（顺序即报告展示顺序：雷达图顶点、逐题得分列表都按它排）。
@@ -135,6 +138,36 @@ def _weakest(scores: dict[str, float]) -> list[str]:
     return weak
 
 
+def _board_review_sentence(comment: str) -> str | None:
+    """从评分官点评里抽「白板缺失项」那句（M14b）。
+
+    报告官（v4-pro）实测会为「答非所问」丢掉架构图缺失结论——这是语义取舍，
+    但白板点评是本功能的产出，不能交给它决定。只抽含架构图/白板且带缺失语义的句子，
+    在原句前加「白板点评：」；抽不到返回 None（不硬塞）。
+    """
+    if not comment or ("架构图" not in comment and "白板" not in comment):
+        return None
+    picked = [
+        part.strip()
+        for part in re.split(r"(?<=[。；;])", comment)
+        if ("架构图" in part or "白板" in part)
+        and any(word in part for word in ("缺失", "缺少", "未体现", "未画"))
+    ]
+    return "".join(picked).strip() or None
+
+
+def _comment_with_board_review(
+    comment: str, question: QuestionRecord
+) -> str:
+    """报告官点评 + 确定性保留的白板缺失项（有图题）。"""
+    if not question.image_ids or not question.score:
+        return comment
+    board = _board_review_sentence(question.score.comment)
+    if not board or any(word in comment for word in ("缺失", "缺少", "未体现", "未画")):
+        return comment
+    return f"{comment} 白板点评：{board}".strip()
+
+
 def build_per_question_comments(
     questions: list[QuestionRecord],
     comments: list[str],
@@ -171,11 +204,16 @@ def build_per_question_comments(
             "question_type": q.question_type,
             "domain": q.domain,
             "text": q.text,
-            "comment": comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
+            "comment": _comment_with_board_review(
+                comments[index - 1] if index <= len(comments) else (q.score.comment if q.score else ""),
+                q,
+            ),
             "candidate_answer": q.answer,
             # 本题附带的截图数（P2-M6）：报告页复盘卡给一行计数做「闭合信号」——
             # 图本体不在报告 payload 里（回放在面试页看），老 payload 无此键、前端容忍
             "image_count": len(q.image_ids),
+            # 本题语音作答原始计数 + 派生语速（M16）：无语音作答为 None，前端不渲染该行
+            "speech": derive_speech(q.speech),
             "score": _score_dims(q.score),
             "covered_key_points": list(q.score.covered_key_points) if q.score else [],
             "missed_key_points": list(q.score.missed_key_points) if q.score else [],

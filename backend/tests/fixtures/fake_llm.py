@@ -60,6 +60,25 @@ DEFAULT_REPORT = {
     "study_advice": [{"domain": "rag", "advice": "深入检索"}],
 }
 
+# 代码工作台（M15）：路由标记「代码评审官」/「代码辅导官」
+DEFAULT_CODE_REVIEW = {
+    "issues": [{
+        "severity": "error",
+        "line": 3,
+        "reason": "未处理空链表/单节点",
+        "fix": "进入循环前先判 head is None 或 head.next is None",
+    }],
+    "edge_cases": [{
+        "input": "head=[]",
+        "expected": "返回 None",
+        "note": "空链表",
+    }],
+    "complexity": {"time": "O(n)", "space": "O(1)", "correct": True, "note": ""},
+    "follow_up": "如果链表只有一个节点，反转后应该返回什么？",
+}
+DEFAULT_CODING_ANSWER = "先检查空链表和单节点，再进入双指针循环。"
+
+
 
 def _response(content: str) -> SimpleNamespace:
     return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
@@ -105,6 +124,8 @@ class FakeLLMClient:
         resume: dict | None = None,
         generated: dict | None = None,
         report: dict | None = None,
+        code_review: dict | None = None,
+        coding_answer: str = DEFAULT_CODING_ANSWER,
         text: str = "面试官文案",
         closing: str = DEFAULT_CLOSING,
     ) -> None:
@@ -116,6 +137,8 @@ class FakeLLMClient:
         self._resume = resume or DEFAULT_RESUME
         self._generated = generated or DEFAULT_GENERATED
         self._report = report or DEFAULT_REPORT
+        self._code_review = code_review or DEFAULT_CODE_REVIEW
+        self._coding_answer = coding_answer
         self._text = text
         self._closing = closing
         self.calls: list[dict] = []
@@ -150,11 +173,17 @@ class FakeLLMClient:
         self.calls.append({"system": system, "messages": kwargs.get("messages", [])})
         if "简历解析器" in system:  # P2-M11：简历抽取（标记须排在「提炼」之前，见 prompts）
             return json.dumps(self._resume, ensure_ascii=False)
+        if "代码评审官" in system:  # M15：代码点评
+            return json.dumps(self._code_review, ensure_ascii=False)
+        if "代码辅导官" in system:  # M15：代码追问（流式/非流式都走这里）
+            return self._coding_answer
+        # 「报告官」必须排在「评分官」之前：M14b 起报告 prompt 会提到「评分官点评」，
+        # 若先匹配「评分官」会把报告调用误路由成评分 JSON。
+        if "报告官" in system:
+            return json.dumps(self._report, ensure_ascii=False)
         if "评分官" in system:
             raw = self._behavioral_score if "行为面" in system else self._score
             return json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)
-        if "报告官" in system:
-            return json.dumps(self._report, ensure_ascii=False)
         if "出题官" in system:
             return json.dumps(self._generated, ensure_ascii=False)
         if "提炼" in system:

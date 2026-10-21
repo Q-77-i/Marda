@@ -183,3 +183,73 @@ def test_未评分题目的复盘字段为空值不崩():
     assert row["score"] is None
     assert row["covered_key_points"] == []
     assert row["missed_key_points"] == []
+
+
+def test_语音指标随题带出派生语速():
+    """M16：逐题复盘带原始计数 + 后端派生的 chars_per_min（前端不再算第二遍）。"""
+    question = _record("rag")
+    question.speech = {
+        "duration_ms": 42000,
+        "chars": 180,
+        "pause_count": 2,
+        "pause_ms": 5000,
+        "filler_count": 3,
+        "segments": 1,
+    }
+
+    row = build_per_question_comments([question], [""])[0]
+
+    assert row["speech"]["chars_per_min"] == 257.1
+    assert row["speech"]["pause_count"] == 2
+    assert row["speech"]["filler_count"] == 3
+
+
+def test_无语音作答_指标为None不落零():
+    row = build_per_question_comments([_record("rag")], [""])[0]
+    assert row["speech"] is None
+
+
+def test_报告官输入标记含图题_白板点评可被保留():
+    """M14b：有图的题在报告官记录里带显式标记，白板结构点评不会只停在 trace。"""
+    from app.graph.nodes.report import _format_records
+
+    question = _record("rag")
+    question.image_ids = ["a" * 32]
+    plain = _record("memory")
+
+    text = _format_records([question, plain])
+
+    assert "本题回答含 1 张图，其中可能有白板架构图" in text
+    assert "白板/架构图点评（报告必须保留其中的具体缺失项）" in text
+    assert text.count("白板架构图") == 1  # 无图题不出现标记
+
+
+def test_有图题报告点评自动补白板缺失项():
+    """M14b：报告官丢掉白板缺失结论时，用评分官点评里的原句确定性补回。"""
+    question = _record(
+        "rag",
+        comment="候选人未作答，仅提供一张「用户→Agent→LLM」架构图；"
+                "建议追问其架构图中缺失的记忆、工具调用、路由等关键模块。",
+    )
+    question.image_ids = ["a" * 32]
+
+    result = build_per_question_comments([question], ["答非所问"])
+
+    assert result[0]["comment"].startswith("答非所问")
+    assert "白板点评" in result[0]["comment"]
+    assert "缺失的记忆、工具调用、路由" in result[0]["comment"]
+
+
+def test_无图题不补白板点评():
+    question = _record("rag", comment="架构图缺失记忆模块，建议追问。")
+    result = build_per_question_comments([question], ["答非所问"])
+    assert "白板点评" not in result[0]["comment"]
+
+
+def test_报告点评已有缺失项不重复补():
+    question = _record("rag", comment="架构图缺失记忆模块，建议追问。")
+    question.image_ids = ["a" * 32]
+
+    result = build_per_question_comments([question], ["已指出缺失的记忆模块"])
+
+    assert result[0]["comment"] == "已指出缺失的记忆模块"

@@ -99,6 +99,15 @@
     font-size: 8.5pt; color: #ba7917; background: #fdf8f0;
   }
 
+  /* ---- 表达复盘（M16）：语音作答指标，与分数卡独立 ---- */
+  .expr-stats { display: table; width: 100%; margin: 0 0 6px; padding: 0; }
+  .expr-stat { display: table-cell; width: 25%; vertical-align: bottom; }
+  .expr-stat .k { display: block; font-size: 8pt; color: #6a7280; }
+  .expr-stat .v { font-size: 12pt; font-weight: 600; }
+  .expr-stat .v em { font-size: 8pt; font-weight: 400; font-style: normal; color: #6a7280; }
+  .expr-note { margin: 4px 0 0; font-size: 8.5pt; color: #6a7280; }
+  .q-speech { margin: 0 0 5px; font-size: 8.5pt; color: #6a7280; }
+
   /* ---- 正文 ---- */
   .prose { margin: 0; white-space: pre-wrap; }
 
@@ -180,6 +189,34 @@
   {% elif unscored_count %}
   <p class="notice-note">本场 {{ answered_count }} 题中有 {{ unscored_count }} 题未评分，分数与曲线只统计已评分的题目。</p>
   {% endif %}
+</section>
+{% endif %}
+
+{#- 表达复盘（M16）：语音作答才有；与 has_scores 独立，降级场次照样给 -#}
+{% if expression %}
+<section class="card">
+  <h2>表达复盘</h2>
+  <table class="expr-stats">
+    <tr>
+      <td class="expr-stat">
+        <span class="k">语音作答时长</span>
+        <span class="v">{{ expression.duration }}</span>
+      </td>
+      <td class="expr-stat">
+        <span class="k">平均语速</span>
+        <span class="v">{% if expression.chars_per_min is not none %}{{ expression.chars_per_min }}<em> 字/分</em>{% else %}—{% endif %}</span>
+      </td>
+      <td class="expr-stat">
+        <span class="k">长停顿（≥2s）</span>
+        <span class="v">{{ expression.pause_count }}<em> 次 / {{ expression.pause }}</em></span>
+      </td>
+      <td class="expr-stat">
+        <span class="k">口头禅</span>
+        <span class="v">{{ expression.filler_count }}<em> 次</em></span>
+      </td>
+    </tr>
+  </table>
+  <p class="expr-note">{{ expression.note }}</p>
 </section>
 {% endif %}
 
@@ -276,6 +313,11 @@
       <li>{{ dim.label }}<b>{{ dim.value }}</b></li>
       {% endfor %}
     </ul>
+    {% endif %}
+    {% if q.speech %}
+    <div class="q-speech">
+      语音作答 {{ q.speech.duration }} · 语速 {% if q.speech.chars_per_min is not none %}{{ q.speech.chars_per_min }} 字/分{% else %}—{% endif %} · 长停顿 {{ q.speech.pause_count }} 次（{{ q.speech.pause }}） · 口头禅 {{ q.speech.filler_count }} 次
+    </div>
     {% endif %}
     {% if q.covered %}
     <div class="points"><span class="points-label">覆盖的关键点</span><span class="pt ok">{{ q.covered | join(' · ') }}</span></div>

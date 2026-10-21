@@ -9,6 +9,7 @@ from __future__ import annotations
 from app.graph.state import (
     FOLLOWUP_ANSWER_MARKER,
     InterviewState,
+    QuestionRecord,
     TraceEvent,
     add_history,
     add_trace,
@@ -99,3 +100,14 @@ def test_add_history_带图写入_image_ids():
     add_history(state, "user", "见截图", image_ids=["a" * 32])
 
     assert state.chat_history[0]["image_ids"] == ["a" * 32]
+
+
+# ---- 语音指标字段（M16）：旧 checkpoint 没有这两个键，默认 None 仍可验证 ----
+
+
+def test_旧checkpoint无语音字段_默认None():
+    state = InterviewState.model_validate({"interview_id": "x", "position": "p"})
+    assert state.current_speech is None
+
+    question = QuestionRecord(text="题", domain="rag", topic="t", difficulty="L1")
+    assert question.speech is None

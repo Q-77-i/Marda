@@ -154,6 +154,9 @@ def test_带图时追加附件消息_system_逐字不动():
     assert with_images[1]["role"] == "user"
     assert with_images[1]["content"][0]["type"] == "text"
     assert with_images[1]["content"][1] == part
+    # M14b：白板结构点评规则只随图出现，且明确「缺失组件/连线」
+    note = with_images[1]["content"][0]["text"]
+    assert "架构图" in note and "缺失" in note and "组件或连线" in note
 
 
 @pytest.mark.asyncio
