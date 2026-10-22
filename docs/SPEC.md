@@ -891,7 +891,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 16. 上游保护与降级链：**断路器只计「上游不可用」类失败**（内容类失败计入会把已知的偶发非法 JSON 误判成上游故障）；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口），且**未评分不产 0 分**；降级内容全部是确定性兜底，**不许在其中调 LLM**；闸门与熔断状态在**进程内存**（多 worker 不共享）
 17. MCP 与红线门禁：MCP **只做 stdio、只暴露公共题**，工具内异常必须转 `ToolError`——未捕获异常会被 SDK 换成「Error executing tool X」，**模型看不到原因**；`mcp` 只许 `app/mcp_server/` import（单测扫描钉死）。**红线检查器的语料取值要按列的存储形态取**：`key_points` 是 JSON **文本**，把它当可迭代不报错、只是静默少查一路（已改成显式解析 + 单测）
 18. 上游调用命名：`llm.*(purpose=...)` → drop-in 的 `name` **只在 Langfuse 启用时传**——原生 openai SDK 会把 `name` 当未知参数塞进请求体（400）。成本读回（`fetch_trace_observations` / `summarize_observations`）是 smoke_api 与 `cost_report.py` 的**同一份实现**（别写第二份）
-19. 多模态扩展（M13–M16）：Monaco **只走同源 `/monaco/vs`**（复制脚本 + gitignore + ESLint 忽略，不走 CDN）；`SpeechStats` 是 int，前端 `pause_ms` 必须取整；文字消息清空 `current_speech`；白板点评验收靠**手工探针**（评分门禁 golden 纯文字，证明不了读图）；Chrome 155 的 fake-audio 文件标志在本机实测无声，浏览器语音探针用页面内覆写 `getUserMedia` + 同源 WAV
+19. 多模态扩展（M13–M16）：Monaco **只走同源 `/monaco/vs`**（复制脚本 + gitignore + ESLint 忽略，不走 CDN）；`SpeechStats` 是 int，前端 `pause_ms` 必须取整；文字消息清空 `current_speech`；白板点评验收靠**手工探针**（评分门禁 golden 纯文字，证明不了读图）；Chrome 155 的 fake-audio 文件标志在本机实测无声，浏览器语音探针用页面内覆写 `getUserMedia` + 同源 WAV；**摄像头不在页面加载时自动取流**（Safari 无手势会弹权限），`marda.cameraMode` 只驱动「恢复摄像头」提示；工作台刷新恢复只存 localStorage（清站点数据即丢），面板写 URL `?panel=code|board`
 
 ## 12. 改动索引
 

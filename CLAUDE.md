@@ -16,7 +16,7 @@
 
 - 只管本文件夹 /Users/zhouq/VibeCoding/Marda；同级姊妹项目不读、不动、不受影响
 - **Git 提交与推送前必须向用户确认**。公开仓库：https://github.com/Q-77-i/Marda（SSH 已配置）
-- **分支模型**：`main` 是唯一长期分支，也是可演示最终版；小改动直接提交 main（ruleset 已给 Repository admin 配 Always allow bypass）。多模态扩展在 `exp/multimodal` 上完成（M13–M16）后 PR 合回 main；`exp/microservices` 需要时再建，不提前建空分支。里程碑用 annotated tag：`m-p1` / `m-p2` / `m-p2-ui`；tag 只是快照，不替代开发分支。
+- **分支模型**：`main` 是唯一长期分支，也是可演示最终版；小改动直接提交 main（ruleset 已给 Repository admin 配 Always allow bypass）。多模态扩展在 `exp/multimodal` 上完成（M13–M16）后 PR 合回 main；`exp/microservices` 需要时再建，不提前建空分支。里程碑用 annotated tag：`m-p1` / `m-p2` / `m-p2-ui` / `m-p2-mm`；tag 只是快照，不替代开发分支。
 - **Git 安全与 CI**：不 force-push main、不改写已发布历史；删分支前走 `mattskills:git-safety-guardrails`。CI 在 push main 与 PR 上都会跑，直推前本地跑 pytest / vitest / build。
 - **gh 可用**：本机已装 `gh`（Q-77-i，repo scope），PR / Release 可用 CLI；提交与推送前仍须确认。
 - **提交前跑语料红线反查**：`backend/.venv/bin/python data/scripts/check_redline.py`（查待提交改动，命中即非零退出；发布前用 `--all` 全量）。**规则靠记忆执行不了——明知规矩也要跑检查**：这条检查立起来的第一件事，就是在已入库文件里查出 15 处遗留的题库原文引用
