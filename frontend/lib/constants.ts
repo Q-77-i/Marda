@@ -226,6 +226,7 @@ export const NAV_ITEMS = [
   { href: "/", label: "仪表盘" },
   { href: "/bank", label: "题库" },
   { href: "/bank/private", label: "我的题库" },
+  { href: "/interviews", label: "面试记录" },
   { href: "/profile", label: "能力档案" },
   { href: "/learn", label: "学习推荐" },
 ] as const;

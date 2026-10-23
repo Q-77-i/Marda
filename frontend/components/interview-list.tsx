@@ -33,11 +33,14 @@ import { cn } from "@/lib/utils";
 export function InterviewList({
   onRowsChange,
   limit,
+  showHeader = true,
 }: {
   /** 行数据变化（首次加载 / 删除）时通知外层，统计条与列表共用同一份数据 */
   onRowsChange?: (rows: InterviewRow[]) => void;
-  /** 仪表盘只展示最近几场，完整列表在能力档案；统计仍用全量行 */
+  /** 仪表盘只展示最近几场，完整列表在面试记录页；统计仍用全量行 */
   limit?: number;
+  /** 独立页面（面试记录页）自带页头时关掉卡片头，否则标题重复 */
+  showHeader?: boolean;
 }) {
   const [rows, setRows] = useState<InterviewRow[] | null>(null);
   // 加载失败（列表没内容可显示）与删除失败（列表还在）分开：后者不该吃掉整块面板
@@ -91,24 +94,26 @@ export function InterviewList({
 
   return (
     <Card>
-      <CardHeader>
-        <div className="min-w-0">
-          <CardTitle>面试记录</CardTitle>
-          <p className="mt-1 text-[11px] text-muted-foreground">
-            进行中的场次可以随时续面
-          </p>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <MonoLabel className="hidden sm:inline">Sessions</MonoLabel>
-          <Link
-            href="/profile"
-            className="inline-flex h-[30px] items-center gap-1 rounded-md px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            全部场次
-            <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
-          </Link>
-        </div>
-      </CardHeader>
+      {showHeader ? (
+        <CardHeader>
+          <div className="min-w-0">
+            <CardTitle>面试记录</CardTitle>
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              进行中的场次可以随时续面
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <MonoLabel className="hidden sm:inline">Sessions</MonoLabel>
+            <Link
+              href="/interviews"
+              className="inline-flex h-[30px] items-center gap-1 rounded-md px-2.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              全部场次
+              <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+            </Link>
+          </div>
+        </CardHeader>
+      ) : null}
 
       {deleteError ? (
         <div className="px-[18px] pt-3">
@@ -139,7 +144,7 @@ export function InterviewList({
         <EmptyState
           className="py-12"
           title="还没有面试记录"
-          description="从左侧创建一场面试，开始你的第一次模拟"
+          description="创建一场面试后，这里会列出全部场次"
         />
       ) : (
         <ul className="flex flex-col">

@@ -2,6 +2,7 @@
 
 import {
   FolderOpen,
+  History,
   LayoutDashboard,
   Library,
   Sparkles,
@@ -19,6 +20,7 @@ const ICONS: Record<string, LucideIcon> = {
   "/": LayoutDashboard,
   "/bank": Library,
   "/bank/private": FolderOpen,
+  "/interviews": History,
   "/profile": UserRound,
   "/learn": Sparkles,
 };
