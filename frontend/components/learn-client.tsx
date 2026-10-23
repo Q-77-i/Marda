@@ -59,9 +59,12 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
   useEffect(() => {
     let active = true;
     setError(null);
-    listInterviews()
-      .then((data) => {
-        if (active) setRows(finishedSessions(data));
+    listInterviews(
+      // 场次选择器要的是全部已完成技术面：服务端过滤 + 一次取满（≥50 场的极端情况超出选择器用途）
+      new URLSearchParams({ status: "finished", type: "tech", page: "1", page_size: "50" }),
+    )
+      .then((page) => {
+        if (active) setRows(finishedSessions(page.items));
       })
       .catch((err: unknown) => {
         if (active) {

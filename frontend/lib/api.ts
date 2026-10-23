@@ -449,8 +449,18 @@ export function getTrace(interviewId: string): Promise<TraceResponse> {
   return getJSON<TraceResponse>(`/api/interviews/${interviewId}/trace`);
 }
 
-export function listInterviews(): Promise<InterviewRow[]> {
-  return getJSON<InterviewRow[]>("/api/interviews");
+/** 分页后的历史列表：total/counts 都基于过滤后的全集，不受分页影响。 */
+export type InterviewPage = {
+  items: InterviewRow[];
+  total: number;
+  page: number;
+  page_size: number;
+  counts: { finished: number; running: number };
+};
+
+export function listInterviews(query?: URLSearchParams): Promise<InterviewPage> {
+  const qs = query?.toString();
+  return getJSON<InterviewPage>(`/api/interviews${qs ? `?${qs}` : ""}`);
 }
 
 /** 物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。 */

@@ -21,7 +21,7 @@ import {
   type PrivateQuestionPatch,
   type UploadReport,
 } from "@/lib/api";
-import { totalPages } from "@/lib/bank";
+import { totalPages } from "@/lib/pagination";
 import { DIFFICULTY_OPTIONS, ENABLED_DOMAINS, domainLabel, difficultyLabel } from "@/lib/constants";
 import {
   EMPTY_PRIVATE_FILTERS,

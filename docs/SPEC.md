@@ -653,7 +653,7 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 | GET /api/interviews/{id}/report.pdf | — | 报告 PDF：`application/pdf` + `attachment` 下载头（中文名走 RFC 5987 `filename*`，另给 ASCII 兜底名）；**未结束/不存在/越权同 404**（与报告端点同一判据）；每次现渲染不落盘缓存 |
 | GET /api/interviews/{id}/recommendations | — | 学习推荐：`{interview_id, position, groups: [{domain, advice, status, cards}]}`，`status ∈ ok`/`exhausted`/`empty`（§4.10）；卡片含题干/答案/关键点/难度/厂商/面次 + `sources`（主源首位）。**与报告端点同一 404 判据**，检索失败 500 透传；**行为面报告直接返回空 `groups`**（不做无效检索） |
 | GET /api/interviews/{id}/trace | — | `{interview_id, position, dims, status, answered_count, question_count, events, nodes}`（**未结束场次同样可查**；事件模型见 §4.7）。`dims` = 评分维度表 `[{key,label}]`（judge 事件的 detail 是评分模型裸 dump，键随会话类型变，标签由后端给；老场次无该字段 → 前端退回技术面五维常量）。`nodes` = 节点时间线 `[{seq, node, node_label, round, duration_ms, writes}]` |
-| GET /api/interviews | — | 面试历史列表（倒序） |
+| GET /api/interviews | 可选 `status`（running/finished）、`type`（tech/behavioral；tech 含老场次 NULL）、`since`（YYYY-MM-DD，UTC 当日零点）、`page`（≥1）、`page_size`（1–50，默认 10） | 分页 + 过滤的历史列表（倒序）：`{items, total, page, page_size, counts:{finished, running}}`；**total 与 counts 基于过滤后全集**，不受分页影响；非法参数 422 |
 | GET /api/profile | — | 能力档案：`{sessions, summary, weakness_changes, excluded}`（§4.11）。**无路径参数**；**没有场次时返回零态结构（不是 404）**；**行为面场次不计入**（按报告 payload 的 `interview_type` 过滤），只进 `excluded` 计数 |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty` / `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（**主源排首位**） |
@@ -806,8 +806,8 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 登录与守卫 | 登录页为深色主张面板 + 纸面表单分屏，登录 / 注册同页 tab；`lib/session.ts` 管 token（localStorage 优先 → sessionStorage 降级 → 都禁用则明确提示，不静默失败）；`lib/http.ts` 注入 Bearer 并统一 401 处置；`auth-guard.tsx` 判断完成前先渲染载入态，不闪受保护内容。**401 默认直跳登录页，唯独面试页弹确认再跳**（答到一半被踢走体感太差）；登录接口自身的 401/409 只当表单错误；登录成功统一 `replace("/")` |
 | 仪表盘（创建） | 方向固定 + **面试类型** + 题量 5/10/15 + **难度**（自适应 / L1 / L2 / L3）+ **简历（可选，默认收起）**：文件（.pdf/.md/.txt，≤2MB）或粘贴文本。**选行为面后隐藏难度选择器与容量校验**（容量按「难度 × 域配额」算，与行为面题源无关），题量只给 5/10；表单用分段控件，主操作「开始面试」保持在第一屏 |
 | 仪表盘（简历区） | 「解析简历」→ 摘要条（「已读到 N 段项目经历 · M 项技能 · 约 K 字」，**解析错当场看得见**，可移除重传；解析态与输入态互斥）+ 一行如实交代「会发送给模型解析，仅用于本场出题与评分」 |
-| 仪表盘（历史） | 默认只列最近 5 场，右上「全部场次」进面试记录页；进入报告；**每条带物理删除按钮**（确认弹窗后调 DELETE）；行为面场次挂类型徽标且不显示难度；下方给能力快照与按最近报告生成的「下一步」 |
-| 面试记录页 | 全量场次列表：复用仪表盘同一列表组件（不加 `limit`、关掉卡片头），行内续面 / 报告 / 删除口径不变；页头由页面提供 |
+| 仪表盘（历史） | 默认只列最近 5 场（服务端 pageSize=5），右上「全部场次」进面试记录页；进入报告；**每条带物理删除按钮**（确认弹窗后调 DELETE）；行为面场次挂类型徽标且不显示难度；**统计条读接口 counts（全量状态分布），不从列表行里数**；下方给能力快照与按最近报告生成的「下一步」 |
+| 面试记录页 | 全量场次列表：复用仪表盘同一列表组件，服务端分页 + 过滤（状态 / 类型 / 时间），工具条 +「共 N 场 / 第 x / y 页」；改过滤回第一页、删到空页回退一页、空结果与「还没有记录」文案分开；行内续面 / 报告 / 删除口径不变；页头由页面提供 |
 | 题库页 | **筛选 / 结果 / 详情三栏**：搜索框（关键词走混合检索，提交后与筛选叠加）+ 域列表 + 难度分段 + 厂商/面次下拉；结果行选中后右侧看详情，窄屏改为行内展开。详情含参考答案 / 关键点 / **来源合规四要素**（主源标注、`原文` 外链 `rel=noreferrer`）+ 分页。卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选或搜索任一项变更即回第一页**（判据在 `lib/bank.ts` 的 `withFilter`，vitest 钉死） |
 | 私有题库页 | 上传卡（模板说明前置）→ 结果条给**三份明细**（导入 / 重复 / 失败，重复写明「未覆盖」——答案可能已被他手改过）→ 列表筛选 + **行内展开**编辑 / 归档恢复。后端 `enabled`/`draft` 在前端读作「使用中 / 已归档」 |
 | 容量校验 | 挂载时拉一次 `/api/bank/capacity`（题量 × 4 难度一次拿全，切换难度零网络）。直供不足的题量**禁用 + 明写缺在哪**（不做静默禁用——禁了不说原因，用户只会以为页面坏了）；**拉取失败一律不禁用**（`capacity = null`）：服务端本就不拦创建，网络抖动不能让表单把用户锁死 |

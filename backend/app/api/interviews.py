@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 from sse_starlette.sse import ServerSentEvent
@@ -263,9 +264,34 @@ async def get_interview_trace(
 
 
 @router.get("")
-async def list_interviews(request: Request, user: dict = Depends(get_current_user)):
+async def list_interviews(
+    request: Request,
+    status: Literal["running", "finished"] | None = None,
+    interview_type: Literal["tech", "behavioral"] | None = Query(
+        default=None, alias="type"
+    ),
+    since: date | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=50),
+    user: dict = Depends(get_current_user),
+):
+    """历史列表（分页 + 过滤，P2 面试记录页）：total/counts 基于过滤后全集。"""
     service: Service = request.app.state.service
-    return await service.list_interviews(user["id"])
+    items, total, counts = await service.list_interviews(
+        user["id"],
+        status=status,
+        interview_type=interview_type,
+        since=since.isoformat() if since is not None else None,
+        page=page,
+        page_size=page_size,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "counts": counts,
+    }
 
 
 @router.delete("/{interview_id}", status_code=204)

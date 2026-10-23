@@ -1,6 +1,12 @@
 "use client";
 
-import { ArrowRight, ArrowUpRight, Trash2 } from "lucide-react";
+import {
+  ArrowRight,
+  ArrowUpRight,
+  ChevronLeft,
+  ChevronRight,
+  Trash2,
+} from "lucide-react";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 
@@ -21,70 +27,114 @@ import { Card, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/empty-state";
 import { ErrorState } from "@/components/ui/error-state";
 import { MonoLabel } from "@/components/ui/mono-label";
+import { Segmented } from "@/components/ui/segmented";
 import { ListSkeleton } from "@/components/ui/skeleton";
 import { StatusBanner } from "@/components/ui/status-banner";
 import { StatusDot } from "@/components/ui/status-dot";
-import { deleteInterview, listInterviews, type InterviewRow } from "@/lib/api";
+import { deleteInterview, listInterviews, type InterviewPage } from "@/lib/api";
 import { difficultyLabel, interviewTypeLabel, isBehavioral } from "@/lib/constants";
 import { formatDuration, formatTime } from "@/lib/format";
+import {
+  EMPTY_INTERVIEW_FILTERS,
+  pageAfterDelete,
+  toInterviewQuery,
+  withInterviewFilter,
+  type InterviewFilters,
+  type InterviewSinceFilter,
+  type InterviewStatusFilter,
+  type InterviewTypeFilter,
+} from "@/lib/interviews";
+import { totalPages } from "@/lib/pagination";
 import { cn } from "@/lib/utils";
 
-/** 历史面试列表：进行中 → 续面，已完成 → 报告；每条可物理删除（T7a-R1）。 */
+const STATUS_OPTIONS = [
+  { value: "", label: "全部" },
+  { value: "running", label: "进行中" },
+  { value: "finished", label: "已完成" },
+] as const;
+
+const TYPE_OPTIONS = [
+  { value: "", label: "全部" },
+  { value: "tech", label: "技术面" },
+  { value: "behavioral", label: "行为面" },
+] as const;
+
+const SINCE_OPTIONS = [
+  { value: "", label: "全部" },
+  { value: "7d", label: "近 7 天" },
+  { value: "30d", label: "近 30 天" },
+] as const;
+
+/**
+ * 历史面试列表：进行中 → 续面，已完成 → 报告；每条可物理删除（T7a-R1）。
+ *
+ * 查询走服务端（分页 + 过滤，P2 面试记录页）：total/counts 基于过滤后的全集。
+ * 仪表盘用 pageSize=5 + showControls=false 只要前几场；统计条读 counts，不再数行。
+ */
 export function InterviewList({
-  onRowsChange,
-  limit,
+  pageSize = 10,
+  showControls = true,
   showHeader = true,
+  onCountsChange,
 }: {
-  /** 行数据变化（首次加载 / 删除）时通知外层，统计条与列表共用同一份数据 */
-  onRowsChange?: (rows: InterviewRow[]) => void;
-  /** 仪表盘只展示最近几场，完整列表在面试记录页；统计仍用全量行 */
-  limit?: number;
-  /** 独立页面（面试记录页）自带页头时关掉卡片头，否则标题重复 */
+  /** 仪表盘只展示最近几场，完整列表在面试记录页 */
+  pageSize?: number;
+  /** 工具条与分页栏（独立页开，仪表盘关） */
+  showControls?: boolean;
+  /** 独立页面自带页头时关掉卡片头，否则标题重复 */
   showHeader?: boolean;
+  /** 全量状态分布（随过滤条件变化）通知外层统计条 */
+  onCountsChange?: (counts: InterviewPage["counts"]) => void;
 }) {
-  const [rows, setRows] = useState<InterviewRow[] | null>(null);
+  const [filters, setFilters] = useState<InterviewFilters>(EMPTY_INTERVIEW_FILTERS);
+  const [data, setData] = useState<InterviewPage | null>(null);
   // 加载失败（列表没内容可显示）与删除失败（列表还在）分开：后者不该吃掉整块面板
   const [loadError, setLoadError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
-  const onRowsChangeRef = useRef(onRowsChange);
+  const onCountsChangeRef = useRef(onCountsChange);
 
   useEffect(() => {
-    onRowsChangeRef.current = onRowsChange;
-  }, [onRowsChange]);
+    onCountsChangeRef.current = onCountsChange;
+  }, [onCountsChange]);
 
   useEffect(() => {
     let active = true;
     setLoadError(null);
-    listInterviews()
-      .then((data) => {
-        if (active) {
-          setRows(data);
-          onRowsChangeRef.current?.(data);
-        }
+    listInterviews(toInterviewQuery(filters, pageSize))
+      .then((page) => {
+        if (!active) return;
+        setData(page);
+        onCountsChangeRef.current?.(page.counts);
       })
       .catch((err: unknown) => {
-        if (active) {
-          setRows(null);
-          setLoadError(err instanceof Error ? err.message : "加载失败");
-        }
+        if (!active) return;
+        setData(null);
+        setLoadError(err instanceof Error ? err.message : "加载失败");
       });
     return () => {
       active = false;
     };
-  }, [reloadKey]);
+  }, [filters, pageSize, reloadKey]);
 
-  const visibleRows = rows && limit ? rows.slice(0, limit) : rows;
+  const pages = totalPages(data?.total ?? null, pageSize);
+  const filtered =
+    filters.status !== "" || filters.type !== "" || filters.since !== "";
 
   async function handleDelete(id: string) {
     setDeletingId(id);
     setDeleteError(null);
     try {
       await deleteInterview(id);
-      const next = rows ? rows.filter((row) => row.id !== id) : rows;
-      setRows(next);
-      if (next) onRowsChangeRef.current?.(next);
+      // 删到当页空且不在第一页 → 回退一页；否则原地重取（total/counts 都要刷新）
+      const remaining = (data?.items.length ?? 1) - 1;
+      const nextPage = pageAfterDelete(filters.page, remaining);
+      if (nextPage !== filters.page) {
+        setFilters((prev) => ({ ...prev, page: nextPage }));
+      } else {
+        setReloadKey((key) => key + 1);
+      }
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : "删除失败，请重试");
     } finally {
@@ -115,6 +165,59 @@ export function InterviewList({
         </CardHeader>
       ) : null}
 
+      {showControls ? (
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-b border-border px-[18px] py-3">
+          <div className="flex items-center gap-2">
+            <MonoLabel className="hidden sm:inline">状态</MonoLabel>
+            <Segmented
+              options={STATUS_OPTIONS}
+              value={filters.status}
+              onChange={(value) =>
+                setFilters((prev) =>
+                  withInterviewFilter(prev, {
+                    status: value as InterviewStatusFilter,
+                  }),
+                )
+              }
+              ariaLabel="按状态筛选"
+              className="w-[168px]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <MonoLabel className="hidden sm:inline">类型</MonoLabel>
+            <Segmented
+              options={TYPE_OPTIONS}
+              value={filters.type}
+              onChange={(value) =>
+                setFilters((prev) =>
+                  withInterviewFilter(prev, {
+                    type: value as InterviewTypeFilter,
+                  }),
+                )
+              }
+              ariaLabel="按面试类型筛选"
+              className="w-[168px]"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <MonoLabel className="hidden sm:inline">时间</MonoLabel>
+            <Segmented
+              options={SINCE_OPTIONS}
+              value={filters.since}
+              onChange={(value) =>
+                setFilters((prev) =>
+                  withInterviewFilter(prev, {
+                    since: value as InterviewSinceFilter,
+                  }),
+                )
+              }
+              ariaLabel="按开始时间筛选"
+              className="w-[200px]"
+            />
+          </div>
+        </div>
+      ) : null}
+
       {deleteError ? (
         <div className="px-[18px] pt-3">
           <StatusBanner tone="error">{deleteError}</StatusBanner>
@@ -136,19 +239,34 @@ export function InterviewList({
             }
           />
         </div>
-      ) : rows === null ? (
+      ) : data === null ? (
         <div className="p-[18px]">
           <ListSkeleton rowClassName="h-12 w-full" />
         </div>
-      ) : rows.length === 0 ? (
+      ) : data.items.length === 0 ? (
         <EmptyState
           className="py-12"
-          title="还没有面试记录"
-          description="创建一场面试后，这里会列出全部场次"
+          title={filtered ? "没有符合条件的场次" : "还没有面试记录"}
+          description={
+            filtered
+              ? "换个筛选条件试试"
+              : "创建一场面试后，这里会列出全部场次"
+          }
+          action={
+            filtered ? (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setFilters({ ...EMPTY_INTERVIEW_FILTERS })}
+              >
+                清空筛选
+              </Button>
+            ) : undefined
+          }
         />
       ) : (
         <ul className="flex flex-col">
-          {(visibleRows ?? []).map((row) => {
+          {data.items.map((row) => {
             const finished = row.status === "finished";
             const duration = formatDuration(row.started_at, row.ended_at);
             const behavioral = isBehavioral(row.interview_type);
@@ -241,6 +359,42 @@ export function InterviewList({
           })}
         </ul>
       )}
+
+      {showControls && data !== null && data.total > 0 ? (
+        <div className="flex items-center justify-between border-t border-border px-[18px] py-2">
+          <span className="font-mono text-[9.5px] tracking-[0.04em] text-muted-foreground">
+            共 {data.total} 场 / 第 {data.page} / {pages} 页
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="上一页"
+              disabled={data.page <= 1}
+              onClick={() =>
+                setFilters((prev) =>
+                  withInterviewFilter(prev, { page: prev.page - 1 }),
+                )
+              }
+            >
+              <ChevronLeft strokeWidth={1.8} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="下一页"
+              disabled={data.page >= pages}
+              onClick={() =>
+                setFilters((prev) =>
+                  withInterviewFilter(prev, { page: prev.page + 1 }),
+                )
+              }
+            >
+              <ChevronRight strokeWidth={1.8} />
+            </Button>
+          </div>
+        </div>
+      ) : null}
     </Card>
   );
 }

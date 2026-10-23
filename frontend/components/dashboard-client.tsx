@@ -13,7 +13,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { StatStrip, type StatItem } from "@/components/ui/stat-strip";
 import {
   getProfile,
-  type InterviewRow,
+  type InterviewPage,
   type ProfileResponse,
 } from "@/lib/api";
 import { DIMENSIONS, difficultyLabel, domainLabel } from "@/lib/constants";
@@ -23,11 +23,11 @@ import { deltaLabel } from "@/lib/profile";
 /**
  * 仪表盘主体：统计条 + 创建表单 + 面试记录 + 能力快照/下一步。
  *
- * 面试记录的行数据由 InterviewList 自取并通过 onRowsChange 回传，统计条与列表
- * 共用同一份数据；能力快照/下一步走 profile 接口。两者各自失败只坏自己那块。
+ * 面试记录只取最近 5 场（服务端分页），统计条读接口返回的 counts（全量状态分布），
+ * 不再从列表行里数；能力快照/下一步走 profile 接口。两者各自失败只坏自己那块。
  */
 export function DashboardClient() {
-  const [rows, setRows] = useState<InterviewRow[] | null>(null);
+  const [counts, setCounts] = useState<InterviewPage["counts"] | null>(null);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileError, setProfileError] = useState(false);
 
@@ -46,8 +46,8 @@ export function DashboardClient() {
     };
   }, []);
 
-  const finished = rows?.filter((row) => row.status === "finished").length;
-  const running = rows?.filter((row) => row.status !== "finished").length;
+  const finished = counts?.finished;
+  const running = counts?.running;
   const delta = profile?.summary.latest_delta?.delta;
   const hasSessions = (profile?.sessions.length ?? 0) > 0;
   const deltaTone: StatItem["tone"] =
@@ -57,7 +57,7 @@ export function DashboardClient() {
     {
       label: "已完成面试",
       value:
-        rows === null ? (
+        counts === null ? (
           "…"
         ) : (
           <>
@@ -70,7 +70,7 @@ export function DashboardClient() {
     {
       label: "进行中",
       value:
-        rows === null ? (
+        counts === null ? (
           "…"
         ) : (
           <>
@@ -112,7 +112,11 @@ export function DashboardClient() {
         <CreateForm />
 
         <div className="flex min-w-0 flex-col gap-5">
-          <InterviewList onRowsChange={setRows} limit={5} />
+          <InterviewList
+            pageSize={5}
+            showControls={false}
+            onCountsChange={setCounts}
+          />
 
           <div className="grid gap-5 lg:grid-cols-2">
             <CapabilitySnapshot profile={profile} failed={profileError} />

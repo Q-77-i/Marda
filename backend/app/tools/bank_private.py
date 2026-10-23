@@ -1,6 +1,6 @@
 """私有题库查询层（FR-13，SPEC §8 questions.user_id / §7 私有题库三端点）：上传入库 / 列表 / 编辑 / 归档。
 
-**user_id 必传无默认**（同 db.list_interviews 口径）：隔离靠每个查询都带归属条件，
+**user_id 必传无默认**（同 db.query_interviews 口径）：隔离靠每个查询都带归属条件，
 漏传在调用处直接 TypeError，而不是静默查出别人的题。
 
 私有题与公共题**同表**（questions.user_id：NULL = 公共、非空 = 归属用户），但**不进 Qdrant**：

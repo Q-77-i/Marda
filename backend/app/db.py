@@ -271,14 +271,62 @@ def delete_interview(db_path: Path, interview_id: str) -> bool:
     return deleted > 0
 
 
-def list_interviews(db_path: Path, *, user_id: str, limit: int = 50) -> list[dict]:
-    """按用户过滤（FR-23）：user_id 必传，避免漏过滤导致跨用户泄漏。"""
+def query_interviews(
+    db_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+    interview_type: str | None = None,
+    since: str | None = None,
+    page: int = 1,
+    page_size: int = 10,
+) -> tuple[list[dict], int, dict[str, int]]:
+    """分页 + 过滤的历史列表（P2 面试记录页）：返回 (当前页行, 过滤后总数, 状态分布)。
+
+    **user_id 必传**（FR-23）：隔离靠每个查询都带归属条件，避免漏过滤跨用户泄漏。
+    - `interview_type="tech"` 同时匹配老场次的 NULL（P1-M11 口径：NULL 按技术面处理）
+    - `since` 是 `YYYY-MM-DD`（UTC 日期），按 `started_at >= 当日 00:00 UTC` 比较
+    - `total` 与 `counts` 都基于**过滤后的全集**，不受分页影响；
+      `counts` 固定返回 finished/running 两键（status 过滤后另一类为 0）
+    - 排序 `started_at DESC, id ASC`：同秒场次靠 id 兜底，OFFSET 分页不重不漏
+    """
+    where = ["user_id=?"]
+    params: list[Any] = [user_id]
+    if status is not None:
+        where.append("status=?")
+        params.append(status)
+    if interview_type == INTERVIEW_TECH:
+        where.append("(interview_type=? OR interview_type IS NULL)")
+        params.append(interview_type)
+    elif interview_type is not None:
+        where.append("interview_type=?")
+        params.append(interview_type)
+    if since is not None:
+        where.append("started_at>=?")
+        params.append(f"{since}T00:00:00+00:00")
+    clause = " AND ".join(where)
+
     with _connect(db_path) as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) FROM interviews WHERE {clause}", params
+        ).fetchone()[0]
+        by_status = {
+            row[0]: row[1]
+            for row in conn.execute(
+                f"SELECT status, COUNT(*) FROM interviews WHERE {clause} GROUP BY status",
+                params,
+            )
+        }
         rows = conn.execute(
-            "SELECT * FROM interviews WHERE user_id=? ORDER BY started_at DESC, id ASC LIMIT ?",
-            (user_id, limit),
+            f"SELECT * FROM interviews WHERE {clause}"
+            " ORDER BY started_at DESC, id ASC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
         ).fetchall()
-    return [dict(row) for row in rows]
+    counts = {
+        "finished": by_status.get("finished", 0),
+        "running": by_status.get("running", 0),
+    }
+    return [dict(row) for row in rows], total, counts
 
 
 def list_reports(db_path: Path, *, user_id: str, limit: int = 200) -> list[dict]:

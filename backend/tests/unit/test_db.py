@@ -88,7 +88,7 @@ def test_历史列表倒序(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "_now", lambda: next(times))
     db.create_interview(path, interview_id="iv-a", position="x", question_count=5, user_id="u1")
     db.create_interview(path, interview_id="iv-b", position="x", question_count=5, user_id="u1")
-    rows = db.list_interviews(path, user_id="u1")
+    rows = db.query_interviews(path, user_id="u1")[0]
     assert [r["id"] for r in rows] == ["iv-b", "iv-a"]
 
 
@@ -105,9 +105,9 @@ def test_历史列表按用户隔离(tmp_path):
     db.create_interview(path, interview_id="iv-a", position="x", question_count=5, user_id="u1")
     db.create_interview(path, interview_id="iv-b", position="x", question_count=5, user_id="u2")
     db.create_interview(path, interview_id="iv-c", position="x", question_count=5, user_id=None)
-    assert [r["id"] for r in db.list_interviews(path, user_id="u1")] == ["iv-a"]
-    assert [r["id"] for r in db.list_interviews(path, user_id="u2")] == ["iv-b"]
-    assert db.list_interviews(path, user_id="u3") == []  # 孤儿行不属于任何用户
+    assert [r["id"] for r in db.query_interviews(path, user_id="u1")[0]] == ["iv-a"]
+    assert [r["id"] for r in db.query_interviews(path, user_id="u2")[0]] == ["iv-b"]
+    assert db.query_interviews(path, user_id="u3")[0] == []  # 孤儿行不属于任何用户
 
 
 def test_用户表唯一约束与查询(tmp_path):
@@ -152,7 +152,7 @@ def test_旧库自动补user_id列(tmp_path):
     db.ensure_schema(path)
     row = db.get_interview(path, "old-1")
     assert row["id"] == "old-1" and row["user_id"] is None
-    assert db.list_interviews(path, user_id="u1") == []
+    assert db.query_interviews(path, user_id="u1")[0] == []
 
 
 def test_迁移补questions_user_id列(tmp_path):

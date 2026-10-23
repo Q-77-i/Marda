@@ -462,10 +462,26 @@ class Service:
         )
         return profile.build_profile(rows, no_report=no_report)
 
-    async def list_interviews(self, user_id: str, limit: int = 50) -> list[dict]:
-        rows = await asyncio.to_thread(
-            db.list_interviews, self._settings.db_path, user_id=user_id, limit=limit
+    async def list_interviews(
+        self,
+        user_id: str,
+        *,
+        status: str | None = None,
+        interview_type: str | None = None,
+        since: str | None = None,
+        page: int = 1,
+        page_size: int = 10,
+    ) -> tuple[list[dict], int, dict[str, int]]:
+        rows, total, counts = await asyncio.to_thread(
+            db.query_interviews,
+            self._settings.db_path,
+            user_id=user_id,
+            status=status,
+            interview_type=interview_type,
+            since=since,
+            page=page,
+            page_size=page_size,
         )
         for row in rows:
             row["report_ready"] = row["status"] == "finished"
-        return rows
+        return rows, total, counts

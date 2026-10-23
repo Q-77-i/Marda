@@ -13,7 +13,6 @@ import {
   selectOptions,
   shortfallMessage,
   toQuery,
-  totalPages,
   withFilter,
 } from "@/lib/bank";
 
@@ -66,13 +65,6 @@ describe("withFilter", () => {
   });
 });
 
-describe("totalPages", () => {
-  it("按每页条数向上取整且至少 1 页", () => {
-    expect(totalPages(0, 10)).toBe(1);
-    expect(totalPages(null, 10)).toBe(1);
-    expect(totalPages(21, 10)).toBe(3);
-  });
-});
 
 describe("capacityFor / shortfallMessage", () => {
   it("容量未加载完不禁用（不因网络慢挡住用户）", () => {

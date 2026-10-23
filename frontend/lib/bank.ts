@@ -46,11 +46,6 @@ export function toQuery(filters: BankFilters, pageSize: number): URLSearchParams
   return params;
 }
 
-export function totalPages(total: number | null, pageSize: number): number {
-  if (!total) return 1;
-  return Math.max(1, Math.ceil(total / pageSize));
-}
-
 /** 某难度下某题数的容量结论（未加载完返回 null = 不禁用，不因网络慢挡住用户）。 */
 export function capacityFor(
   options: CapacityOption[] | null,

@@ -23,10 +23,10 @@ import {
   EMPTY_FILTERS,
   selectOptions,
   toQuery,
-  totalPages,
   withFilter,
   type BankFilters,
 } from "@/lib/bank";
+import { totalPages } from "@/lib/pagination";
 import { difficultyLabel, domainLabel } from "@/lib/constants";
 import { cn } from "@/lib/utils";
 

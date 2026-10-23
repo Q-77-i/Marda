@@ -252,7 +252,7 @@ async def test_历史列表倒序(client):
     id2, _ = await _create(client)
     r = await client.get("/api/interviews")
     assert r.status_code == 200
-    rows = r.json()
+    rows = r.json()["items"]
     ids = [x["id"] for x in rows]
     assert ids.index(id2) < ids.index(id1)  # 新场次在前
     assert rows[0]["status"] == "running"
@@ -303,7 +303,7 @@ async def test_删除场次_三表与接口全部清除(client):
     ) as r:
         assert r.status_code == 404
     # 历史列表不再包含
-    rows = (await client.get("/api/interviews")).json()
+    rows = (await client.get("/api/interviews")).json()["items"]
     assert all(x["id"] != interview_id for x in rows)
 
 

@@ -157,7 +157,10 @@ async def test_A看不到B的场次(login_as):
     interview_id = await _create(alice)
 
     # B：列表 / 会话 / 报告 / 发消息 / 删除 —— 全部 404（同「不存在」，不泄露存在性）
-    assert all(x["id"] != interview_id for x in (await bob.get("/api/interviews")).json())
+    assert all(
+        x["id"] != interview_id
+        for x in (await bob.get("/api/interviews")).json()["items"]
+    )
     assert (await bob.get(f"/api/interviews/{interview_id}")).status_code == 404
     assert (await bob.get(f"/api/interviews/{interview_id}/report")).status_code == 404
     async with bob.stream(
@@ -168,7 +171,10 @@ async def test_A看不到B的场次(login_as):
 
     # A 自己不受影响：B 的尝试未破坏场次
     assert (await alice.get(f"/api/interviews/{interview_id}")).status_code == 200
-    assert any(x["id"] == interview_id for x in (await alice.get("/api/interviews")).json())
+    assert any(
+        x["id"] == interview_id
+        for x in (await alice.get("/api/interviews")).json()["items"]
+    )
 
 
 async def test_历史场次归属首个注册账号且不重复接管(anon_client, register_user):

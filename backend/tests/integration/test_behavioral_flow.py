@@ -257,7 +257,7 @@ async def test_行为面题量上限_超出直接422(client):
 async def test_行为面落库字段与报告形状(client):
     interview_id = await _finish_behavioral(client)
 
-    rows = (await client.get("/api/interviews")).json()
+    rows = (await client.get("/api/interviews")).json()["items"]
     row = next(item for item in rows if item["id"] == interview_id)
     assert row["interview_type"] == "behavioral"
 
