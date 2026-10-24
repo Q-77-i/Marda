@@ -44,6 +44,8 @@ out/
 # 落真库前的备份（含个人题库数据，绝不能进仓库）
 *.sqlite3.bak*
 *.db
+# P4：本地数据库备份（含业务库/checkpoint，绝不进仓库）
+data/backups/
 .claude/
 
 # ===== Docker（阶段 3）=====
