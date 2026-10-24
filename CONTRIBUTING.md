@@ -41,7 +41,7 @@ PR 描述用仓库模板；必须写测试命令和结果。PR 不超过约 400 
 - 提交前跑 `backend/.venv/bin/python data/scripts/check_redline.py`；
 - 不改无关代码、不批量格式化；匹配现有风格；
 - 改表结构 / API 契约 / 依赖前先在 Issue 里问；
-- 真实模型 smoke 只由项目所有者跑，协作者用 FakeLLM；
+- 开发/测试默认 FakeLLM；真实模型 smoke 可选，使用自己的 key、费用自理；不要提交 key，不要跑 20k/长时间压测；
 - 不合并自己的 PR；CI 绿 + 所有者 review 后才合并。
 
 ## 完成标准
