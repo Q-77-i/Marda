@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from functools import lru_cache
 from typing import Any, TypeVar
 
@@ -38,7 +39,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from app import observability, reliability
+from app import coordination, observability, reliability
 from app.config import get_settings
 from app.reliability import UpstreamBusy
 
@@ -92,6 +93,66 @@ def _get_client() -> AsyncOpenAI:
 
 
 _guards: dict[str, reliability.UpstreamGuard] = {}
+
+
+def _slot_tier(model: str | None) -> str:
+    """模型档位 → LLM 槽位分组（flash / pro）。
+
+    槽位是**全局**的（跨 worker 共享）：DeepSeek 的限流维度是账户级并发数，
+    每 worker 各算 16 个槽 = 2 个 worker 就 32 个并发打上去（P4-E4 的核心动机）。
+    """
+    settings = get_settings()
+    name = model or settings.deepseek_model
+    return "pro" if name == settings.deepseek_pro_model else "flash"
+
+
+async def _acquire_global_slot(tier: str) -> coordination.SlotLease | None:
+    """取一个全局 LLM 槽；取不到返回 None（调用方按「排队超时」处理）。
+
+    **只有 Redis 模式才用全局槽**：memory 模式下进程内闸门（reliability.ConcurrencyGate）
+    已经够用，再加一层就是双重限流。Redis 模式下反过来——全局槽是主限制，
+    进程内 Semaphore 只作为 Redis 故障时的兜底。
+    """
+    settings = get_settings()
+    if settings.coordination_backend != "redis":
+        return None
+    try:
+        coordinator = coordination.get_coordinator(settings)
+    except Exception:  # noqa: BLE001 —— 协调层不可用不该让面试全挂
+        return None
+    try:
+        return await coordinator.acquire_slot(tier, timeout=settings.llm_acquire_timeout_s)
+    except Exception as exc:  # noqa: BLE001 —— 同上：槽位拿不到按本地闸门继续
+        logger.warning("获取全局 LLM 槽失败（回退本地闸门）：%s", exc)
+        return None
+
+
+async def _release_global_slot(lease: coordination.SlotLease) -> None:
+    """释放全局槽（失败不抛——TTL 会兜底）。"""
+    try:
+        await coordination.get_coordinator().release_slot(lease)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("释放全局 LLM 槽失败：%s", exc)
+
+
+@asynccontextmanager
+async def _upstream_slot(guard: reliability.UpstreamGuard, model: str | None):
+    """上游并发保护：Redis 模式用全局槽，memory 模式用进程内闸门。
+
+    两种模式的**断路器语义一致**（都走 guard.breaker），记账责任也一样
+    （成功/失败由调用方调 record_success / record_failure）。
+    """
+    lease = await _acquire_global_slot(_slot_tier(model))
+    try:
+        if lease is None:
+            async with guard.acquire():
+                yield
+        else:
+            async with guard.acquire_breaker():
+                yield
+    finally:
+        if lease is not None:
+            await _release_global_slot(lease)
 
 
 def _guard_for(model: str | None) -> reliability.UpstreamGuard:
@@ -207,7 +268,7 @@ async def stream_chat(
     guard = _guard_for(model)
     try:
         # 闸门持有期 = 整条流：流式响应体是长连接，只包住建连段等于没限流（P2-M9）
-        async with guard.acquire():
+        async with _upstream_slot(guard, model):
             try:
                 response = await _create_stream(
                     messages,
@@ -243,20 +304,22 @@ async def _request(
     """发一次请求并取正文；网络层异常统一转 LLMError，并过保护器（P2-M9）。"""
     guard = _guard_for(model)
     try:
-        response = await guard.run(
-            lambda: _create(
-                messages,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                response_format=response_format,
-                model=model,
-                purpose=purpose,
-            )
-        )
+        async with _upstream_slot(guard, model):
+            try:
+                response = await _create(
+                    messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    response_format=response_format,
+                    model=model,
+                    purpose=purpose,
+                )
+            except Exception as exc:
+                guard.record_failure(exc)
+                raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
+            guard.record_success()
     except UpstreamBusy as exc:
         raise LLMError(f"LLM 暂时不可用：{exc}", retryable=True) from exc
-    except Exception as exc:
-        raise LLMError(f"LLM 请求失败：{exc}", retryable=_is_retryable(exc)) from exc
     choices = response.choices
     if not choices:
         return ""
