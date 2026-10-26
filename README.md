@@ -45,9 +45,10 @@
 ```mermaid
 flowchart LR
   B["浏览器"] --> N["nginx :8080<br/>唯一入口"]
-  N -->|"/api/*"| A["FastAPI + LangGraph<br/>面试状态机"]
+  N -->|"/api/*"| A["FastAPI + LangGraph<br/>面试状态机（多 worker）"]
   N -->|"其余"| W["Next.js 15<br/>standalone"]
-  A --> DB[("SQLite<br/>业务库 + checkpointer")]
+  A --> DB[("PostgreSQL<br/>业务库 + checkpoint 独立库")]
+  A --> R[("Redis<br/>会话锁 / 限流 / 全局 LLM 槽")]
   A --> Q[("Qdrant<br/>dense + sparse")]
   A --> E["embedding 容器<br/>本地 BGE-M3"]
   A -.->|"出题 / 评分 / 报告"| DS["DeepSeek"]
@@ -60,6 +61,8 @@ flowchart LR
 
 **设计原则**：确定性逻辑（阶段推进、轮数上限、追问决策、配额）全部用代码写死——可解释、可单测、UI 可回放；LLM 只负责出题、评分、追问文案这类语义任务。
 
+> **P4 生产化形态**（多 worker + PostgreSQL + Redis）见 [docs/P4-生产化.md](docs/P4-生产化.md)：上图是**本地生产形态**（业务库与 checkpointer 在 PG，跨进程状态在 Redis，api 起 2 个 worker）；题库仍在 SQLite（离线资产、运行时只读）。单机形态（SQLite + 单 worker）仍是默认开关。
+
 ## 快速开始
 
 ```bash
@@ -67,7 +70,17 @@ cp .env.example .env          # 填 DEEPSEEK_API_KEY / SILICONFLOW_API_KEY / JWT
 docker compose up -d --build  # → http://localhost:8080
 ```
 
-`nginx（唯一入口）→ web（Next standalone）/ api（uvicorn）`，背靠 `qdrant` 与 `embedding`（本地 BGE-M3）共五个容器；业务库与 checkpointer 落宿主机 `data/`，容器重建不丢。语音 key 可选——不填则语音通道整体降级为文字，其余功能零影响。换端口：`MARDA_PORT=9000 docker compose up -d`。
+`nginx（唯一入口）→ web（Next standalone）/ api（uvicorn × 2 worker）`，背靠 `postgres`（业务库 + checkpoint 独立库）、`redis`（会话锁 / 限流 / 全局 LLM 槽）、`qdrant` 与 `embedding`（本地 BGE-M3）；题库与上传图片落宿主机 `data/`，容器重建不丢。语音 key 可选——不填则语音通道整体降级为文字，其余功能零影响。换端口：`MARDA_PORT=9000 docker compose up -d`。
+
+**单机形态**（不依赖 PG / Redis，默认开关就是它）：
+
+```bash
+docker compose --profile legacy up -d --build   # SQLite + 单 worker
+```
+
+三组开关彼此独立，`.env` 里按需改即可：`DB_BACKEND` / `CHECKPOINT_BACKEND` / `COORDINATION_BACKEND`
+（`sqlite|postgres` / `sqlite|postgres` / `memory|redis`）。生产形态的取舍、迁移与回滚见
+[docs/P4-生产化.md](docs/P4-生产化.md)。
 
 **开发模式**（热重载）：
 
@@ -93,7 +106,7 @@ cd frontend && pnpm install && pnpm dev                          # http://localh
 | 前端 | Next.js 15 + TS + Tailwind + shadcn/ui + Recharts + **Monaco** | App Router + AI 生态组件最全；代码工作台的 Monaco 走同源 `/monaco/vs` 静态资源，不依赖 CDN |
 | 可观测 | **Langfuse**（云形态） | 一次面试一个 trace：调用 / 成本按场次可查，面试过程可解释 |
 | 语音 | **豆包流式识别** + **edge-tts** | 交互命门用付费流式（低延迟部分转写），播报用免费够用的；都只在独立通道上，挂了降级回文字 |
-| 数据 | SQLite（业务库 + checkpointer 两个文件） | 单机 demo 形态；真要换 PG，业务库只有七表、checkpointer 有官方 saver |
+| 数据 | **PostgreSQL**（业务库 + checkpointer 独立库）+ **Redis**（协调）+ SQLite（题库，只读） | 可多 worker 共享状态；快照压缩 + 保留策略让库有界 |
 
 ## 项目结构
 
@@ -116,6 +129,7 @@ docs/               PRD / SPEC / 开发历程
 ## 文档
 
 - [docs/开发历程.md](docs/开发历程.md) — 每个里程碑做了什么、为什么这么定、怎么验证的（含失败的尝试与修正）
+- [docs/P4-生产化.md](docs/P4-生产化.md) — P4 生产化：多 worker + PostgreSQL + Redis、checkpoint 压缩与保留、迁移与回滚
 - [docs/PRD.md](docs/PRD.md) — 需求：功能清单、业务规则、页面、验收标准
 - [docs/SPEC.md](docs/SPEC.md) — 技术规格：状态机 schema、规则、API 契约、数据库、前端设计、测试口径、风险清单
 - [CLAUDE.md](CLAUDE.md) — 工程规约：协作方式、坑位清单、架构原则、语料红线
@@ -156,6 +170,9 @@ uv run python scripts/eval_retrieval_run.py   # 检索基线：四变体 × gold
 uv run python scripts/eval_judge_gate.py      # 评分门禁：超阈值非零退出（改评分 prompt 后必跑）
 
 cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 333 个 + lint + 构建
+
+# P4 集成（需要真 PG / 真 Redis；没配环境变量就跳过）
+MARDA_TEST_DATABASE_URL=postgresql://marda:marda@localhost:5432/marda MARDA_TEST_CHECKPOINT_URL=postgresql://marda:marda@localhost:5432/marda_checkpoints MARDA_TEST_REDIS_URL=redis://localhost:6379/1   uv run pytest -m "postgres or redis" -q
 ```
 
 **离线评估不进 pytest 常规套件**（要真 Qdrant + 嵌入 + LLM，且门禁余量取自指标自身波动，会被上游抖动误伤）：检索侧出 NDCG / RAGAS 指标，评分侧出 σ̄（同题同答重复评 K 次的自波动）、MAE（vs 独立标注）与三档单调性。**先量噪声地板再读差值**——低于地板的「变化」不构成结论。命令与口径见 [SPEC §4.13](docs/SPEC.md)。
@@ -174,7 +191,9 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 
 ## 部署
 
-演示形态就是本文档的「快速开始」一条命令（本地 Docker Compose）。**不上云、不迁移 PG**：面试现场共享屏幕演示 + 简历挂本仓库地址即可；PG 的真实价值（多 worker 共享状态 / 并发写）在单机 demo 下不成立，真要换时业务库只有七表、checkpointer 有官方 PG saver，替换面可控。两条已记下的口径：**nginx 是唯一入口**（`/api` 段关 `proxy_buffering` —— SSE 流式推送的前提，最大的部署风险在本地就验证掉）；**镜像是分架构的**（arm64 构建的镜像在 amd64 服务器上跑不了，需 `buildx --platform linux/amd64` 或在服务器上构建）。
+演示形态就是本文档的「快速开始」一条命令（本地 Docker Compose，**本地生产形态**：多 worker + PostgreSQL + Redis）。**仍不上云、不上 K8s**——这一轮要解决的是「多 worker 下状态不共享、会话能并发 resume、快照只增不减」这三个真问题，不是部署编排。两条已记下的口径：**nginx 是唯一入口**（`/api` 段关 `proxy_buffering` —— SSE 流式推送的前提，最大的部署风险在本地就验证掉）；**镜像是分架构的**（arm64 构建的镜像在 amd64 服务器上跑不了，需 `buildx --platform linux/amd64` 或在服务器上构建）。
+
+P4 的范围、配置项、迁移与回滚、已知边界见 [docs/P4-生产化.md](docs/P4-生产化.md)。
 
 ## License
 
