@@ -66,6 +66,47 @@ class Settings(BaseSettings):
     # 面试默认值
     default_question_count: int = 10
 
+    # ===== P4 生产化（docs/private/升级方案.md §4）=====
+    # 业务库后端：sqlite（默认，单机 / 单测）| postgres（生产）
+    db_backend: str = "sqlite"
+    database_url: str = ""  # DATABASE_URL（postgres 模式必填）
+    db_pool_min_size: int = 1
+    db_pool_max_size: int = 5
+    db_connect_timeout_s: float = 10.0
+
+    # checkpointer 后端：sqlite（默认）| postgres（多 worker 共享状态）
+    checkpoint_backend: str = "sqlite"
+    checkpoint_database_url: str = ""  # CHECKPOINT_DATABASE_URL（独立库）
+    checkpoint_pool_max_size: int = 10
+    # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/P4-生产化.md §4.3）
+    checkpoint_retention: int = 20
+
+    # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）
+    coordination_backend: str = "memory"
+    redis_url: str = "redis://localhost:6379/0"
+    # 会话锁 TTL 要大于一轮最长耗时；worker 崩了靠 TTL 自动过期
+    interview_lock_ttl_s: int = 600
+    # 单用户每分钟请求上限（Redis 模式下全局生效）
+    user_rate_limit_per_min: int = 30
+    # 全局 LLM 并发槽（**跨 worker 共享**，不是每 worker 一份）
+    llm_slots_flash: int = 16
+    llm_slots_pro: int = 4
+    llm_slot_lease_s: int = 120
+
+    @property
+    def business_db(self) -> Path | str:
+        """业务库定位：postgres 模式返回连接串，sqlite 模式返回文件路径。
+
+        **唯一分派点**：db 层门面按这个值的类型选后端（Path → SQLite、str → PostgreSQL），
+        路由层只管传 `settings.business_db`，不出现 SQL 方言分支。
+        题库（questions）永远留在 `db_path` 指向的 SQLite 里——离线资产，不跟着业务库迁。
+        """
+        if self.db_backend == "postgres":
+            if not self.database_url:
+                raise RuntimeError("DB_BACKEND=postgres 时必须配置 DATABASE_URL")
+            return self.database_url
+        return self.db_path
+
 
 @lru_cache
 def get_settings() -> Settings:

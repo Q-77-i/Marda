@@ -17,11 +17,16 @@ from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 from sse_starlette.sse import ServerSentEvent
 
-from app import db, report_pdf
+from app import coordination, db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
-from app.service import InterviewFinishedError, InterviewNotFoundError, Service
+from app.service import (
+    InterviewFinishedError,
+    InterviewLockedError,
+    InterviewNotFoundError,
+    Service,
+)
 from app.tools import images, recommend, resumes
 
 router = APIRouter(
@@ -29,6 +34,46 @@ router = APIRouter(
 )
 
 SSE_HEADERS = {"X-Accel-Buffering": "no"}  # SPEC §7：关闭代理缓冲
+
+
+async def _rate_limit(service: Service, user_id: str) -> None:
+    """per-user 限流（P4-E4）：超限 429。
+
+    Redis 不可用时**放行**（fail open）——限流是保护，不是正确性；
+    会话锁才是正确性的那道门（那边是 fail closed）。
+    """
+    settings = get_settings()
+    allowed = await service.coordinator.allow_request(
+        user_id, limit=settings.user_rate_limit_per_min
+    )
+    if not allowed:
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+
+
+async def _acquire_session(service: Service, interview_id: str) -> str:
+    """取本场会话锁：拿不到 → 409；协调后端不可用 → 503（fail closed）。"""
+    try:
+        return await service.acquire_session(interview_id)
+    except InterviewLockedError as exc:
+        raise HTTPException(status_code=409, detail="该场次正在处理中，请稍后重试") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="服务暂时不可用，请稍后重试") from exc
+
+
+def _with_session_release(service: Service, interview_id: str, token: str, stream):
+    """SSE 流结束后释放会话锁（流被客户端断开时也会走 finally）。
+
+    锁的 TTL（默认 600s）是兜底：进程崩了锁会自己过期，不会永久卡住一场面试。
+    """
+
+    async def _gen():
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await service.release_session(interview_id, token)
+
+    return _gen()
 
 
 class CreateRequest(BaseModel):
@@ -92,34 +137,43 @@ async def create_interview(
 ):
     service: Service = request.app.state.service
     interview_id = uuid.uuid4().hex
-    db_path = get_settings().db_path
-    # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
-    # 解析结果转成 candidate_profile 文本预填——出题侧零改动就变具体。
-    candidate_profile = ""
-    if req.resume_id:
-        resume = await asyncio.to_thread(
-            db.get_resume, db_path, user_id=user["id"], resume_id=req.resume_id
+    db_target = get_settings().business_db
+    await _rate_limit(service, user["id"])
+    # 会话锁：开场也要锁——双击「开始」不该开两场同 id 的流程。
+    # **先锁后写库**：拿不到锁就直接 409，不留「有行没流程」的孤儿场次。
+    token = await _acquire_session(service, interview_id)
+    try:
+        # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
+        # 解析结果转成 candidate_profile 文本预填——出题侧零改动就变具体。
+        candidate_profile = ""
+        if req.resume_id:
+            resume = await asyncio.to_thread(
+                db.get_resume, db_target, user_id=user["id"], resume_id=req.resume_id
+            )
+            if resume is None:
+                raise HTTPException(status_code=404, detail="简历不存在")
+            candidate_profile = resumes.format_profile(resume["parsed"])
+        await asyncio.to_thread(
+            db.create_interview,
+            db_target,
+            interview_id=interview_id,
+            position=req.position,
+            question_count=req.question_count,
+            difficulty=req.difficulty,
+            user_id=user["id"],
+            interview_type=req.interview_type,
+            resume_id=req.resume_id,
         )
-        if resume is None:
-            raise HTTPException(status_code=404, detail="简历不存在")
-        candidate_profile = resumes.format_profile(resume["parsed"])
-    await asyncio.to_thread(
-        db.create_interview,
-        db_path,
-        interview_id=interview_id,
-        position=req.position,
-        question_count=req.question_count,
-        difficulty=req.difficulty,
-        user_id=user["id"],
-        interview_type=req.interview_type,
-        resume_id=req.resume_id,
+    except Exception:
+        await service.release_session(interview_id, token)
+        raise
+    stream = service.start_interview(
+        interview_id, req.position, req.question_count, user_id=user["id"],
+        difficulty=req.difficulty, interview_type=req.interview_type,
+        candidate_profile=candidate_profile, resume_id=req.resume_id or "",
     )
     return EventSourceResponse(
-        service.start_interview(
-            interview_id, req.position, req.question_count, user_id=user["id"],
-            difficulty=req.difficulty, interview_type=req.interview_type,
-            candidate_profile=candidate_profile, resume_id=req.resume_id or "",
-        ),
+        _with_session_release(service, interview_id, token, stream),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),
@@ -133,6 +187,7 @@ async def send_message(
     service: Service = request.app.state.service
     if not req.content.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
+    await _rate_limit(service, user["id"])
     try:
         await service.check_can_send(interview_id, user["id"])
     except InterviewNotFoundError as exc:
@@ -148,14 +203,17 @@ async def send_message(
             )
             if path is None:
                 raise HTTPException(status_code=400, detail="图片不存在或已失效，请重新上传")
+    # 会话锁：同一场已有请求在跑 → 409（多 worker 下这是防重复计分的关键闸门）
+    token = await _acquire_session(service, interview_id)
+    stream = service.send_message(
+        interview_id,
+        req.content.strip(),
+        user["id"],
+        images=req.images,
+        speech=req.speech.model_dump() if req.speech else None,
+    )
     return EventSourceResponse(
-        service.send_message(
-            interview_id,
-            req.content.strip(),
-            user["id"],
-            images=req.images,
-            speech=req.speech.model_dump() if req.speech else None,
-        ),
+        _with_session_release(service, interview_id, token, stream),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),

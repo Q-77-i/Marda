@@ -9,7 +9,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from app import llm
+from app import coordination, llm
 from app.main import app
 from app.tools import question_search
 from fake_llm import FakeLLMClient
@@ -29,8 +29,12 @@ def _test_env(monkeypatch, tmp_path):
     # 图片通道（P2-M6）：上传目录也必须进 tmp——碰真库目录会污染 data/uploads
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path / "uploads"))
     llm.get_settings.cache_clear()
+    # 协调器是进程级单例（生产里就是同一个 Redis）：用例之间必须重置，
+    # 否则限流计数会在同一个「用户 + 分钟窗口」里累积，后面的用例莫名 429。
+    coordination.reset_coordinator()
     yield
     llm.get_settings.cache_clear()
+    coordination.reset_coordinator()
 
 
 def question_bank() -> dict:

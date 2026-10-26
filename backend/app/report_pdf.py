@@ -50,7 +50,6 @@ def _ensure_native_libs() -> None:
 
 _ensure_native_libs()
 
-import weasyprint  # noqa: E402  —— 必须晚于 _ensure_native_libs（见其 docstring）
 from jinja2 import Environment, FileSystemLoader  # noqa: E402
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
@@ -333,7 +332,15 @@ def _build_context(payload: dict, created_at: str) -> dict:
 
 
 def render_report_pdf(payload: dict, created_at: str = "") -> bytes:
-    """报告 payload → PDF 字节（无状态、可重入：同一 payload 每次产出同一份文档）。"""
+    """报告 payload → PDF 字节（无状态、可重入：同一 payload 每次产出同一份文档）。
+
+    **weasyprint 惰性导入**：它是带原生依赖（pango/cairo）的渲染器，缺原生库时
+    `import weasyprint` 直接 OSError。模块级导入会让**整个 API 起不来**——
+    报告 PDF 只是一个可选出口，不该拖垮面试主链路。改成用到时才导入，
+    缺库时只让这一个端点 500，其余功能照常。
+    """
+    import weasyprint  # 缺原生库时只影响 PDF 导出，不影响 API 启动
+
     template = _env.get_template("report.html.j2")
     html = template.render(**_build_context(payload, created_at))
     return weasyprint.HTML(string=html, base_url=str(TEMPLATES_DIR)).write_pdf()
