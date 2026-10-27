@@ -101,9 +101,10 @@ def test_finalize在PG上幂等(pg):
     db.finalize_interview(DSN, "iv-1", _records(2), {"overall": 80})
     db.finalize_interview(DSN, "iv-1", _records(2), {"overall": 81})
     with pg._pool.connection() as conn:  # noqa: SLF001
+        # dict_row：按列名取（下标是 tuple 的写法）
         n = conn.execute(
-            "SELECT COUNT(*) FROM answers WHERE interview_id='iv-1'"
-        ).fetchone()[0]
+            "SELECT COUNT(*) AS n FROM answers WHERE interview_id='iv-1'"
+        ).fetchone()["n"]
     assert n == 2
     assert db.get_report(DSN, "iv-1")["payload"] == {"overall": 81}
 

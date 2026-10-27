@@ -115,6 +115,7 @@ class PostgresStore:
         timeout: float = 10.0,
     ) -> "PostgresStore":
         """建连接池（同步）。pool 首次连接失败会抛——**启动即失败优于运行中失败**。"""
+        from psycopg.rows import dict_row
         from psycopg_pool import ConnectionPool
 
         pool = ConnectionPool(
@@ -122,6 +123,10 @@ class PostgresStore:
             min_size=min_size,
             max_size=max_size,
             timeout=timeout,
+            # 行工厂 = dict_row：**psycopg 默认返回元组**，`dict(row)` 会抛
+            # "dictionary update sequence element #0 has length 4; 2 is required"。
+            # 这类「只在真库上才暴露」的坑，正是集成测试存在的意义。
+            kwargs={"row_factory": dict_row},
             open=True,
         )
         return cls(pool)
@@ -356,12 +361,14 @@ class PostgresStore:
 
         with self._pool.connection() as conn:
             total = conn.execute(
-                f"SELECT COUNT(*) FROM interviews WHERE {clause}", params
-            ).fetchone()[0]
+                f"SELECT COUNT(*) AS n FROM interviews WHERE {clause}", params
+            ).fetchone()["n"]
+            # dict_row：**按列名取**，不用下标——下标是 tuple 的写法，改行工厂就会崩
             by_status = {
-                row[0]: row[1]
+                row["status"]: row["n"]
                 for row in conn.execute(
-                    f"SELECT status, COUNT(*) FROM interviews WHERE {clause} GROUP BY status",
+                    f"SELECT status, COUNT(*) AS n FROM interviews WHERE {clause}"
+                    " GROUP BY status",
                     params,
                 )
             }
@@ -395,12 +402,12 @@ class PostgresStore:
     def count_finished_without_report(self, *, user_id: str) -> int:
         with self._pool.connection() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) FROM interviews i"
+                "SELECT COUNT(*) AS n FROM interviews i"
                 " WHERE i.user_id=%s AND i.status='finished'"
                 " AND NOT EXISTS (SELECT 1 FROM reports r WHERE r.interview_id = i.id)",
                 (user_id,),
             ).fetchone()
-        return int(row[0])
+        return int(row["n"])
 
     # ---------- resumes ----------
 

@@ -13,7 +13,13 @@ from app.api.profile import router as profile_router
 from app.api.resumes import router as resumes_router
 from app.api.voice import router as voice_router
 from app.config import get_settings
+from app.graph.checkpointer import ensure_compatible_event_loop
 from app.service import Service
+
+# Windows 上 PG checkpointer（官方 saver 是异步的）需要 Selector 事件循环。
+# 必须在**事件循环被创建之前**调用——策略只对新建的 loop 生效，
+# 而 uvicorn 是在 `asyncio.run` 之前 import 本模块的。Linux 不受影响（默认就是 Selector）。
+ensure_compatible_event_loop()
 
 
 @asynccontextmanager

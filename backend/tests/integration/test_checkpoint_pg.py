@@ -22,11 +22,33 @@ requires_pg_ckpt = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _fake_llm(monkeypatch):
+    """假 LLM + 假检索：这些用例验的是 checkpointer 行为，不该真调模型 / 连 Qdrant。"""
+    from app import llm
+    from app.tools import question_search
+    from fake_llm import FakeLLMClient
+
+    monkeypatch.setattr(llm, "_get_client", lambda: FakeLLMClient())
+
+    async def _search(*, domain, difficulty, exclude_ids=None, k=3, user_id=None):
+        return []
+
+    async def _reference_answers(question_ids):
+        return {}
+
+    monkeypatch.setattr(question_search, "search_questions", _search)
+    monkeypatch.setattr(question_search, "fetch_reference_answers", _reference_answers)
+
+
 @pytest.fixture
 async def pool():
     from psycopg_pool import AsyncConnectionPool
 
-    pool = AsyncConnectionPool(CKPT_DSN, min_size=1, max_size=3, open=False)
+    # autocommit=True：与 app/graph/checkpointer.py 同因（官方迁移含 CREATE INDEX CONCURRENTLY）
+    pool = AsyncConnectionPool(
+        CKPT_DSN, min_size=1, max_size=3, kwargs={"autocommit": True}, open=False
+    )
     await pool.open(wait=True)
     yield pool
     await pool.close()

@@ -24,6 +24,31 @@ from app.graph.serde import make_serde
 logger = logging.getLogger(__name__)
 
 
+def ensure_compatible_event_loop() -> None:
+    """Windows 上把 Proactor 事件循环换成 Selector（psycopg 的**异步**模式必需）。
+
+    为什么需要：Windows 默认的 `ProactorEventLoop` 不支持 `add_reader` 这类接口，
+    psycopg 的异步连接直接报
+    “Psycopg cannot use the 'ProactorEventLoop' to run in async mode”。
+    同步 psycopg 不受影响 → **业务库（同步）在 Windows 上照常跑**，
+    但 **PG checkpointer（官方 saver 是异步的）在 Windows 上必须换 Selector**。
+
+    Linux 生产环境的默认策略就是 Selector → 这条只影响 Windows 本机开发/测试。
+
+    调用时机：**必须在事件循环被创建之前**（策略只对新建的 loop 生效）。
+    - API 进程：`app/main.py` 在模块导入时调用（uvicorn 在 `asyncio.run` 之前 import app）；
+    - 脚本 / 测试：进程入口处调用。
+    """
+    import asyncio
+    import sys
+
+    if sys.platform != "win32":
+        return
+    policy = asyncio.get_event_loop_policy()
+    if isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
 @dataclass
 class CheckpointerHandle:
     """checkpointer + 关闭钩子。
@@ -66,6 +91,7 @@ async def _create_sqlite(settings: Settings) -> CheckpointerHandle:
 async def _create_postgres(settings: Settings) -> CheckpointerHandle:
     if not settings.checkpoint_database_url:
         raise RuntimeError("CHECKPOINT_BACKEND=postgres 时必须配置 CHECKPOINT_DATABASE_URL")
+    ensure_compatible_event_loop()
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from psycopg_pool import AsyncConnectionPool
 
@@ -73,6 +99,12 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
         settings.checkpoint_database_url,
         min_size=1,
         max_size=settings.checkpoint_pool_max_size,
+        # **autocommit=True**：官方 saver 是按 psycopg2 的语义写的（psycopg2 默认 autocommit），
+        # psycopg3 改了默认（非 autocommit）。不开就会撞上官方迁移里的
+        # `CREATE INDEX CONCURRENTLY` ——它不能在事务块里跑，于是 setup() 直接失败：
+        # ActiveSqlTransaction: CREATE INDEX CONCURRENTLY cannot run inside a transaction block。
+        # 开了之后每条语句自动提交，与官方 saver 的假设一致。
+        kwargs={"autocommit": True},
         open=False,
     )
     await pool.open(wait=True)

@@ -1,5 +1,6 @@
 """把 data/scripts 与 tests/fixtures 加入 sys.path，测试可直接 import 管道脚本与 fake 组件。"""
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -11,6 +12,29 @@ TESTS_DIR = Path(__file__).resolve().parent
 for extra in (TESTS_DIR.parents[1] / "data" / "scripts", TESTS_DIR / "fixtures"):
     if str(extra) not in sys.path:
         sys.path.insert(0, str(extra))
+
+
+def _force_selector_loop() -> None:
+    """Windows 上把事件循环策略换成 Selector（Proactor 不支持 psycopg 的 async 模式）。
+
+    **只在 Windows 生效**：Linux 生产环境的默认策略就是 Selector（Proactor 是 Windows 特有），
+    所以这条只影响本机开发/测试，不影响部署。
+
+    为什么要换：Windows 默认的 ProactorEventLoop 不支持 `add_reader` 这类接口，
+    psycopg 的**异步**连接直接报
+    "Psycopg cannot use the 'ProactorEventLoop' to run in async mode"。
+    同步 psycopg 不受影响——所以业务库（同步）在 Windows 上能跑，
+    而 **PG checkpointer（异步 saver）在 Windows 上必须换 Selector**。
+    """
+    if sys.platform != "win32":
+        return
+    policy = asyncio.get_event_loop_policy()
+    if isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+
+# 必须在任何事件循环被创建**之前**换策略（pytest-asyncio 按 policy 建 loop）
+_force_selector_loop()
 
 
 @pytest.fixture(autouse=True)

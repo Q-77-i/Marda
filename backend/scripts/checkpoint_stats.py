@@ -28,6 +28,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+# Windows 上 psycopg 的异步模式需要 Selector 事件循环（策略只对新建的 loop 生效，
+# 所以必须在 asyncio.run 之前切）。
+from app.graph.checkpointer import ensure_compatible_event_loop  # noqa: E402
+
+ensure_compatible_event_loop()
+
 
 @dataclass
 class ThreadStat:
@@ -46,10 +52,15 @@ class ThreadStat:
         return round(self.raw_bytes / self.payload_bytes, 2) if self.payload_bytes else 0.0
 
 
-def _decompress(payload: bytes) -> int:
-    """返回解压后的长度；不是 zlib 数据就按原样算。"""
+def _decompress(payload: bytes, type_: str | None = None) -> int:
+    """返回解压后的长度；不是 zlib 数据就按原样算。
+
+    `type_` 给的是库里存的类型串（`msgpack+zlib` → 压缩前）。没给就试解压。
+    """
     import zlib
 
+    if type_ is not None and not type_.endswith("+zlib"):
+        return len(payload)
     try:
         return len(zlib.decompress(payload))
     except zlib.error:
@@ -98,11 +109,16 @@ def stats_sqlite(path: Path) -> list[ThreadStat]:
 
 
 async def stats_postgres(dsn: str) -> list[ThreadStat]:
-    """PostgreSQL checkpointer 的统计（表结构见 langgraph-checkpoint-postgres）。"""
+    """PostgreSQL checkpointer 的统计（表结构见 langgraph-checkpoint-postgres）。
+
+    压缩比靠**解压 blob** 算：type 带 `+zlib` 的 blob 解压后才是原始大小。
+    （PG 侧的通道值存在 checkpoint_blobs 里，type 单独一列——这与 SQLite 版的
+    `LENGTH(checkpoint)` 口径不同，不能照抄。）
+    """
     from psycopg_pool import AsyncConnectionPool
 
     out: list[ThreadStat] = []
-    async with AsyncConnectionPool(dsn, open=False) as pool:
+    async with AsyncConnectionPool(dsn, kwargs={"autocommit": True}, open=False) as pool:
         await pool.open(wait=True)
         async with pool.connection() as conn:
             cur = await conn.execute(
@@ -115,19 +131,24 @@ async def stats_postgres(dsn: str) -> list[ThreadStat]:
                 "SELECT thread_id, COUNT(*) FROM checkpoint_writes GROUP BY thread_id"
             )
             writes = {row[0]: row[1] for row in await cur.fetchall()}
+            # blob：压缩后字节数 + 解压后的原始字节数
             cur = await conn.execute(
-                "SELECT thread_id, COALESCE(SUM(LENGTH(blob)), 0)"
-                " FROM checkpoint_blobs GROUP BY thread_id"
+                "SELECT thread_id, type, blob FROM checkpoint_blobs"
             )
-            blobs = {row[0]: row[1] for row in await cur.fetchall()}
+            blob_bytes: dict[str, int] = {}
+            blob_raw: dict[str, int] = {}
+            for thread_id, type_, blob in await cur.fetchall():
+                data = bytes(blob)
+                blob_bytes[thread_id] = blob_bytes.get(thread_id, 0) + len(data)
+                blob_raw[thread_id] = blob_raw.get(thread_id, 0) + _decompress(data, type_)
             for thread_id, n, json_bytes in rows:
                 out.append(
                     ThreadStat(
                         thread_id=thread_id,
                         checkpoints=n,
                         writes=writes.get(thread_id, 0),
-                        payload_bytes=int(json_bytes) + int(blobs.get(thread_id, 0)),
-                        raw_bytes=int(json_bytes) + int(blobs.get(thread_id, 0)),
+                        payload_bytes=int(json_bytes) + blob_bytes.get(thread_id, 0),
+                        raw_bytes=int(json_bytes) + blob_raw.get(thread_id, 0),
                         latest_at="",
                     )
                 )

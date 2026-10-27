@@ -22,6 +22,12 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
 
+# Windows 上 psycopg 的异步模式需要 Selector 事件循环（策略只对新建的 loop 生效，
+# 所以必须在 asyncio.run 之前切）。
+from app.graph.checkpointer import ensure_compatible_event_loop  # noqa: E402
+
+ensure_compatible_event_loop()
+
 from app.graph.retention import prune_all_postgres, prune_all_sqlite  # noqa: E402
 
 
