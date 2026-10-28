@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.config import Settings
+from app.dsn import normalize_dsn
 from app.graph.serde import make_serde
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,11 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
     from psycopg_pool import AsyncConnectionPool
 
     pool = AsyncConnectionPool(
-        settings.checkpoint_database_url,
+        # **localhost → 127.0.0.1**：Windows 上 localhost 优先解析成 IPv6 `::1`，
+        # 而 PG 发布的端口通常只听 IPv4。裸 psycopg 会回退，**连接池不会**——
+        # 只在 ::1 上试一次就报 PoolTimeout，看着像「PG 连不上」（实测：同一 DSN，
+        # 裸连 OK、池必挂；换 127.0.0.1 立刻正常）。详见 app/dsn.py。
+        normalize_dsn(settings.checkpoint_database_url),
         min_size=1,
         max_size=settings.checkpoint_pool_max_size,
         # **autocommit=True**：官方 saver 是按 psycopg2 的语义写的（psycopg2 默认 autocommit），

@@ -86,7 +86,13 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
     """执行迁移；返回 {表: 行数}。失败抛异常（目标库已清空，SQLite 原文件未动）。"""
     from psycopg_pool import ConnectionPool
 
-    pool = ConnectionPool(dsn, min_size=1, max_size=2, open=True)
+    from app.dsn import normalize_dsn
+
+    # normalize_dsn：Windows 上 localhost → ::1，而**连接池不回退 IPv4/IPv6**——
+    # 只在 ::1 上试一次就报 PoolTimeout，看着像「PG 连不上」（见 app/dsn.py）。
+    pool = ConnectionPool(
+        normalize_dsn(dsn), min_size=1, max_size=2, open=True
+    )
     counts: dict[str, int] = {}
     try:
         with pool.connection() as conn:
@@ -150,7 +156,9 @@ def sample(dsn: str, table: str, limit: int = 3) -> list[dict]:
     """抽样打印（人眼核对：用户名、时间戳、报告 payload 是否合理）。"""
     from psycopg_pool import ConnectionPool
 
-    pool = ConnectionPool(dsn, min_size=1, max_size=1, open=True)
+    from app.dsn import normalize_dsn
+
+    pool = ConnectionPool(normalize_dsn(dsn), min_size=1, max_size=1, open=True)
     try:
         with pool.connection() as conn:
             cur = conn.execute(f"SELECT * FROM {table} LIMIT %s", (limit,))

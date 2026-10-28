@@ -45,9 +45,12 @@ def _fake_llm(monkeypatch):
 async def pool():
     from psycopg_pool import AsyncConnectionPool
 
+    from app.dsn import normalize_dsn
+
     # autocommit=True：与 app/graph/checkpointer.py 同因（官方迁移含 CREATE INDEX CONCURRENTLY）
+    # normalize_dsn：Windows 上 localhost → ::1，连接池不回退 IPv4/IPv6（见 app/dsn.py）
     pool = AsyncConnectionPool(
-        CKPT_DSN, min_size=1, max_size=3, kwargs={"autocommit": True}, open=False
+        normalize_dsn(CKPT_DSN), min_size=1, max_size=3, kwargs={"autocommit": True}, open=False
     )
     await pool.open(wait=True)
     yield pool

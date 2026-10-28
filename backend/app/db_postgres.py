@@ -30,6 +30,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.domain import INTERVIEW_TECH
+from app.dsn import normalize_dsn
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -114,12 +115,16 @@ class PostgresStore:
         max_size: int = 5,
         timeout: float = 10.0,
     ) -> "PostgresStore":
-        """建连接池（同步）。pool 首次连接失败会抛——**启动即失败优于运行中失败**。"""
+        """建连接池（同步）。pool 首次连接失败会抛——**启动即失败优于运行中失败**。
+
+        DSN 会先过 `normalize_dsn`（localhost → 127.0.0.1）：连接池不像裸连接那样回退
+        IPv4/IPv6，Windows 上 `localhost` 优先走 `::1` 会直接变成 PoolTimeout。
+        """
         from psycopg.rows import dict_row
         from psycopg_pool import ConnectionPool
 
         pool = ConnectionPool(
-            dsn,
+            normalize_dsn(dsn),
             min_size=min_size,
             max_size=max_size,
             timeout=timeout,
@@ -485,7 +490,11 @@ def get_store(
     连接数会瞬间打满 PG。进程内缓存 = 一个 worker 一个池。
 
     池参数缺省读配置（DB_POOL_MIN_SIZE / DB_POOL_MAX_SIZE / DB_CONNECT_TIMEOUT_S）。
+
+    **DSN 先过 `normalize_dsn`**（localhost → 127.0.0.1，见那里的说明），
+    且**缓存键用归一化后的 DSN** —— 否则 ``localhost`` 与 ``127.0.0.1`` 会各建一个池。
     """
+    dsn = normalize_dsn(dsn)
     if min_size is None or max_size is None or timeout is None:
         from app.config import get_settings
 
