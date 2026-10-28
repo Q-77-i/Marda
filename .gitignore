@@ -50,3 +50,7 @@ data/backups/
 
 # ===== Docker（阶段 3）=====
 docker/volumes/
+
+# ===== 本地工具/缓存 =====
+# 本机装的第三方工具与镜像缓存（不入仓库）
+.tools/
