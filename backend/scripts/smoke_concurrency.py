@@ -42,7 +42,13 @@ sys.path.insert(0, str(REPO_ROOT / "backend" / "tests" / "fixtures"))
 
 
 def _setup_env(tmp: Path) -> None:
-    """假密钥 + tmp 库路径（绝不能碰真库 / 真目录）。"""
+    """假密钥 + tmp 库路径（绝不能碰真库 / 真目录）。
+
+    **默认是 SQLite + 内存协调**（离线、不花钱）。
+    想在**真 PG / 真 Redis** 下验（方案 §7 要求的「真依赖下验证」），传 ``--backend prod``：
+    库地址从环境变量读（DATABASE_URL / CHECKPOINT_DATABASE_URL / REDIS_URL），
+    **不会**自动创建或清空库——测试库由人自己准备。
+    """
     os.environ["DEEPSEEK_API_KEY"] = "smoke-dummy-key"
     os.environ["SILICONFLOW_API_KEY"] = "smoke-dummy-key"
     os.environ["JWT_SECRET"] = "smoke-secret-0123456789abcdef0123456789"
@@ -51,6 +57,29 @@ def _setup_env(tmp: Path) -> None:
     os.environ["UPLOAD_DIR"] = str(tmp / "uploads")
     # 限流在本脚本里**关掉**：这里要验的是会话锁与并发正确性，
     # 而 32 路并发本身就会撞上 per-user 限流（那是另一条闸门，有独立的 API 用例覆盖）。
+    os.environ["USER_RATE_LIMIT_PER_MIN"] = "1000000"
+
+
+def _setup_prod_env() -> None:
+    """切到**真 PG + 真 Redis** 形态（库地址读环境变量）。
+
+    三个地址都必须在环境里给全，缺一个就报错退出——**不猜、不填默认值**，
+    免得连到真库或把数据写进不该写的地方。
+    """
+    required = {
+        "DATABASE_URL": os.environ.get("DATABASE_URL"),
+        "CHECKPOINT_DATABASE_URL": os.environ.get("CHECKPOINT_DATABASE_URL"),
+        "REDIS_URL": os.environ.get("REDIS_URL"),
+    }
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        raise SystemExit(
+            "--backend prod 需要这些环境变量：" + ", ".join(missing)
+        )
+    os.environ["DB_BACKEND"] = "postgres"
+    os.environ["CHECKPOINT_BACKEND"] = "postgres"
+    os.environ["COORDINATION_BACKEND"] = "redis"
+    # 限流仍然关掉（同 SQLite 形态的考虑：这里验的是会话锁）
     os.environ["USER_RATE_LIMIT_PER_MIN"] = "1000000"
 
 
@@ -213,6 +242,17 @@ async def main_async(args) -> int:
     for result in results:
         print(json.dumps(result, ensure_ascii=False, indent=2))
 
+    # **关掉业务库的连接池**：lifespan 只关 checkpointer，业务库的池（db_postgres._STORES）
+    # 是进程级缓存 —— 不关的话解释器退出时会报
+    # “PythonFinalizationError: cannot join thread at interpreter shutdown”，
+    # 看着像脚本崩了（其实结果已经打完了）。
+    try:
+        from app.db_postgres import close_all as _close_pg_pools
+
+        _close_pg_pools()
+    except Exception:  # noqa: BLE001 —— SQLite 形态没装 psycopg，跳过即可
+        pass
+
     # 判据：同场争用必须 1 成功 + 其余 409，且只记入一条回答
     failures: list[str] = []
     for result in results:
@@ -247,14 +287,29 @@ def main() -> int:
     )
     parser.add_argument("--sessions", type=int, default=8, help="多场并行的场次数")
     parser.add_argument("--questions", type=int, default=5, help="每场题量")
+    parser.add_argument(
+        "--backend",
+        choices=["sqlite", "prod"],
+        default="sqlite",
+        help="sqlite=离线形态（默认）；prod=真 PG + 真 Redis（库地址读环境变量）",
+    )
     args = parser.parse_args()
 
     # 用 mkdtemp 而不是 TemporaryDirectory：Windows 上 SQLite 文件在进程完全退出前
     # 删不掉（句柄还开着），自动清理会抛 PermissionError 盖掉真正的结果。
     tmp = tempfile.mkdtemp(prefix="marda-smoke-")
     _setup_env(Path(tmp))
+    if args.backend == "prod":
+        _setup_prod_env()
     try:
-        return asyncio.run(main_async(args))
+        # **loop_factory**：Windows 默认的 ProactorEventLoop 与 psycopg 异步模式不兼容
+        # （“Psycopg cannot use the 'ProactorEventLoop' to run in async mode”），
+        # PG checkpointer 正好是异步的 → 换 Selector。
+        # 用 asyncio.Runner(loop_factory=...) 而不是 asyncio.run()：后者不接受 factory。
+        from app.graph.checkpointer import compatible_loop_factory
+
+        with asyncio.Runner(loop_factory=compatible_loop_factory()) as runner:
+            return runner.run(main_async(args))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
