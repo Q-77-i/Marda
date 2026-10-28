@@ -89,7 +89,9 @@ services:
       CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@postgres:5432/marda_checkpoints
       COORDINATION_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    # **绝对路径**：镜像里 uvicorn 在 /app/.venv/bin（UV_PROJECT_ENVIRONMENT），
+    # 不在 PATH 里——写裸 "uvicorn" 会报 "executable file not found in $PATH"。
+    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
     volumes:
       - ./data:/app/data      # 题库 + 上传图片落宿主机，容器重建不丢
     depends_on:
@@ -139,7 +141,7 @@ services:
       DB_BACKEND: sqlite
       CHECKPOINT_BACKEND: sqlite
       COORDINATION_BACKEND: memory
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     volumes:
       - ./data:/app/data
     depends_on:
