@@ -94,10 +94,21 @@ def main() -> int:
         parser.error("至少给一个 --sqlite 或 --postgres")
 
     if args.sqlite:
-        asyncio.run(_run_sqlite(args.sqlite, args.keep, args.dry_run))
+        _run(_run_sqlite(args.sqlite, args.keep, args.dry_run))
     else:
-        asyncio.run(_run_postgres(args.postgres, args.keep, args.dry_run))
+        _run(_run_postgres(args.postgres, args.keep, args.dry_run))
     return 0
+
+
+def _run(coro):
+    """跑协程：Windows 上用 Selector loop（psycopg 异步模式必需）。
+
+    `asyncio.Runner(loop_factory=...)` 是 3.12+ 的正规做法；policy API 在 3.14 已弃用。
+    """
+    from app.graph.checkpointer import compatible_loop_factory
+
+    with asyncio.Runner(loop_factory=compatible_loop_factory()) as runner:
+        return runner.run(coro)
 
 
 if __name__ == "__main__":

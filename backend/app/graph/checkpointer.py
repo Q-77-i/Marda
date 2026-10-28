@@ -24,8 +24,8 @@ from app.graph.serde import make_serde
 logger = logging.getLogger(__name__)
 
 
-def ensure_compatible_event_loop() -> None:
-    """Windows 上把 Proactor 事件循环换成 Selector（psycopg 的**异步**模式必需）。
+def compatible_loop_factory():
+    """返回适合 psycopg 异步模式的 loop 工厂（Windows 上是 Selector，其它平台 None）。
 
     为什么需要：Windows 默认的 `ProactorEventLoop` 不支持 `add_reader` 这类接口，
     psycopg 的异步连接直接报
@@ -33,11 +33,30 @@ def ensure_compatible_event_loop() -> None:
     同步 psycopg 不受影响 → **业务库（同步）在 Windows 上照常跑**，
     但 **PG checkpointer（官方 saver 是异步的）在 Windows 上必须换 Selector**。
 
-    Linux 生产环境的默认策略就是 Selector → 这条只影响 Windows 本机开发/测试。
+    Linux 生产环境的默认 loop 就是 Selector → 这条只影响 Windows 本机开发/测试。
 
-    调用时机：**必须在事件循环被创建之前**（策略只对新建的 loop 生效）。
-    - API 进程：`app/main.py` 在模块导入时调用（uvicorn 在 `asyncio.run` 之前 import app）；
-    - 脚本 / 测试：进程入口处调用。
+    **用法**：`asyncio.Runner(loop_factory=compatible_loop_factory())`
+    （3.12+ 的正规做法；`loop_factory=None` 就是平台默认）。
+    为什么不用 `set_event_loop_policy`：3.14 起 policy API 已弃用，
+    且 Windows 的默认 policy 是**私有类** `_WindowsProactorEventLoopPolicy`，
+    `isinstance(policy, asyncio.WindowsProactorEventLoopPolicy)` 会**静默失效**——
+    换了个寂寞，还以为已经换过了。
+    """
+    import asyncio
+    import sys
+
+    if sys.platform != "win32":
+        return None
+    return asyncio.SelectorEventLoop
+
+
+def ensure_compatible_event_loop() -> None:
+    """旧入口（保留兼容）：把全局事件循环策略切成 Selector。
+
+    新代码请用 `compatible_loop_factory()` + `asyncio.Runner(loop_factory=...)`——
+    policy API 在 3.14 已弃用。这条留着是因为 pytest-asyncio 早期版本
+    认策略不认 factory；本仓库的 pytest-asyncio 已经是 1.x（认 factory），
+    所以它只是**兜底**。
     """
     import asyncio
     import sys
@@ -45,8 +64,12 @@ def ensure_compatible_event_loop() -> None:
     if sys.platform != "win32":
         return
     policy = asyncio.get_event_loop_policy()
-    if isinstance(policy, asyncio.WindowsProactorEventLoopPolicy):
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    # 按**类名**判断：3.14 的默认 policy 是私有类 `_WindowsProactorEventLoopPolicy`，
+    # 用 isinstance(公开类) 判断会失效（换了个寂寞）。
+    if "Proactor" in type(policy).__name__:
+        with __import__("warnings").catch_warnings():
+            __import__("warnings").simplefilter("ignore", DeprecationWarning)
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 @dataclass

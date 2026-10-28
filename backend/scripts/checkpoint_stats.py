@@ -197,7 +197,7 @@ def main() -> int:
     if args.sqlite:
         stats = stats_sqlite(args.sqlite)
     else:
-        stats = asyncio.run(stats_postgres(args.postgres))
+        stats = _run(stats_postgres(args.postgres))
 
     if args.json:
         print(
@@ -220,6 +220,17 @@ def main() -> int:
     else:
         print(render(stats, top=args.top))
     return 0
+
+
+def _run(coro):
+    """跑协程：Windows 上用 Selector loop（psycopg 异步模式必需）。
+
+    `asyncio.Runner(loop_factory=...)` 是 3.12+ 的正规做法；policy API 在 3.14 已弃用。
+    """
+    from app.graph.checkpointer import compatible_loop_factory
+
+    with asyncio.Runner(loop_factory=compatible_loop_factory()) as runner:
+        return runner.run(coro)
 
 
 if __name__ == "__main__":

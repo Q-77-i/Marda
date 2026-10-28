@@ -112,6 +112,39 @@ def stream_of(text: str, *, piece_size: int = STREAM_PIECE_SIZE):
     return _gen()
 
 
+def _role_of(system: str) -> str | None:
+    """按**身份行**判断这次调用是谁（None = 没识别出来，走文案分支）。
+
+    身份行 = system 开头那句「你是「码达 Marda」的 XX」。判据只看**前 200 字**，
+    因为模板正文里会互相引用别的角色（出题 prompt 里就写着「评分官会关注…」）。
+    """
+    head = system[:200]
+    # 顺序有意义：更具体的身份行先判
+    for marker, role in (
+        ("简历解析器", "resume"),
+        ("代码评审官", "code_review"),
+        ("代码辅导官", "code_answer"),
+        ("报告官", "report"),
+        ("评分官", "judge"),
+        ("出题官", "generated"),
+        ("提炼", "profile"),
+        ("真诚收尾", "closing"),
+    ):
+        if marker in head:
+            return role
+    return None
+
+
+def _is_behavioral_judge(system: str) -> bool:
+    """这是不是**行为面**评分官？
+
+    判据取行为面评分模板的**身份行特征串**（`负责**行为面（HR 面）**`），
+    不能用「全文是否含『行为面』」——技术面评分模板里也会提到行为面，
+    全文匹配会把技术面评分误路由成行为面评分。
+    """
+    return "负责**行为面" in system
+
+
 class FakeLLMClient:
     """chat.completions.create 的 fake（经 app.llm._get_client 注入）。"""
 
@@ -171,23 +204,29 @@ class FakeLLMClient:
         system = kwargs["messages"][0]["content"]
         # messages 全量留档（P2-M6）：图附件断言要看得到整条消息列表，不只 system
         self.calls.append({"system": system, "messages": kwargs.get("messages", [])})
-        if "简历解析器" in system:  # P2-M11：简历抽取（标记须排在「提炼」之前，见 prompts）
+        # **主判据：模板的「身份行」**（system 开头的「你是「码达 Marda」的 XX」）。
+        # 为什么不能只看全文是否含某个角色名：模板之间会互相引用——
+        # 出题 prompt 里带着「评分官会关注什么」「报告官会写什么」，
+        # 全文匹配会把**出题调用**误判成报告调用（返回报告 JSON），
+        # 于是报「GeneratedQuestion 缺字段」这种完全指错地方的错。
+        role = _role_of(system)
+        if role == "resume":
             return json.dumps(self._resume, ensure_ascii=False)
-        if "代码评审官" in system:  # M15：代码点评
+        if role == "code_review":
             return json.dumps(self._code_review, ensure_ascii=False)
-        if "代码辅导官" in system:  # M15：代码追问（流式/非流式都走这里）
+        if role == "code_answer":
             return self._coding_answer
-        # 「报告官」必须排在「评分官」之前：M14b 起报告 prompt 会提到「评分官点评」，
-        # 若先匹配「评分官」会把报告调用误路由成评分 JSON。
-        if "报告官" in system:
+        if role == "report":
             return json.dumps(self._report, ensure_ascii=False)
-        if "评分官" in system:
-            raw = self._behavioral_score if "行为面" in system else self._score
+        if role == "judge":
+            # 行为面判定同样看身份行：技术面评分模板里也会提到「行为面」，
+            # 全文匹配会把技术面评分路由成行为面评分 → ScoreItem 五个维度全缺。
+            raw = self._behavioral_score if _is_behavioral_judge(system) else self._score
             return json.dumps(raw() if callable(raw) else raw, ensure_ascii=False)
-        if "出题官" in system:
+        if role == "generated":
             return json.dumps(self._generated, ensure_ascii=False)
-        if "提炼" in system:
+        if role == "profile":
             return json.dumps(self._profile, ensure_ascii=False)
-        if "真诚收尾" in system:
+        if role == "closing":
             return self._closing
         return self._text
