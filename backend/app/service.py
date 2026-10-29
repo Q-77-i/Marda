@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from typing import Any, AsyncIterator
@@ -30,6 +31,8 @@ from app.graph.rules.transition import reconnect_line
 from app.graph.state import InterviewState
 from app.tools import images, profile
 
+logger = logging.getLogger(__name__)
+
 
 class InterviewNotFoundError(Exception):
     """场次不存在（404）。"""
@@ -37,6 +40,27 @@ class InterviewNotFoundError(Exception):
 
 class InterviewFinishedError(Exception):
     """场次已结束仍尝试发消息（409）。"""
+
+
+class InterviewNotFinishedError(Exception):
+    """场次还没结束（重试落库这类操作不适用）。"""
+
+
+class PersistFailedError(RuntimeError):
+    """**落库彻底失败**（重试 3 次仍失败）：图跑完了，但业务库没写进去。
+
+    这会留下一场**半成品场次**：checkpoint 里状态是 finished、图也跑完了，
+    但 `answers` / `reports` 没落库、`interviews.status` 还停在 running。
+
+    **为什么单独一个异常类**：`_run` 要把它转成 SSE error 事件，
+    而 `except RuntimeError` 太宽——会把无关的 RuntimeError 也当成「落库失败」，
+    错误码与排查方向全错。
+
+    **半成品场次怎么修**（不靠用户手动改库）：
+    `resume` 同一场 → 图从 checkpoint 继续 → 再次走 finalize（幂等：
+    先删本场旧 answers 再插）→ 业务库补齐。失败时会话锁会挡住并发重试，
+    TTL 到期后可再试。
+    """
 
 
 class InterviewLockedError(Exception):
@@ -200,6 +224,37 @@ class Service:
         self._close_checkpointer = handle.close
         self._graph = build_graph(checkpointer=handle.saver)
         self._coordinator = coordination.get_coordinator(self._settings)
+        await self._apply_retention(handle)
+
+    async def _apply_retention(self, handle) -> None:
+        """启动时执行一次**保留策略**（P4-E3）：每场只留最近 N 张 + 最终一张。
+
+        **为什么在这里跑**：保留策略以前只活在 `scripts/checkpoint_retention.py` 里，
+        `CHECKPOINT_RETENTION` 这个配置项**代码根本不读**——设了也没用，
+        而快照只增不减（实测 15 题场 134 张 / 11.5MB）。接上之后：
+        - 配置真正生效（`CHECKPOINT_RETENTION` 调大 = 留更多，调小 = 删更早的）；
+        - 不需要人工记得跑脚本。
+
+        **启动时跑一次**而不是每场结束时：省掉每场一次全表扫描的开销，
+        且多 worker 形态下启动时跑足够（快照增速有限）。
+
+        **失败不阻断启动**：保留是「省空间」的优化，不是正确性前提——
+        删不掉只是库继续涨，不该让整个服务起不来。
+        """
+        keep = self._settings.checkpoint_retention
+        if keep <= 0 or handle.prune is None:
+            return
+        try:
+            results = await handle.prune(keep)
+        except Exception as exc:  # noqa: BLE001 —— 保留失败不该阻断启动
+            logger.warning("checkpoint 保留策略执行失败（不影响启动）：%s", exc)
+            return
+        deleted = sum(r.deleted_checkpoints for r in results)
+        if deleted:
+            logger.info(
+                "checkpoint 保留：%d 场，删了 %d 张快照（每场留最近 %d 张 + 最终一张）",
+                len(results), deleted, keep,
+            )
 
     async def close(self) -> None:
         if self._close_checkpointer is not None:
@@ -387,6 +442,17 @@ class Service:
                 yield _event("error", {
                     "code": "recursion_error", "message": "面试流程超出步数上限，请稍后重试",
                 })
+            except PersistFailedError as exc:
+                # **落库彻底失败**（`_persist` 重试 3 次仍失败）：图已经跑完、业务库没写进去。
+                # 不接住的话异常会逃出流——SSE 连接直接断开，**客户端拿不到任何 error 事件**，
+                # 只能看着一个「永远转圈」的界面（文档写的「仍失败回 SSE error」就不成立）。
+                # 所以显式接住并发 error 事件，并带上「怎么修」的指引。
+                yield _event("error", {
+                    "code": "persist_error",
+                    "message": "面试已结束但结果保存失败，请稍后重试或查看面试记录",
+                    "retryable": True,
+                    "detail": str(exc),
+                })
 
     async def _persist(self, interview_id: str, values: dict) -> None:
         """结束后**单事务**落库（P4-E2）：answers + report + interviews 收尾。
@@ -412,7 +478,37 @@ class Service:
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(0.2 * (attempt + 1))
-        raise RuntimeError(f"落库失败（重试 3 次仍失败）：{last_error}")
+        raise PersistFailedError(f"落库失败（重试 3 次仍失败）：{last_error}")
+
+    async def retry_persist(self, interview_id: str, user_id: str) -> dict:
+        """**重试落库**：修「图 finished、业务库没写」的半成品场次。
+
+        背景：`_persist` 重试 3 次仍失败时，图已经跑完、checkpoint 里状态是 finished，
+        但 `answers` / `reports` 没落库、`interviews.status` 还停在 running。
+        而 `resume` 路径会因为「图已 finished」直接抛 `InterviewFinishedError`（409）——
+        **用户没有任何办法自己修复**，只能等运维手工改库。
+
+        这里提供一条显式修复路径：**不重跑图**，只拿 checkpoint 里已有的答案与报告
+        重新走一次 finalize（幂等：先删本场旧 answers 再插）→ 业务库补齐。
+
+        前提：图必须真的 finished（否则说明还在进行中，不该走这条路），
+        且业务库确实缺报告（已经落库了就返回「无需修复」，不重复写）。
+        """
+        await self._require_owner(interview_id, user_id)
+        values = await self._current_values(interview_id)
+        if not values:
+            raise InterviewNotFoundError(interview_id)
+        if values.get("status") != "finished":
+            raise InterviewNotFinishedError(
+                "这场面试还没结束，不需要重试落库"
+            )
+        existing = await asyncio.to_thread(
+            db.get_report, self._settings.business_db, interview_id
+        )
+        if existing is not None:
+            return {"interview_id": interview_id, "repaired": False, "reason": "报告已存在"}
+        await self._persist(interview_id, values)
+        return {"interview_id": interview_id, "repaired": True}
 
     async def delete_interview(self, interview_id: str, user_id: str) -> None:
         """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表 + 图片目录（P2-M6）。
@@ -420,13 +516,24 @@ class Service:
         checkpointer 先删（线程是会话权威，删后 resume 即 404），业务库三表再删；
         任一失败抛异常（500），保证不出现「列表没了但线程还在」的半删状态。
         图片清理放最后且**只记日志不抛**——图是附属产物，不能因为它挡住场次删除。
+
+        **拿会话锁**（与消息端点同一把锁）：删的正是「正在被推进」的那场图，
+        不锁的话可能出现「删线程的同时另一个 worker 正在往这条线程里写 checkpoint」
+        ——轻则留下孤儿写入，重则删完又被写活（用户以为删了，结果还能继续答题）。
+        拿不到锁 → 409（同消息端点口径：这一场正忙，稍后再删）。
         """
         await self._require_owner(interview_id, user_id)
-        await self._g.checkpointer.adelete_thread(interview_id)
-        await asyncio.to_thread(db.delete_interview, self._settings.business_db, interview_id)
-        await asyncio.to_thread(
-            images.remove_interview_images, self._settings.upload_dir, interview_id
-        )
+        token = await self.acquire_session(interview_id)
+        try:
+            await self._g.checkpointer.adelete_thread(interview_id)
+            await asyncio.to_thread(
+                db.delete_interview, self._settings.business_db, interview_id
+            )
+            await asyncio.to_thread(
+                images.remove_interview_images, self._settings.upload_dir, interview_id
+            )
+        finally:
+            await self.release_session(interview_id, token)
 
     async def get_session(self, interview_id: str, user_id: str, *, reconnect: bool = False) -> dict:
         """UI 恢复数据（SPEC §7）：checkpoint 为权威，归属以业务库为准。

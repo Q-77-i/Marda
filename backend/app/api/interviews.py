@@ -24,7 +24,9 @@ from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW
 from app.service import (
     InterviewFinishedError,
     InterviewLockedError,
+    InterviewNotFinishedError,
     InterviewNotFoundError,
+    PersistFailedError,
     Service,
 )
 from app.tools import images, recommend, resumes
@@ -249,6 +251,36 @@ async def get_interview_report(
     return {"interview_id": interview_id, "report": row["payload"], "created_at": row["created_at"]}
 
 
+@router.post("/{interview_id}/retry-persist")
+async def retry_persist(
+    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """**重试落库**：修「图 finished、业务库没写」的半成品场次（P4 收尾）。
+
+    什么时候需要：落库重试 3 次仍失败时，图已经跑完、checkpoint 里状态是 finished，
+    但 `answers` / `reports` 没落库、`interviews.status` 还停在 running。
+    正常路径下 `resume` 会被「图已 finished」拦掉（409）——**用户自己修不了**。
+
+    这里**不重跑图**：只拿 checkpoint 里已有的答案与报告重新走一次 finalize
+    （幂等：先删本场旧 answers 再插）。
+
+    语义：
+    - 场次不存在 / 越权 → 404（与其它端点一致，不泄露存在性）；
+    - 场次还没结束 → 409（不是半成品，不该走这条路）；
+    - 报告已存在 → 200 + `repaired: false`（不重复写）；
+    - 修复成功 → 200 + `repaired: true`。
+    """
+    service: Service = request.app.state.service
+    try:
+        return await service.retry_persist(interview_id, user["id"])
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="面试不存在") from exc
+    except InterviewNotFinishedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except PersistFailedError as exc:
+        raise HTTPException(status_code=503, detail="结果保存仍然失败，请稍后重试") from exc
+
+
 @router.get("/{interview_id}/report.pdf")
 async def export_interview_report_pdf(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
@@ -356,9 +388,18 @@ async def list_interviews(
 async def delete_interview(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。"""
+    """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。
+
+    **拿会话锁**（与消息端点同一把锁）：删的正是「正在被推进」的那场图——
+    不锁可能出现「删线程的同时另一个 worker 正在往这条线程写 checkpoint」。
+    拿不到锁 → 409（这一场正忙，稍后再删）。
+    """
     service: Service = request.app.state.service
     try:
         await service.delete_interview(interview_id, user["id"])
     except InterviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="面试不存在") from exc
+    except InterviewLockedError as exc:
+        raise HTTPException(status_code=409, detail="这场面试正在使用中，请稍后再删") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="协调服务不可用，请稍后重试") from exc
