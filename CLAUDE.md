@@ -43,7 +43,7 @@
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
 - 可观测：Langfuse（云形态，无 key 即整体降级为零开销）；评估：**自研评估 harness**（评分一致性门禁，失败非零退出）+ RAGAS（离线检索指标）
 - MCP：仅"题库查询"1 个 server（stdio only、只公共题），协议代码关在 `app/mcp_server/`（单测扫描钉死别的模块不许 import `mcp`）；A2A 不引入
-- CI：GitHub Actions 三 job（后端 pytest / 前端 lint+vitest+build / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
+- CI：GitHub Actions **四 job**（后端 pytest / 前端 lint+vitest+build / **P4 集成（真 PG + 真 Redis）** / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
 - 语音：**豆包流式 ASR**（`WS /api/asr` 中继，v3 二进制协议）+ **edge-tts 播报**（三档降级）。**引擎与模态解耦**——语音只是新增一条音频通道，图/状态机/落库/SSE 事件表一条未动。**两把火山 key 不通用**（方舟 Bearer ≠ 豆包语音 X-Api-Key）
 - 视觉：**deepseek-flash 视觉**（代码截图先行）。图存磁盘 `data/uploads/`、state 只存 image_id；**图独立成附件消息、不改任何 prompt 模板**（无图路径逐字一致）
 - 白板（M14/M14b）：Excalidraw 导出 PNG 走既有图片通道；白板结构点评规则**只加在带图的附件说明里**（`NOTE_JUDGE_IMAGE_RULE`），不动 `JUDGE_TEMPLATE`——纯文字评分 prompt 逐字不变。报告官可能为「答非所问」丢掉缺失项，`build_per_question_comments` 会从评分官 comment 抽原句**确定性补回**（只对有图题、只抽含缺失语义的句子）
@@ -94,6 +94,9 @@
 7. **锁要在路由层拿、在流的 finally 里放**：拿不到锁要能在**开流之前**返回 409（流开始后就只能发 SSE error 事件了）；开场是「先锁后写库」，否则会留下「有行没流程」的孤儿场次
 8. **题库路径与业务库路径不是一回事**：`settings.db_path` 永远指向 SQLite（题库）；业务库走 `settings.business_db`。`bank_query` / `question_search` / `coding` / `mcp_server` **不许切 PG**
 9. **weasyprint 是带原生依赖的**：模块级 `import weasyprint` 会让**整个 API 起不来**（缺 pango/cairo 时直接 OSError）。改成惰性导入——PDF 只是一个可选出口，不该拖垮面试主链路
+10. **Windows 上 uvicorn 绕开 event loop policy**：uvicorn 的 `asyncio_loop_factory` 在 Windows 上直接 `return asyncio.ProactorEventLoop`（不读 policy），而 psycopg 的**异步**模式（官方 PG checkpointer）不支持它 → 报 “Psycopg cannot use the 'ProactorEventLoop' to run in async mode”。**切 policy 对 uvicorn 无效**，必须 `--loop app.graph.checkpointer:uvicorn_loop_factory`（compose 里已带上）。同理，脚本里要用 `asyncio.Runner(loop_factory=compatible_loop_factory())`——`asyncio.run()` **不接受 factory**
+11. **连接池不像裸连接那样回退 IPv4/IPv6**：Windows 上 `localhost` 优先解析成 `::1`，而 PG 端口只听 IPv4；`psycopg.connect` 会回退，**`psycopg_pool` 不会** → 只试一次 `::1` 就报 `PoolTimeout`（看着像「PG 连不上」）。所有建池处先过 `app/dsn.py::normalize_dsn`（只动 host）
+12. **PG 的 BIGSERIAL 不会因为显式插 id 而前进**：迁移脚本显式插原 id 保持一致 → 序列必须 `setval(pg_get_serial_sequence('answers','id'), max(id), true)`，否则迁移后新场次 finalize 第一次插 answers 就撞主键
 
 ## 开发纪律
 
