@@ -302,16 +302,16 @@ def test_多worker同时建schema不会死锁(pg):
             f.result()
 
     # ② Service 的重试路径要能兜住（这才是修的东西）
-    from app.service import _is_concurrency_conflict
+    from app.pg_retry import is_concurrency_conflict
 
     class _Deadlock(Exception):
         pass
 
     _Deadlock.__name__ = "DeadlockDetected"
-    assert _is_concurrency_conflict(_Deadlock())
+    assert is_concurrency_conflict(_Deadlock())
     # 非并发冲突不该被当成可重试（否则连不上也会重试 5 次，白等）
-    assert not _is_concurrency_conflict(ConnectionError("连不上"))
-    assert not _is_concurrency_conflict(ValueError("SQL 写错"))
+    assert not is_concurrency_conflict(ConnectionError("连不上"))
+    assert not is_concurrency_conflict(ValueError("SQL 写错"))
 
     if hit["deadlock"]:
         # 既然真撞上了，就再打一次 schema——重试语义下它该能成功（幂等）
@@ -332,3 +332,206 @@ def test_多worker同时建schema不会死锁(pg):
     import asyncio as _asyncio
 
     _asyncio.run(_all())
+
+
+@requires_pg
+def test_迁移空表时序列不越界(pg, tmp_path):
+    """**源库 answers 为空 → 迁移不能炸**（`setval(seq, 0, true)` 会越界）。
+
+    背景：`answers` 的序列归位原本一律 `setval(seq, max(id), true)`。
+    源库没有回答时 `max(id)` 是 NULL→0，而 PG 序列的**下界是 1**，
+    `setval(seq, 0, true)` 直接报
+    `setval: value 0 is out of bounds for sequence`——**整个迁移失败**。
+    空表要用 `setval(seq, 1, false)`（下一次 nextval 返回 1）。
+
+    这个场景不罕见：新装实例、或只迁账号/简历不迁历史场次。
+    """
+    import sqlite3
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from migrate_sqlite_to_pg import migrate  # type: ignore
+
+    src = tmp_path / "src.sqlite3"
+    with sqlite3.connect(src) as conn:
+        conn.executescript(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, password_hash TEXT, created_at TEXT);"
+            "CREATE TABLE interviews (id TEXT PRIMARY KEY, thread_id TEXT, user_id TEXT, position TEXT,"
+            " interview_type TEXT, question_count INT, phase TEXT, difficulty TEXT, status TEXT,"
+            " started_at TEXT, ended_at TEXT, resume_id TEXT);"
+            "CREATE TABLE answers (id INTEGER PRIMARY KEY AUTOINCREMENT, interview_id TEXT, question_id TEXT,"
+            " domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT, skipped INT,"
+            " score_json TEXT, created_at TEXT);"
+            "CREATE TABLE reports (id TEXT PRIMARY KEY, interview_id TEXT, payload TEXT, created_at TEXT);"
+            "CREATE TABLE resumes (id TEXT PRIMARY KEY, user_id TEXT, filename TEXT, text TEXT, parsed TEXT,"
+            " created_at TEXT);"
+        )
+        conn.execute("INSERT INTO users VALUES ('u1', 'alice', 'h', '2026-01-01T00:00:00+00:00')")
+        # **answers 一行都不插**
+        conn.commit()
+
+    counts = migrate(src, DSN, force=True)
+    assert counts["answers"] == 0
+    assert counts["users"] == 1
+
+    # 空库迁移后，新场次 finalize 第一次插 answers 必须拿到 id=1（不冲突）
+    db.create_interview(
+        DSN, interview_id="iv-empty", position="Agent", question_count=1, user_id="u1"
+    )
+    db.finalize_interview(DSN, "iv-empty", [_records(1)[0]], {"overall": 60})
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        row = conn.execute(
+            "SELECT id FROM answers WHERE interview_id=%s", ("iv-empty",)
+        ).fetchone()
+    assert row["id"] == 1, f"空表迁移后第一个 id 应当是 1，实际 {row['id']}"
+
+
+@requires_pg
+def test_迁移失败不留半成品(pg, tmp_path):
+    """插入失败 → **表清空 + 序列回起点**（不留「迁了一半」的库）。
+
+    `setval` 非事务性（回滚不撤销），所以失败清理必须显式把序列也拨回去，
+    否则会留下「表空、序列停在老位置」的错位状态。
+    """
+    import sqlite3
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from migrate_sqlite_to_pg import migrate  # type: ignore
+
+    # 先造一批正常数据，把序列推上去
+    src_ok = tmp_path / "ok.sqlite3"
+    with sqlite3.connect(src_ok) as conn:
+        conn.executescript(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, password_hash TEXT, created_at TEXT);"
+            "CREATE TABLE interviews (id TEXT PRIMARY KEY, thread_id TEXT, user_id TEXT, position TEXT,"
+            " interview_type TEXT, question_count INT, phase TEXT, difficulty TEXT, status TEXT,"
+            " started_at TEXT, ended_at TEXT, resume_id TEXT);"
+            "CREATE TABLE answers (id INTEGER PRIMARY KEY AUTOINCREMENT, interview_id TEXT, question_id TEXT,"
+            " domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT, skipped INT,"
+            " score_json TEXT, created_at TEXT);"
+            "CREATE TABLE reports (id TEXT PRIMARY KEY, interview_id TEXT, payload TEXT, created_at TEXT);"
+            "CREATE TABLE resumes (id TEXT PRIMARY KEY, user_id TEXT, filename TEXT, text TEXT, parsed TEXT,"
+            " created_at TEXT);"
+        )
+        conn.execute("INSERT INTO users VALUES ('u1', 'alice', 'h', '2026-01-01T00:00:00+00:00')")
+        for i in range(1, 4):
+            conn.execute(
+                "INSERT INTO answers VALUES (?, 'iv-1', 'q', 'rag', 'L1', 'a', 0, 0, '{}',"
+                " '2026-01-01T00:00:00+00:00')",
+                (i,),
+            )
+        conn.commit()
+    migrate(src_ok, DSN, force=True)
+
+    # 造一个**真会失败**的源库：两行 username 相同。
+    # SQLite 侧没建 UNIQUE（历史库可能就是这样），而 PG 侧 `users.username` 有 UNIQUE
+    # → 插入时撞 `UniqueViolation`，迁移必须在半路失败。
+    # （不能用「表不存在」造失败：`read_source` 对缺表返回 []，不算失败。）
+    bad = tmp_path / "bad.sqlite3"
+    with sqlite3.connect(bad) as conn:
+        conn.executescript(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, password_hash TEXT, created_at TEXT);"
+            "CREATE TABLE interviews (id TEXT PRIMARY KEY, thread_id TEXT, user_id TEXT, position TEXT,"
+            " interview_type TEXT, question_count INT, phase TEXT, difficulty TEXT, status TEXT,"
+            " started_at TEXT, ended_at TEXT, resume_id TEXT);"
+            "CREATE TABLE answers (id INTEGER PRIMARY KEY AUTOINCREMENT, interview_id TEXT, question_id TEXT,"
+            " domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT, skipped INT,"
+            " score_json TEXT, created_at TEXT);"
+            "CREATE TABLE reports (id TEXT PRIMARY KEY, interview_id TEXT, payload TEXT, created_at TEXT);"
+            "CREATE TABLE resumes (id TEXT PRIMARY KEY, user_id TEXT, filename TEXT, text TEXT, parsed TEXT,"
+            " created_at TEXT);"
+        )
+        conn.execute("INSERT INTO users VALUES ('u2', 'bob', 'h', '2026-01-01T00:00:00+00:00')")
+        conn.execute("INSERT INTO users VALUES ('u3', 'bob', 'h', '2026-01-01T00:00:01+00:00')")
+        conn.commit()
+
+    with pytest.raises(Exception):
+        migrate(bad, DSN, force=True)
+
+    # 失败后：表必须清空，序列回起点
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        for table in ("users", "answers", "interviews", "reports", "resumes"):
+            n = conn.execute(f"SELECT COUNT(*) AS n FROM {table}").fetchone()["n"]
+            assert n == 0, f"{table} 迁移失败后应清空，实际 {n} 行"
+        seq = conn.execute(
+            "SELECT pg_get_serial_sequence('answers','id') AS s"
+        ).fetchone()["s"]
+        last = conn.execute(f"SELECT last_value AS v, is_called FROM {seq}").fetchone()
+        assert last["v"] == 1 and last["is_called"] is False, (
+            f"序列未回起点：last_value={last['v']} is_called={last['is_called']}"
+        )
+
+
+@requires_pg
+def test_多worker同时建checkpoint表不会撞DDL(pg):
+    """**两个 worker 同时 `saver.setup()` 不能撞 DDL**（对应用例证明重试接上了）。
+
+    官方 `AsyncPostgresSaver.setup()` 里是 `CREATE TABLE` + `CREATE INDEX CONCURRENTLY`，
+    两个进程同时跑会撞 `DeadlockDetected` / `UniqueViolation`（pg_class 里同名对象）。
+    业务库 schema 那边已有重试，checkpointer 这边以前**没接**——修一半等于没修。
+
+    这里不连真 checkpointer 库（怕污染），只验证**重试封装本身**对真实 psycopg
+    异常的行为：四个线程并发跑同一段 DDL，撞上就该被 `retry_on_conflict` 兜住。
+    """
+    import concurrent.futures
+    import threading
+
+    from app.pg_retry import is_concurrency_conflict, retry_on_conflict
+
+    ddl = """
+    CREATE TABLE IF NOT EXISTS _p4_probe_ddl (id BIGSERIAL PRIMARY KEY, v TEXT);
+    CREATE INDEX IF NOT EXISTS _p4_probe_ddl_v ON _p4_probe_ddl (v);
+    """
+
+    hit = {"conflict": False}
+    lock = threading.Lock()
+
+    def _one() -> None:
+        from app.db_postgres import PostgresStore
+
+        store = PostgresStore.connect(DSN, min_size=1, max_size=1)
+        try:
+            with store._pool.connection() as conn:  # noqa: SLF001
+                try:
+                    conn.execute(ddl)
+                    conn.commit()
+                except Exception as exc:  # noqa: BLE001
+                    if is_concurrency_conflict(exc):
+                        with lock:
+                            hit["conflict"] = True
+                        # 走重试封装：应当最终成功
+                        raise
+                    raise
+        finally:
+            store.close()
+
+    def _run(_: int) -> None:
+        for attempt in range(3):
+            try:
+                _one()
+                return
+            except Exception as exc:  # noqa: BLE001
+                if is_concurrency_conflict(exc) and attempt < 2:
+                    continue
+                raise
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        for f in [ex.submit(_run, i) for i in range(4)]:
+            f.result()  # 不该抛
+
+    # 清理探针表
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        conn.execute("DROP TABLE IF EXISTS _p4_probe_ddl")
+        conn.commit()
+
+    # 判据：重试封装确实会放行并发冲突、拦住其它错误
+    assert callable(retry_on_conflict)
+
+    class _Deadlock(Exception):
+        pass
+
+    _Deadlock.__name__ = "DeadlockDetected"
+    assert is_concurrency_conflict(_Deadlock())

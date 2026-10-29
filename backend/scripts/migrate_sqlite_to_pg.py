@@ -85,6 +85,54 @@ def read_source(path: Path, table: str) -> list[tuple]:
         return [tuple(row) for row in rows]
 
 
+def _reset_sequences(conn) -> None:
+    """把 EXPLICIT_ID 各表的自增序列拨到「表内最大 id 之后」。
+
+    背景：迁移是**显式插入原 id**（保持 id 一致），而 PG 的 `BIGSERIAL`
+    **序列不会因此前进**——序列只在用默认值插入时才自增。不归位的话，
+    新场次 `finalize_interview` 第一次插 answers 会拿到已被占用的 id → 主键冲突。
+
+    **空表要特判**：`setval(seq, 0, true)` 会越界（序列下界是 1，
+    PG 报 `setval: value 0 is out of bounds for sequence`）。
+    空表用 `setval(seq, 1, false)`——`is_called=false` 表示「下一个 nextval 返回 1」。
+
+    **注意 setval 不是事务性的**：回滚不会撤销它。所以调用方必须把它放在
+    「失败能清理」的位置（见 migrate 的 except 分支），不能指望事务兜底。
+    """
+    for table in EXPLICIT_ID:
+        seq = conn.execute(
+            "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
+        ).fetchone()[0]
+        if seq is None:
+            continue
+        max_id = conn.execute(
+            f"SELECT COALESCE(MAX(id), 0) FROM {table}"
+        ).fetchone()[0]
+        if max_id > 0:
+            conn.execute("SELECT setval(%s, %s, true)", (seq, max_id))
+            logger.info("序列归位：%s → %s 之后（表内最大 id %s）", table, seq, max_id)
+        else:
+            conn.execute("SELECT setval(%s, 1, false)", (seq,))
+            logger.info("序列归位：%s → 起点（表为空，下一个 id 为 1）", table, seq)
+
+
+def _cleanup(conn) -> None:
+    """迁移失败后的清理：清空业务表 + 序列回起点。
+
+    **序列也要清**：`setval` 非事务性，事务回滚不会撤销它；只清表不清序列的话，
+    库里会留下「表空、序列停在老位置」的错位状态。
+    """
+    for table in reversed(TABLES):
+        conn.execute(f"DELETE FROM {table}")
+    for table in EXPLICIT_ID:
+        seq = conn.execute(
+            "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
+        ).fetchone()[0]
+        if seq is not None:
+            conn.execute("SELECT setval(%s, 1, false)", (seq,))
+    conn.commit()
+
+
 def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, int]:
     """执行迁移；返回 {表: 行数}。失败抛异常（目标库已清空，SQLite 原文件未动）。"""
     from psycopg_pool import ConnectionPool
@@ -115,18 +163,8 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
                         f"目标库表 {table} 已有 {n} 行；确认要覆盖请加 --force（会先清空业务表）"
                     )
             if force:
-                for table in reversed(TABLES):
-                    conn.execute(f"DELETE FROM {table}")
-                # **清空后也要把自增序列拨回起点**：
-                # DELETE 不动序列，于是清空后序列还停在旧位置——接着显式插原 id，
-                # 序列与表内实际 id 彻底脱节（这正是下面 setval 要修的根因）。
-                for table in EXPLICIT_ID:
-                    seq = conn.execute(
-                        "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
-                    ).fetchone()[0]
-                    if seq is not None:
-                        conn.execute("SELECT setval(%s, 1, false)", (seq,))
-                conn.commit()
+                # 清空 + 序列回起点（DELETE 不动序列，清空后序列会停在旧位置）
+                _cleanup(conn)
 
             try:
                 with conn.transaction():
@@ -142,33 +180,15 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
                         with conn.cursor() as cur:
                             cur.executemany(sql, rows)
                         counts[table] = len(rows)
+                # 序列归位：**必须在同一个 try 里**——setval 非事务性，
+                # 它自己失败时数据已经提交了（事务已结束），不清理就留下
+                # 「已迁移但序列错位」的半成品库。
+                _reset_sequences(conn)
+                conn.commit()
             except Exception:
                 conn.rollback()
-                for table in reversed(TABLES):
-                    conn.execute(f"DELETE FROM {table}")
-                conn.commit()
+                _cleanup(conn)
                 raise
-
-            # **重置 answers 的自增序列**（PG 的 BIGSERIAL）。
-            # 上面是**显式插入原 id**（EXPLICIT_ID = {"answers"}，保持 id 一致），
-            # 但序列**不会因为显式插入而前进**——序列只在用默认值插入时才自增。
-            # 于是迁移完新场次 finalize_interview 第一次插 answers 会拿到 id=1，
-            # 而 id=1 已经被迁移进来的行占了 → **主键冲突**。
-            # （不读表名以外的元数据，只能显式 setval。）
-            for table in EXPLICIT_ID:
-                seq = conn.execute(
-                    "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
-                ).fetchone()[0]
-                if seq is None:
-                    continue
-                max_id = conn.execute(
-                    f"SELECT COALESCE(MAX(id), 0) FROM {table}"
-                ).fetchone()[0]
-                conn.execute("SELECT setval(%s, %s, true)", (seq, max_id))
-                logger.info(
-                    "序列重置：%s 的 id 序列 → %s（当前最大 id %s）", table, seq, max_id
-                )
-            conn.commit()
 
         # 校验：逐表 count 必须与源一致
         with pool.connection() as conn:
@@ -177,8 +197,11 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
                 target = cur.fetchone()[0]
                 source = len(read_source(sqlite_path, table))
                 if target != source:
+                    # 原文案说「已回滚清空」但那时数据其实已经提交了——文案撒谎。
+                    # 现在真的清（表 + 序列），让这句话成立。
+                    _cleanup(conn)
                     raise SystemExit(
-                        f"校验失败：{table} 源 {source} 行 / 目标 {target} 行（已回滚清空）"
+                        f"校验失败：{table} 源 {source} 行 / 目标 {target} 行（已清空目标库）"
                     )
     finally:
         pool.close()
