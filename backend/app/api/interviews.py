@@ -277,6 +277,11 @@ async def retry_persist(
         raise HTTPException(status_code=404, detail="面试不存在") from exc
     except InterviewNotFinishedError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InterviewLockedError as exc:
+        # 与 delete_interview 共用一把锁：这一场正忙（可能在答题，也可能在删）
+        raise HTTPException(status_code=409, detail="这场面试正在使用中，请稍后再试") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="协调服务不可用，请稍后重试") from exc
     except PersistFailedError as exc:
         raise HTTPException(status_code=503, detail="结果保存仍然失败，请稍后重试") from exc
 

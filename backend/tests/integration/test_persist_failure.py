@@ -177,3 +177,36 @@ def db_path_of() -> str:
     from app.config import get_settings
 
     return get_settings().business_db
+
+
+async def test_会话锁被占时repair返回409(client, break_persist, monkeypatch):
+    """**锁被占时 retry-persist 返回 409**（不能和 delete/答题并发写同一场）。
+
+    修的就是业务库里的 answers/reports 行，而 `delete_interview` 删的也是这些行——
+    不锁的话「修复正在写」撞上「删除正在清」会留下孤儿数据。
+    """
+    from app.main import app as _app
+
+    break_persist()
+    interview_id = await _create(client)
+    events: list[dict] = []
+    for turn in TURNS:
+        events = await _send(client, interview_id, turn)
+        if _error_codes(events):
+            break
+    assert "persist_error" in _error_codes(events)
+
+    service = _app.state.service
+    # 手工占住会话锁（模拟另一个 worker 正在处理这一场）
+    token = await service.acquire_session(interview_id)
+    try:
+        r = await client.post(f"/api/interviews/{interview_id}/retry-persist")
+        assert r.status_code == 409, f"锁被占时应当 409，实际 {r.status_code}：{r.text}"
+    finally:
+        await service.release_session(interview_id, token)
+
+    # 锁释放后又能修了（先把落库恢复正常）
+    monkeypatch.undo()
+    r = await client.post(f"/api/interviews/{interview_id}/retry-persist")
+    assert r.status_code == 200, r.text
+    assert r.json()["repaired"] is True
