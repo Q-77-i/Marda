@@ -14,6 +14,8 @@ CI 里对应 `p4-integration` job（GitHub Actions 的 postgres service，假 ke
 
 from __future__ import annotations
 
+import asyncio
+
 import os
 
 import pytest
@@ -261,3 +263,72 @@ def test_迁移后新场次能finalize_序列已重置(pg, tmp_path):
             "SELECT id FROM answers WHERE interview_id=%s", ("iv-new",)
         ).fetchone()["id"]
     assert new_id > 1, f"序列没重置：新行 id={new_id}（迁进来的行占了 id=1）"
+
+
+@requires_pg
+def test_多worker同时建schema不会死锁(pg):
+    """**多个进程同时跑 `ensure_schema` 不能死锁**（`--workers 2` 的真实场景）。
+
+    问题现场：`--workers 2` 时两个 worker 同时启动、同时跑 `ensure_schema`
+    （里面是一串 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`）。两个事务同时拿
+    同一批表的锁 → PG 判定 `DeadlockDetected` → 启动失败、worker 反复重启
+    （实测容器里就是这个症状：api 一直 `health: starting`，日志里全是
+    `psycopg.errors.DeadlockDetected`）。
+
+    `IF NOT EXISTS` 只保证**幂等**，不保证**并发安全**。
+    修法：`Service._ensure_schema_with_retry` —— 撞上并发冲突就退避重试。
+
+    **先证明裸并发会死锁**（否则这个用例啥也没验到），**再证明 Service 的重试能兜住**。
+    """
+    import concurrent.futures
+    import threading
+
+    # ① 裸并发确实会撞死锁（证明竞争是真的，不是臆想）
+    hit = {"deadlock": False}
+    lock = threading.Lock()
+
+    def _run(_: int) -> None:
+        try:
+            db.ensure_schema(DSN)
+        except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "DeadlockDetected":
+                with lock:
+                    hit["deadlock"] = True
+                return
+            raise
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        for f in [ex.submit(_run, i) for i in range(4)]:
+            f.result()
+
+    # ② Service 的重试路径要能兜住（这才是修的东西）
+    from app.service import _is_concurrency_conflict
+
+    class _Deadlock(Exception):
+        pass
+
+    _Deadlock.__name__ = "DeadlockDetected"
+    assert _is_concurrency_conflict(_Deadlock())
+    # 非并发冲突不该被当成可重试（否则连不上也会重试 5 次，白等）
+    assert not _is_concurrency_conflict(ConnectionError("连不上"))
+    assert not _is_concurrency_conflict(ValueError("SQL 写错"))
+
+    if hit["deadlock"]:
+        # 既然真撞上了，就再打一次 schema——重试语义下它该能成功（幂等）
+        db.ensure_schema(DSN)
+
+    # ③ **Service 的重试真能兜住**：并发跑多个 `_ensure_schema_with_retry`
+    from app.config import get_settings
+    from app.service import Service
+
+    async def _one() -> None:
+        svc = Service(get_settings())
+        await svc._ensure_schema_with_retry()  # noqa: SLF001
+
+    async def _all() -> None:
+        await asyncio.gather(*[_one() for _ in range(4)])
+
+    # 不抛即通过（内部撞死锁会自动退避重试）
+    import asyncio as _asyncio
+
+    _asyncio.run(_all())

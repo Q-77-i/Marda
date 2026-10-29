@@ -71,6 +71,26 @@ class InterviewLockedError(Exception):
     """
 
 
+def _is_concurrency_conflict(exc: BaseException) -> bool:
+    """这个异常是不是「两个进程同时改 schema」造成的小冲突？
+
+    **只认这几种**（都是「你来我也来」的典型）：
+    - `DeadlockDetected`：两个事务反向拿锁；
+    - `UniqueViolation`：两个都先 `SELECT` 再 `INSERT`（系统目录 / 表名）；
+    - `LockNotAvailable` / `SerializationFailure`：锁/隔离级别下的正常竞争。
+
+    其他错误（连不上、权限、SQL 写错）一律不该重试——重试只会拖长报错时间，
+    还掩盖真正的故障。
+    """
+    name = type(exc).__name__
+    return name in {
+        "DeadlockDetected",
+        "UniqueViolation",
+        "LockNotAvailable",
+        "SerializationFailure",
+    }
+
+
 def _plain(value: Any) -> Any:
     """递归归一化为纯 Python 对象（流更新/checkpoint 反序列化会带回 Pydantic 模型与枚举）。"""
     if isinstance(value, BaseModel):
@@ -218,13 +238,40 @@ class Service:
 
     async def start(self) -> None:
         """lifespan 启动：业务库 schema + checkpointer 连接 + 编译图 + 协调器。"""
-        await asyncio.to_thread(db.ensure_schema, self._settings.business_db)
+        await self._ensure_schema_with_retry()
         handle = await create_checkpointer(self._settings)
         self._conn = None  # SQLite 连接已由 checkpointer 句柄持有
         self._close_checkpointer = handle.close
         self._graph = build_graph(checkpointer=handle.saver)
         self._coordinator = coordination.get_coordinator(self._settings)
         await self._apply_retention(handle)
+
+    async def _ensure_schema_with_retry(self, attempts: int = 5) -> None:
+        """建 schema，**遇到死锁/序列化失败就退避重试**。
+
+        **为什么需要**：`--workers 2` 时两个 worker **同时**启动、同时跑
+        `ensure_schema`（里面是一串 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`）。
+        两个事务同时拿同一批表的锁 → **PG 判定死锁**（`DeadlockDetected`），
+        启动直接失败、worker 反复重启（实测容器里就是这个症状）。
+
+        `IF NOT EXISTS` 只保证幂等，**不保证并发安全**。schema 是幂等的，
+        所以「撞了就退避重试」既安全又简单（`CREATE INDEX CONCURRENTLY` 那类不算，
+        这里只有建表/加列）。
+        """
+        delay = 0.2
+        for attempt in range(attempts):
+            try:
+                await asyncio.to_thread(db.ensure_schema, self._settings.business_db)
+                return
+            except Exception as exc:  # noqa: BLE001 —— 要按「是不是并发冲突」区分
+                if attempt == attempts - 1 or not _is_concurrency_conflict(exc):
+                    raise
+                logger.warning(
+                    "建 schema 撞上并发冲突（第 %d 次，%.1fs 后重试）：%s",
+                    attempt + 1, delay, exc,
+                )
+                await asyncio.sleep(delay)
+                delay *= 2
 
     async def _apply_retention(self, handle) -> None:
         """启动时执行一次**保留策略**（P4-E3）：每场只留最近 N 张 + 最终一张。
