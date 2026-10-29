@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from app.config import Settings
+from app.pg_retry import retry_on_conflict
 from app.dsn import normalize_dsn
 from app.graph.serde import make_serde
 
@@ -141,7 +142,8 @@ async def _create_sqlite(settings: Settings) -> CheckpointerHandle:
     # **setup() 建表**：官方 saver 是懒建表的（第一次 resume 才建），
     # 但启动时要跑保留策略（读 checkpoints 表）——表不存在会直接报错。
     # 所以这里显式 setup：建表是幂等的，且「启动即建表」比「第一次面试才建」更可预期。
-    await saver.setup()
+    # 重试：两个 worker 同时首启会一起建表，撞上就退避（见 app/pg_retry.py）。
+    await retry_on_conflict(saver.setup, label="checkpoint 建表（sqlite）")
 
     async def _close() -> None:
         await conn.close()
@@ -182,7 +184,11 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
     )
     await pool.open(wait=True)
     saver = AsyncPostgresSaver(pool, serde=make_serde())
-    await saver.setup()
+    # **setup() 也要重试**：两个 worker 同时启动会同时跑官方迁移里的
+    # `CREATE TABLE` / `CREATE INDEX CONCURRENTLY`，撞上就是 `DeadlockDetected`
+    # 或 `UniqueViolation`（pg_class 里同名对象）——启动失败、worker 反复重启。
+    # 业务库 schema 那边已有同样的重试，这里必须一致（否则修了一半）。
+    await retry_on_conflict(saver.setup, label="checkpoint 建表（postgres）")
 
     async def _close() -> None:
         await pool.close()

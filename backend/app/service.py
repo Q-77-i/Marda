@@ -21,6 +21,7 @@ from pydantic import BaseModel
 
 from app import coordination, db, llm, observability
 from app.config import Settings
+from app.pg_retry import retry_on_conflict
 from app.domain import INTERVIEW_TECH
 from app.graph.checkpointer import create_checkpointer
 from app.graph.graph import build_graph, run_config
@@ -69,26 +70,6 @@ class InterviewLockedError(Exception):
     多 worker 形态下这是**必要的**：两个 worker 同时 resume 同一场会各自推进状态，
     轻则重复计分，重则状态互相覆盖。
     """
-
-
-def _is_concurrency_conflict(exc: BaseException) -> bool:
-    """这个异常是不是「两个进程同时改 schema」造成的小冲突？
-
-    **只认这几种**（都是「你来我也来」的典型）：
-    - `DeadlockDetected`：两个事务反向拿锁；
-    - `UniqueViolation`：两个都先 `SELECT` 再 `INSERT`（系统目录 / 表名）；
-    - `LockNotAvailable` / `SerializationFailure`：锁/隔离级别下的正常竞争。
-
-    其他错误（连不上、权限、SQL 写错）一律不该重试——重试只会拖长报错时间，
-    还掩盖真正的故障。
-    """
-    name = type(exc).__name__
-    return name in {
-        "DeadlockDetected",
-        "UniqueViolation",
-        "LockNotAvailable",
-        "SerializationFailure",
-    }
 
 
 def _plain(value: Any) -> Any:
@@ -254,24 +235,13 @@ class Service:
         两个事务同时拿同一批表的锁 → **PG 判定死锁**（`DeadlockDetected`），
         启动直接失败、worker 反复重启（实测容器里就是这个症状）。
 
-        `IF NOT EXISTS` 只保证幂等，**不保证并发安全**。schema 是幂等的，
-        所以「撞了就退避重试」既安全又简单（`CREATE INDEX CONCURRENTLY` 那类不算，
-        这里只有建表/加列）。
+        `IF NOT EXISTS` 只保证幂等，**不保证并发安全**（见 `app/pg_retry.py`）。
         """
-        delay = 0.2
-        for attempt in range(attempts):
-            try:
-                await asyncio.to_thread(db.ensure_schema, self._settings.business_db)
-                return
-            except Exception as exc:  # noqa: BLE001 —— 要按「是不是并发冲突」区分
-                if attempt == attempts - 1 or not _is_concurrency_conflict(exc):
-                    raise
-                logger.warning(
-                    "建 schema 撞上并发冲突（第 %d 次，%.1fs 后重试）：%s",
-                    attempt + 1, delay, exc,
-                )
-                await asyncio.sleep(delay)
-                delay *= 2
+        await retry_on_conflict(
+            lambda: asyncio.to_thread(db.ensure_schema, self._settings.business_db),
+            attempts=attempts,
+            label="业务库 schema",
+        )
 
     async def _apply_retention(self, handle) -> None:
         """启动时执行一次**保留策略**（P4-E3）：每场只留最近 N 张 + 最终一张。
@@ -540,22 +510,35 @@ class Service:
 
         前提：图必须真的 finished（否则说明还在进行中，不该走这条路），
         且业务库确实缺报告（已经落库了就返回「无需修复」，不重复写）。
+
+        **拿会话锁**（与消息端点 / 删除端点同一把锁）：修的就是业务库里的
+        `answers` / `reports` 行，而 `delete_interview` 删的也是这些行——
+        不锁的话「修复正在写」撞上「删除正在清」，可能留下孤儿数据
+        （报告插进去了、场次行被删了，或反之）。拿不到锁 → 409。
         """
         await self._require_owner(interview_id, user_id)
-        values = await self._current_values(interview_id)
-        if not values:
-            raise InterviewNotFoundError(interview_id)
-        if values.get("status") != "finished":
-            raise InterviewNotFinishedError(
-                "这场面试还没结束，不需要重试落库"
+        token = await self.acquire_session(interview_id)
+        try:
+            values = await self._current_values(interview_id)
+            if not values:
+                raise InterviewNotFoundError(interview_id)
+            if values.get("status") != "finished":
+                raise InterviewNotFinishedError(
+                    "这场面试还没结束，不需要重试落库"
+                )
+            existing = await asyncio.to_thread(
+                db.get_report, self._settings.business_db, interview_id
             )
-        existing = await asyncio.to_thread(
-            db.get_report, self._settings.business_db, interview_id
-        )
-        if existing is not None:
-            return {"interview_id": interview_id, "repaired": False, "reason": "报告已存在"}
-        await self._persist(interview_id, values)
-        return {"interview_id": interview_id, "repaired": True}
+            if existing is not None:
+                return {
+                    "interview_id": interview_id,
+                    "repaired": False,
+                    "reason": "报告已存在",
+                }
+            await self._persist(interview_id, values)
+            return {"interview_id": interview_id, "repaired": True}
+        finally:
+            await self.release_session(interview_id, token)
 
     async def delete_interview(self, interview_id: str, user_id: str) -> None:
         """物理删除场次（T7a-R1）：checkpointer 线程 + 业务库三表 + 图片目录（P2-M6）。
