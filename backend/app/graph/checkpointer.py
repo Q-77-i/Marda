@@ -51,6 +51,31 @@ def compatible_loop_factory():
     return asyncio.SelectorEventLoop
 
 
+def uvicorn_loop_factory():
+    """**给 uvicorn 用的** loop factory（零参数，直接返回 loop 实例）。
+
+    为什么需要单独一个：`ensure_compatible_event_loop()` 切的是 **policy**，
+    而 **uvicorn 绕开 policy**——它的 `asyncio_loop_factory` 在 Windows 上
+    直接 `return asyncio.ProactorEventLoop`（实测 uvicorn 0.36+ 源码），
+    跟当前 policy 无关。所以**切 policy 对 uvicorn 完全无效**，
+    Windows 上 uvicorn + PG checkpointer 照样报 ProactorEventLoop 错。
+
+    uvicorn 的 `Config(loop=...)` 支持 `"<module>:<attr>"` 形式的自定义 factory
+    （见 `uvicorn.importer.import_from_string`），但它要求 factory 是**零参数**的
+    → 启动命令加 `--loop app.graph.checkpointer:uvicorn_loop_factory`。
+
+    **注意 `--workers 2`**：多 worker 模式下 uvicorn 用**子进程**起 worker，
+    每个子进程会重新 import 本模块 → factory 在每个进程里各自生效。
+    """
+    import asyncio
+    import sys
+
+    if sys.platform != "win32":
+        # 非 Windows：默认就是 Selector，交给 uvicorn 自己的默认即可
+        return None
+    return asyncio.SelectorEventLoop()
+
+
 def ensure_compatible_event_loop() -> None:
     """旧入口（保留兼容）：把全局事件循环策略切成 Selector。
 
@@ -78,11 +103,17 @@ class CheckpointerHandle:
     """checkpointer + 关闭钩子。
 
     `close` 由 service lifespan 统一调用：SQLite 关连接，PG 关连接池。
+
+    `prune` 是**保留策略的入口**（P4-E3）：按 `CHECKPOINT_RETENTION` 删掉更早的快照。
+    为什么挂在句柄上而不是让 service 自己去连库：两种后端的连接对象不一样
+    （SQLite 是 aiosqlite 连接、PG 是 AsyncConnectionPool），
+    句柄是唯一同时握着两者的地方。
     """
 
     saver: object
     backend: str
     close: Callable[[], Awaitable[None]]
+    prune: Callable[[int], Awaitable[list]] | None = None
 
 
 async def create_checkpointer(settings: Settings) -> CheckpointerHandle:
@@ -104,12 +135,23 @@ async def _create_sqlite(settings: Settings) -> CheckpointerHandle:
 
     conn = await aiosqlite.connect(str(settings.checkpoint_db_path))
     saver = AsyncSqliteSaver(conn, serde=make_serde())
+    # **setup() 建表**：官方 saver 是懒建表的（第一次 resume 才建），
+    # 但启动时要跑保留策略（读 checkpoints 表）——表不存在会直接报错。
+    # 所以这里显式 setup：建表是幂等的，且「启动即建表」比「第一次面试才建」更可预期。
+    await saver.setup()
 
     async def _close() -> None:
         await conn.close()
 
+    async def _prune(keep: int):
+        from app.graph.retention import prune_all_sqlite
+
+        return await prune_all_sqlite(conn, keep=keep)
+
     logger.info("checkpointer: sqlite %s", settings.checkpoint_db_path)
-    return CheckpointerHandle(saver=saver, backend="sqlite", close=_close)
+    return CheckpointerHandle(
+        saver=saver, backend="sqlite", close=_close, prune=_prune
+    )
 
 
 async def _create_postgres(settings: Settings) -> CheckpointerHandle:
@@ -142,5 +184,12 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
     async def _close() -> None:
         await pool.close()
 
+    async def _prune(keep: int):
+        from app.graph.retention import prune_all_postgres
+
+        return await prune_all_postgres(pool, keep=keep)
+
     logger.info("checkpointer: postgres（多 worker 共享状态）")
-    return CheckpointerHandle(saver=saver, backend="postgres", close=_close)
+    return CheckpointerHandle(
+        saver=saver, backend="postgres", close=_close, prune=_prune
+    )

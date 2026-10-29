@@ -86,9 +86,23 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="checkpoint 保留（删更早的快照）")
     parser.add_argument("--sqlite", type=Path, help="SQLite checkpointer 文件路径")
     parser.add_argument("--postgres", help="PostgreSQL 连接串")
-    parser.add_argument("--keep", type=int, default=20, help="每场保留最近 N 张（默认 20）")
+    parser.add_argument(
+        "--keep",
+        type=int,
+        default=None,
+        help="每场保留最近 N 张（默认读配置 CHECKPOINT_RETENTION，再退到 20）",
+    )
     parser.add_argument("--dry-run", action="store_true", help="只看会删多少，不真删")
     args = parser.parse_args()
+
+    if args.keep is None:
+        # **默认读配置**：以前这里硬编码 20，而 `CHECKPOINT_RETENTION` 只写在
+        # .env.example 里没人读——两处口径分叉（脚本删一套、运行时另一套）。
+        # 现在运行时（service 启动时）也按同一个配置跑，两者必须同源。
+        from app.config import get_settings
+
+        args.keep = get_settings().checkpoint_retention
+        print(f"--keep 未指定，按配置 CHECKPOINT_RETENTION={args.keep}")
 
     if not args.sqlite and not args.postgres:
         parser.error("至少给一个 --sqlite 或 --postgres")
