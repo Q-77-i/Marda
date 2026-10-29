@@ -72,11 +72,16 @@ docker compose up -d --build  # → http://localhost:8080
 
 `nginx（唯一入口）→ web（Next standalone）/ api（uvicorn × 2 worker）`，背靠 `postgres`（业务库 + checkpoint 独立库）、`redis`（会话锁 / 限流 / 全局 LLM 槽）、`qdrant` 与 `embedding`（本地 BGE-M3）；题库与上传图片落宿主机 `data/`，容器重建不丢。语音 key 可选——不填则语音通道整体降级为文字，其余功能零影响。换端口：`MARDA_PORT=9000 docker compose up -d`。
 
-**单机形态**（不依赖 PG / Redis，默认开关就是它）：
+**单机形态**（不依赖 PG / Redis）：
 
 ```bash
-docker compose --profile legacy up -d --build   # SQLite + 单 worker
+docker compose down                              # 先停默认形态（两边端口冲突）
+docker compose -f docker-compose.legacy.yml up -d --build   # SQLite + 单 worker
 ```
+
+> 用**独立 compose 文件**而不是 `--profile legacy`：profile 只能「多起一个服务」，
+> **换不掉已存在的服务**——`--profile legacy up` 会同时起默认形态的 api（2 worker + PG）
+> 和 api-legacy，nginx 仍指向 api，所谓回滚根本没生效。两边互斥，切形态前先 `down`。
 
 三组开关彼此独立，`.env` 里按需改即可：`DB_BACKEND` / `CHECKPOINT_BACKEND` / `COORDINATION_BACKEND`
 （`sqlite|postgres` / `sqlite|postgres` / `memory|redis`）。生产形态的取舍、迁移与回滚见
@@ -92,6 +97,18 @@ cd frontend && pnpm install && pnpm dev                          # http://localh
 ```
 
 密钥放仓库根 `.env`（见 `.env.example`，**不进仓库**）。`JWT_SECRET` 长度不足 32 会启动即失败；`LANGFUSE_*` 可选，留空即整体降级为零开销。
+
+> **Windows 上跑 PG 形态**：uvicorn 的默认 loop 在 Windows 上是 `ProactorEventLoop`，
+> 而 psycopg 的**异步**模式（官方 PG checkpointer 就是异步的）不支持它——
+> 报错 “Psycopg cannot use the 'ProactorEventLoop' to run in async mode”。
+> **切 event loop policy 对 uvicorn 无效**（它的 factory 直接返回 Proactor，绕开 policy），
+> 必须显式给 factory：
+>
+> ```bash
+> uv run uvicorn app.main:app --loop app.graph.checkpointer:uvicorn_loop_factory
+> ```
+>
+> 容器里的 compose 命令已经带上了（Linux 上默认就是 Selector，那参数是空转）。
 
 ## 技术栈
 

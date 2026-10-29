@@ -7,9 +7,13 @@
 # - 协调（会话锁 / per-user 限流 / 全局 LLM 槽）在 Redis；
 # - 题库仍在 SQLite（离线资产，只读，不迁）。
 #
-# 单机形态（不启 PG/Redis）走 compose 的 profile：
-#   docker compose up -d --build                    # 默认：PG + Redis + api(2 worker)
-#   docker compose --profile legacy up -d --build   # 兼容老形态：SQLite + 单 worker
+# 单机形态（SQLite + 单 worker）走**独立 compose 文件**：
+#   docker compose up -d --build                            # 默认：PG + Redis + api(2 worker)
+#   docker compose -f docker-compose.legacy.yml up -d --build   # 单机：SQLite + 单 worker
+#
+# 为什么不用 profile：profile 只能「多起一个服务」，**换不掉已存在的服务**——
+# `--profile legacy up` 会同时起默认形态的 api（2 worker + PG）和 api-legacy，
+# nginx 仍指向 api，所谓回滚根本没生效。故拆成独立文件（两边互斥）。
 name: marda
 
 services:
@@ -91,7 +95,12 @@ services:
       REDIS_URL: redis://redis:6379/0
     # **绝对路径**：镜像里 uvicorn 在 /app/.venv/bin（UV_PROJECT_ENVIRONMENT），
     # 不在 PATH 里——写裸 "uvicorn" 会报 "executable file not found in $PATH"。
-    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+    # `--loop`：Windows 上 uvicorn 默认用 ProactorEventLoop，而 psycopg 的**异步**模式
+    # （官方 PG checkpointer 就是异步的）不支持它 → 报
+    # "Psycopg cannot use the 'ProactorEventLoop' to run in async mode"。
+    # **切 event loop policy 对 uvicorn 无效**（它的 factory 绕开 policy 直接返回 Proactor），
+    # 只能显式给 factory。Linux 上默认就是 Selector → 这个参数是空转。
+    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2", "--loop", "app.graph.checkpointer:uvicorn_loop_factory"]
     volumes:
       - ./data:/app/data      # 题库 + 上传图片落宿主机，容器重建不丢
     depends_on:
@@ -124,25 +133,3 @@ services:
     depends_on:
       - api
       - web
-
-  # ===== 兼容老形态（SQLite + 单 worker）=====
-  # 用法：docker compose --profile legacy up -d --build
-  api-legacy:
-    profiles: ["legacy"]
-    build: ./backend
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      DB_PATH: /app/data/marda.sqlite3
-      CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
-      UPLOAD_DIR: /app/data/uploads
-      QDRANT_URL: http://qdrant:6333
-      EMBEDDING_URL: http://embedding:8091
-      DB_BACKEND: sqlite
-      CHECKPOINT_BACKEND: sqlite
-      COORDINATION_BACKEND: memory
-    command: ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-    volumes:
-      - ./data:/app/data
-    depends_on:
-      - qdrant
