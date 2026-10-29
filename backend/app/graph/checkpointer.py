@@ -66,13 +66,16 @@ def uvicorn_loop_factory():
 
     **注意 `--workers 2`**：多 worker 模式下 uvicorn 用**子进程**起 worker，
     每个子进程会重新 import 本模块 → factory 在每个进程里各自生效。
+
+    **不能返回 None**（踩过）：uvicorn 把这个返回值当 loop 对象直接 `.close()`，
+    返回 None 会在子进程退出时 `AttributeError: 'NoneType' object has no attribute
+    'close'`，然后 worker 循环重启、服务永远不 healthy（实测容器里就是这个症状）。
+    所以非 Windows 也要返回一个真正可用的 loop。
     """
     import asyncio
-    import sys
 
-    if sys.platform != "win32":
-        # 非 Windows：默认就是 Selector，交给 uvicorn 自己的默认即可
-        return None
+    # Linux/macOS 的 `asyncio` 默认就是 Selector；但**必须显式返回实例**，
+    # 不能返回 None（见上面说明）。
     return asyncio.SelectorEventLoop()
 
 
