@@ -22,12 +22,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sqlite3
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "backend"))
+
+logger = logging.getLogger("marda.migrate")
 
 # 依赖顺序：先被引用的后被引用的
 TABLES = ("users", "resumes", "interviews", "answers", "reports")
@@ -114,6 +117,15 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
             if force:
                 for table in reversed(TABLES):
                     conn.execute(f"DELETE FROM {table}")
+                # **清空后也要把自增序列拨回起点**：
+                # DELETE 不动序列，于是清空后序列还停在旧位置——接着显式插原 id，
+                # 序列与表内实际 id 彻底脱节（这正是下面 setval 要修的根因）。
+                for table in EXPLICIT_ID:
+                    seq = conn.execute(
+                        "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
+                    ).fetchone()[0]
+                    if seq is not None:
+                        conn.execute("SELECT setval(%s, 1, false)", (seq,))
                 conn.commit()
 
             try:
@@ -136,6 +148,27 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
                     conn.execute(f"DELETE FROM {table}")
                 conn.commit()
                 raise
+
+            # **重置 answers 的自增序列**（PG 的 BIGSERIAL）。
+            # 上面是**显式插入原 id**（EXPLICIT_ID = {"answers"}，保持 id 一致），
+            # 但序列**不会因为显式插入而前进**——序列只在用默认值插入时才自增。
+            # 于是迁移完新场次 finalize_interview 第一次插 answers 会拿到 id=1，
+            # 而 id=1 已经被迁移进来的行占了 → **主键冲突**。
+            # （不读表名以外的元数据，只能显式 setval。）
+            for table in EXPLICIT_ID:
+                seq = conn.execute(
+                    "SELECT pg_get_serial_sequence(%s, 'id')", (table,)
+                ).fetchone()[0]
+                if seq is None:
+                    continue
+                max_id = conn.execute(
+                    f"SELECT COALESCE(MAX(id), 0) FROM {table}"
+                ).fetchone()[0]
+                conn.execute("SELECT setval(%s, %s, true)", (seq, max_id))
+                logger.info(
+                    "序列重置：%s 的 id 序列 → %s（当前最大 id %s）", table, seq, max_id
+                )
+            conn.commit()
 
         # 校验：逐表 count 必须与源一致
         with pool.connection() as conn:

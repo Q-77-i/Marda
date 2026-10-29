@@ -170,3 +170,94 @@ def test_迁移脚本行数一致(tmp_path, pg):
     # 原 id 与时间戳保留
     assert db.get_interview(DSN, "iv-1")["started_at"] == "2026-01-01T00:00:00+00:00"
     assert db.get_report(DSN, "iv-1")["payload"] == {"overall": 80}
+
+
+@requires_pg
+def test_迁移后新场次能finalize_序列已重置(pg, tmp_path):
+    """**迁移后新建一场并 finalize 不该主键冲突**。
+
+    背景：迁移脚本给 `answers` **显式插原 id**（保持 id 一致），但 PG 的 BIGSERIAL
+    **序列不会因为显式插入而前进**——序列只在用默认值插入时才自增。
+    于是迁移完新场次 finalize_interview 第一次插 answers 会拿到 id=1，
+    而 id=1 已被迁移进来的行占了 → 主键冲突。
+    修法：迁移末尾 `setval(pg_get_serial_sequence('answers','id'), max(id), true)`。
+
+    原有用例只验了行数，验不出这个——**行数对但序列不对**，只有真插一行才知道。
+    """
+    import sqlite3
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from migrate_sqlite_to_pg import migrate  # type: ignore
+
+    src = tmp_path / "src.sqlite3"
+    with sqlite3.connect(src) as conn:
+        conn.executescript(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT, password_hash TEXT, created_at TEXT);"
+            "CREATE TABLE interviews (id TEXT PRIMARY KEY, thread_id TEXT, user_id TEXT, position TEXT,"
+            " interview_type TEXT, question_count INT, phase TEXT, difficulty TEXT, status TEXT,"
+            " started_at TEXT, ended_at TEXT, resume_id TEXT);"
+            "CREATE TABLE answers (id INTEGER PRIMARY KEY AUTOINCREMENT, interview_id TEXT, question_id TEXT,"
+            " domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT, skipped INT,"
+            " score_json TEXT, created_at TEXT);"
+            "CREATE TABLE reports (id TEXT PRIMARY KEY, interview_id TEXT, payload TEXT, created_at TEXT);"
+            "CREATE TABLE resumes (id TEXT PRIMARY KEY, user_id TEXT, filename TEXT, text TEXT, parsed TEXT,"
+            " created_at TEXT);"
+        )
+        conn.execute("INSERT INTO users VALUES ('u1', 'alice', 'h', '2026-01-01T00:00:00+00:00')")
+        conn.execute(
+            "INSERT INTO interviews VALUES ('iv-old', 'iv-old', 'u1', 'Agent', 'tech', 5, 'intro', 'L1',"
+            " 'finished', '2026-01-01T00:00:00+00:00', '2026-01-01T01:00:00+00:00', NULL)"
+        )
+        # **id=1 是迁进来的行**——序列没重置的话，新场次 finalize 第一次插就撞它
+        conn.execute(
+            "INSERT INTO answers VALUES (1, 'iv-old', 'q1', 'rag', 'L1', '答', 0, 0, '{}',"
+            " '2026-01-01T01:00:00+00:00')"
+        )
+        conn.commit()
+
+    # **先把序列拨回起点**，模拟「刚建好库」的状态。
+    # 不这么做的话，本用例会**继承上一个用例留下的序列位置**（用例之间有顺序依赖），
+    # 于是「序列没重置」这个 bug 就测不出来了——测试库历史插入已经把序列推上去了。
+    with pg._pool.connection() as conn:  # noqa: SLF001 —— 测试里直接查
+        seq = conn.execute(
+            "SELECT pg_get_serial_sequence('answers', 'id')"
+        ).fetchone()["pg_get_serial_sequence"]
+        conn.execute("SELECT setval(%s, 1, false)", (seq,))
+        conn.commit()
+
+    migrate(src, DSN, force=True)
+
+    # **先确认迁移后的序列状态**（这才是这个用例要验的东西）：
+    # 迁移是**显式插原 id**，PG 的 BIGSERIAL 序列**不会因此前进**——
+    # 序列只在用默认值插入时才自增。于是新场次 finalize 第一次插 answers
+    # 会拿到一个**已被占用**的 id → 主键冲突。
+    with pg._pool.connection() as conn:  # noqa: SLF001 —— 测试里直接查
+        seq = conn.execute(
+            "SELECT pg_get_serial_sequence('answers', 'id')"
+        ).fetchone()["pg_get_serial_sequence"]
+        seq_now = conn.execute(f"SELECT last_value FROM {seq}").fetchone()["last_value"]
+        max_id = conn.execute("SELECT MAX(id) FROM answers").fetchone()["max"]
+    assert seq_now >= max_id, (
+        f"迁移后序列({seq_now}) 必须 >= 表内最大 id({max_id})，"
+        "否则新场次 finalize 会撞主键"
+    )
+
+    # 新建一场 → finalize → **不冲突**
+    db.create_interview(
+        DSN, interview_id="iv-new", position="Agent", question_count=1, user_id="u1"
+    )
+    db.finalize_interview(
+        DSN,
+        "iv-new",
+        [_records(1)[0]],
+        {"overall": 70},
+    )
+    assert db.get_interview(DSN, "iv-new")["status"] == "finished"
+    # 新行的 id 必须**大于**迁进来的 1（序列确实前进了）
+    with pg._pool.connection() as conn:  # noqa: SLF001 —— 测试里直接查
+        new_id = conn.execute(
+            "SELECT id FROM answers WHERE interview_id=%s", ("iv-new",)
+        ).fetchone()["id"]
+    assert new_id > 1, f"序列没重置：新行 id={new_id}（迁进来的行占了 id=1）"
