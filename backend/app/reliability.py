@@ -152,6 +152,20 @@ class UpstreamGuard:
         async with self.gate.slot():
             yield
 
+    @asynccontextmanager
+    async def acquire_breaker(self) -> AsyncIterator[None]:
+        """**只**走断路器，不占进程内并发槽。
+
+        什么时候用：并发槽由跨进程协调层（Redis 全局槽，P4-E4）提供时。
+        此时再叠一层进程内 Semaphore 就是**双重限流**——两个 worker 各 16 个槽，
+        实际并发是 32，正好把「全局上限」这个语义废掉。
+
+        记账责任不变：调用方负责 record_success / record_failure（与 acquire 相同）。
+        """
+        if not self.breaker.allow():
+            raise UpstreamBusy(f"{self.name} 上游已熔断，冷却中")
+        yield
+
     def record_success(self) -> None:
         self.breaker.record_success()
 

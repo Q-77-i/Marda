@@ -72,12 +72,12 @@ async def create_resume(
         ) from exc
 
     resume_id = f"r_{uuid.uuid4().hex[:12]}"
-    db_path = get_settings().db_path
+    db_target = get_settings().business_db
     # 先清旧的孤儿（解析了却没建场次的），再存新的——顺序反了会把刚存的行也清掉
-    await asyncio.to_thread(db.prune_unreferenced_resumes, db_path, user_id=user["id"])
+    await asyncio.to_thread(db.prune_unreferenced_resumes, db_target, user_id=user["id"])
     await asyncio.to_thread(
         db.save_resume,
-        db_path,
+        db_target,
         resume_id=resume_id,
         user_id=user["id"],
         filename=filename,

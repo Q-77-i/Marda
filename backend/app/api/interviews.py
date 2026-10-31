@@ -17,11 +17,18 @@ from pydantic import BaseModel, Field, model_validator
 from sse_starlette import EventSourceResponse
 from sse_starlette.sse import ServerSentEvent
 
-from app import db, report_pdf
+from app import coordination, db, report_pdf
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.domain import BEHAVIORAL_MAX_QUESTIONS, INTERVIEW_BEHAVIORAL, INTERVIEW_TECH
-from app.service import InterviewFinishedError, InterviewNotFoundError, Service
+from app.service import (
+    InterviewFinishedError,
+    InterviewLockedError,
+    InterviewNotFinishedError,
+    InterviewNotFoundError,
+    PersistFailedError,
+    Service,
+)
 from app.tools import images, recommend, resumes
 
 router = APIRouter(
@@ -29,6 +36,46 @@ router = APIRouter(
 )
 
 SSE_HEADERS = {"X-Accel-Buffering": "no"}  # SPEC §7：关闭代理缓冲
+
+
+async def _rate_limit(service: Service, user_id: str) -> None:
+    """per-user 限流（P4-E4）：超限 429。
+
+    Redis 不可用时**放行**（fail open）——限流是保护，不是正确性；
+    会话锁才是正确性的那道门（那边是 fail closed）。
+    """
+    settings = get_settings()
+    allowed = await service.coordinator.allow_request(
+        user_id, limit=settings.user_rate_limit_per_min
+    )
+    if not allowed:
+        raise HTTPException(status_code=429, detail="请求过于频繁，请稍后再试")
+
+
+async def _acquire_session(service: Service, interview_id: str) -> str:
+    """取本场会话锁：拿不到 → 409；协调后端不可用 → 503（fail closed）。"""
+    try:
+        return await service.acquire_session(interview_id)
+    except InterviewLockedError as exc:
+        raise HTTPException(status_code=409, detail="该场次正在处理中，请稍后重试") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="服务暂时不可用，请稍后重试") from exc
+
+
+def _with_session_release(service: Service, interview_id: str, token: str, stream):
+    """SSE 流结束后释放会话锁（流被客户端断开时也会走 finally）。
+
+    锁的 TTL（默认 600s）是兜底：进程崩了锁会自己过期，不会永久卡住一场面试。
+    """
+
+    async def _gen():
+        try:
+            async for event in stream:
+                yield event
+        finally:
+            await service.release_session(interview_id, token)
+
+    return _gen()
 
 
 class CreateRequest(BaseModel):
@@ -92,34 +139,43 @@ async def create_interview(
 ):
     service: Service = request.app.state.service
     interview_id = uuid.uuid4().hex
-    db_path = get_settings().db_path
-    # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
-    # 解析结果转成 candidate_profile 文本预填——出题侧零改动就变具体。
-    candidate_profile = ""
-    if req.resume_id:
-        resume = await asyncio.to_thread(
-            db.get_resume, db_path, user_id=user["id"], resume_id=req.resume_id
+    db_target = get_settings().business_db
+    await _rate_limit(service, user["id"])
+    # 会话锁：开场也要锁——双击「开始」不该开两场同 id 的流程。
+    # **先锁后写库**：拿不到锁就直接 409，不留「有行没流程」的孤儿场次。
+    token = await _acquire_session(service, interview_id)
+    try:
+        # 简历（P2-M11 FR-28）：非本人 / 不存在一律 404（同 M7 口径，不泄露存在性）。
+        # 解析结果转成 candidate_profile 文本预填——出题侧零改动就变具体。
+        candidate_profile = ""
+        if req.resume_id:
+            resume = await asyncio.to_thread(
+                db.get_resume, db_target, user_id=user["id"], resume_id=req.resume_id
+            )
+            if resume is None:
+                raise HTTPException(status_code=404, detail="简历不存在")
+            candidate_profile = resumes.format_profile(resume["parsed"])
+        await asyncio.to_thread(
+            db.create_interview,
+            db_target,
+            interview_id=interview_id,
+            position=req.position,
+            question_count=req.question_count,
+            difficulty=req.difficulty,
+            user_id=user["id"],
+            interview_type=req.interview_type,
+            resume_id=req.resume_id,
         )
-        if resume is None:
-            raise HTTPException(status_code=404, detail="简历不存在")
-        candidate_profile = resumes.format_profile(resume["parsed"])
-    await asyncio.to_thread(
-        db.create_interview,
-        db_path,
-        interview_id=interview_id,
-        position=req.position,
-        question_count=req.question_count,
-        difficulty=req.difficulty,
-        user_id=user["id"],
-        interview_type=req.interview_type,
-        resume_id=req.resume_id,
+    except Exception:
+        await service.release_session(interview_id, token)
+        raise
+    stream = service.start_interview(
+        interview_id, req.position, req.question_count, user_id=user["id"],
+        difficulty=req.difficulty, interview_type=req.interview_type,
+        candidate_profile=candidate_profile, resume_id=req.resume_id or "",
     )
     return EventSourceResponse(
-        service.start_interview(
-            interview_id, req.position, req.question_count, user_id=user["id"],
-            difficulty=req.difficulty, interview_type=req.interview_type,
-            candidate_profile=candidate_profile, resume_id=req.resume_id or "",
-        ),
+        _with_session_release(service, interview_id, token, stream),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),
@@ -133,6 +189,7 @@ async def send_message(
     service: Service = request.app.state.service
     if not req.content.strip():
         raise HTTPException(status_code=400, detail="消息内容不能为空")
+    await _rate_limit(service, user["id"])
     try:
         await service.check_can_send(interview_id, user["id"])
     except InterviewNotFoundError as exc:
@@ -148,14 +205,17 @@ async def send_message(
             )
             if path is None:
                 raise HTTPException(status_code=400, detail="图片不存在或已失效，请重新上传")
+    # 会话锁：同一场已有请求在跑 → 409（多 worker 下这是防重复计分的关键闸门）
+    token = await _acquire_session(service, interview_id)
+    stream = service.send_message(
+        interview_id,
+        req.content.strip(),
+        user["id"],
+        images=req.images,
+        speech=req.speech.model_dump() if req.speech else None,
+    )
     return EventSourceResponse(
-        service.send_message(
-            interview_id,
-            req.content.strip(),
-            user["id"],
-            images=req.images,
-            speech=req.speech.model_dump() if req.speech else None,
-        ),
+        _with_session_release(service, interview_id, token, stream),
         headers=SSE_HEADERS,
         ping=15,
         ping_message_factory=lambda: ServerSentEvent(comment="ping"),
@@ -189,6 +249,41 @@ async def get_interview_report(
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
     return {"interview_id": interview_id, "report": row["payload"], "created_at": row["created_at"]}
+
+
+@router.post("/{interview_id}/retry-persist")
+async def retry_persist(
+    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+):
+    """**重试落库**：修「图 finished、业务库没写」的半成品场次（P4 收尾）。
+
+    什么时候需要：落库重试 3 次仍失败时，图已经跑完、checkpoint 里状态是 finished，
+    但 `answers` / `reports` 没落库、`interviews.status` 还停在 running。
+    正常路径下 `resume` 会被「图已 finished」拦掉（409）——**用户自己修不了**。
+
+    这里**不重跑图**：只拿 checkpoint 里已有的答案与报告重新走一次 finalize
+    （幂等：先删本场旧 answers 再插）。
+
+    语义：
+    - 场次不存在 / 越权 → 404（与其它端点一致，不泄露存在性）；
+    - 场次还没结束 → 409（不是半成品，不该走这条路）；
+    - 报告已存在 → 200 + `repaired: false`（不重复写）；
+    - 修复成功 → 200 + `repaired: true`。
+    """
+    service: Service = request.app.state.service
+    try:
+        return await service.retry_persist(interview_id, user["id"])
+    except InterviewNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="面试不存在") from exc
+    except InterviewNotFinishedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except InterviewLockedError as exc:
+        # 与 delete_interview 共用一把锁：这一场正忙（可能在答题，也可能在删）
+        raise HTTPException(status_code=409, detail="这场面试正在使用中，请稍后再试") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="协调服务不可用，请稍后重试") from exc
+    except PersistFailedError as exc:
+        raise HTTPException(status_code=503, detail="结果保存仍然失败，请稍后重试") from exc
 
 
 @router.get("/{interview_id}/report.pdf")
@@ -298,9 +393,18 @@ async def list_interviews(
 async def delete_interview(
     interview_id: str, request: Request, user: dict = Depends(get_current_user)
 ):
-    """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。"""
+    """物理删除场次（T7a-R1）：业务库三表 + checkpointer 线程，不可恢复。
+
+    **拿会话锁**（与消息端点同一把锁）：删的正是「正在被推进」的那场图——
+    不锁可能出现「删线程的同时另一个 worker 正在往这条线程写 checkpoint」。
+    拿不到锁 → 409（这一场正忙，稍后再删）。
+    """
     service: Service = request.app.state.service
     try:
         await service.delete_interview(interview_id, user["id"])
     except InterviewNotFoundError as exc:
         raise HTTPException(status_code=404, detail="面试不存在") from exc
+    except InterviewLockedError as exc:
+        raise HTTPException(status_code=409, detail="这场面试正在使用中，请稍后再删") from exc
+    except coordination.CoordinationUnavailable as exc:
+        raise HTTPException(status_code=503, detail="协调服务不可用，请稍后重试") from exc

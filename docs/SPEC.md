@@ -1,6 +1,6 @@
 # SPEC：Marda 码达 — 技术规格
 
-> 本文档 = 系统的技术规格（现行口径）。状态：**三个阶段全部完成**——阶段 1 demo 闭环（T1–T7b）、阶段 2 功能完善（P1-M1~M12）、二期多模态与企业级收尾（P2-M1~M12）。原定阶段 3 的部署上云与 PG 迁移已取消（修订注见 PRD §8.2）。
+> 本文档 = 系统的技术规格（现行口径）。状态：**三个阶段全部完成**——阶段 1 demo 闭环（T1–T7b）、阶段 2 功能完善（P1-M1~M12）、二期多模态与企业级收尾（P2-M1~M12）。原定阶段 3 的**部署上云**已取消；**PG 迁移在 P4 生产化里重新做了**（业务库 + checkpointer 迁 PG，题库不迁——见 §8 与 [docs/P4-生产化.md](P4-生产化.md)）。
 
 ---
 
@@ -748,7 +748,15 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 - **口径**：字数 = Unicode 字母/数字（不含空格/标点）；长停顿 = RMS 低于本段 p10×2.5（夹在 0.008–0.04）且持续 ≥2s 的**内部**静音段（去掉开头/结尾）；口头禅 = 转写中 `嗯/呃/额/那个/就是/然后` 的出现次数（ASR 可能漏掉）；每题时长 = 该题多轮语音消息时长之和，文字作答不计入。**时长在 stop 时冻结**（final 可能再等 8s），计数字段一律整数（后端 `SpeechStats` 是 int）。
 - **报告**：`QuestionRecord.speech` 跨追问轮累加（judge 在 LLM 调用前合并，评分降级也保留）；报告 payload 逐题 `speech`（含 `chars_per_min`）+ 顶层 `expression`；报告页「表达复盘」卡独立于 `hasScores`，逐题复盘卡加一行语音指标；PDF 同一节 + 逐题一行。**不做面部、不进五维分数**。
 
-## 8. 数据库（SQLite；PG 迁移已取消）
+## 8. 数据库（题库 SQLite；业务库/检查点 PostgreSQL —— P4 已升级）
+
+> **口径修订（P4 生产化，2026-10）**：本节标题原为「SQLite；PG 迁移已取消」。
+> P4 已把**业务库**（users/interviews/answers/reports/resumes）与 **checkpointer**
+> 迁到 PostgreSQL（两独立库），协调层用 Redis；**题库（questions/question_sources）仍在 SQLite**
+> （离线构建、运行时只读的资产，不迁——见 [docs/P4-生产化.md](P4-生产化.md)）。
+> 下面的 DDL 是 **SQLite 形态**（题库部分）——**业务表在 PG 形态下有两处差异**：
+> `answers.id` 是 `BIGSERIAL`（不是 `INTEGER PK AUTOINCREMENT`）、
+> 占位符是 `%s`（不是 `?`）。业务表的语义与字段口径不变。
 
 ```sql
 questions(id TEXT PK, question TEXT NOT NULL, answer TEXT NOT NULL,
@@ -866,7 +874,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 **跑法**：`cd backend && uv run pytest -q`（904 个，不需要任何密钥）· `cd frontend && pnpm test`（333 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
 
-**CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——三个 job：后端 pytest · 前端 lint+vitest+build · **语料红线（CI 可查部分）**。
+**CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——**四个 job**：后端 pytest · 前端 lint+vitest+build · **P4 集成（真 PostgreSQL + 真 Redis，用 Actions services 起）** · **语料红线（CI 可查部分）**。
 
 - **必须有假密钥兜底**：`config.Settings` 的三个必填项（`deepseek_api_key` / `siliconflow_api_key` / `jwt_secret`）本地靠 `.env` 掩盖——CI 没有 `.env`，缺了它**单测层 84 个用例**直接 ValidationError（实测）。故 workflow 顶层给三个假值。
 - **红线门禁只能在 CI 跑一半，且如实标注**：**真比对**需要比对语料（个人题库），而它按红线定义**不进仓库**——CI 里没有语料，跑不了，也不许假装跑得了。CI 跑的是**入库守卫 + 检查器自检**：① `git ls-files` 里不得出现语料/密钥类路径（含 `git check-ignore` 覆盖：任何已跟踪文件命中 `.gitignore` 即失败）；② 检查器的骨架/窗口/命中合并/语料取值逻辑用**合成语料**夹具单测（这个文件本身要进公开仓库，写真题即自我违规）。

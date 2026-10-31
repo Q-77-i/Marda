@@ -57,7 +57,7 @@ async def get_current_user(
     user_id = security.decode_token(credentials.credentials, get_settings().jwt_secret)
     if user_id is None:
         raise _unauthorized()
-    row = await asyncio.to_thread(db.get_user, get_settings().db_path, user_id)
+    row = await asyncio.to_thread(db.get_user, get_settings().business_db, user_id)
     if row is None:
         raise _unauthorized()
     return {"id": row["id"], "username": row["username"]}
@@ -68,7 +68,7 @@ async def register(req: Credentials) -> dict:
     user_id = uuid.uuid4().hex
     created = await asyncio.to_thread(
         db.create_user,
-        get_settings().db_path,
+        get_settings().business_db,
         user_id=user_id,
         username=req.username,
         password_hash=security.hash_password(req.password),
@@ -76,7 +76,7 @@ async def register(req: Credentials) -> dict:
     if not created:
         raise HTTPException(status_code=409, detail="用户名已存在")
     # 阶段 1 的历史场次无归属：首个注册账号认领（后续账号注册时已无 NULL 行，认领 0 条）
-    await asyncio.to_thread(db.claim_orphan_interviews, get_settings().db_path, user_id)
+    await asyncio.to_thread(db.claim_orphan_interviews, get_settings().business_db, user_id)
     return {
         "token": security.encode_token(user_id, get_settings().jwt_secret),
         "username": req.username,
@@ -85,7 +85,7 @@ async def register(req: Credentials) -> dict:
 
 @router.post("/login")
 async def login(req: Credentials) -> dict:
-    row = await asyncio.to_thread(db.get_user_by_username, get_settings().db_path, req.username)
+    row = await asyncio.to_thread(db.get_user_by_username, get_settings().business_db, req.username)
     # 恒定时序：账号不存在也走一次同参数 scrypt —— 文案一致但耗时不同同样会泄露账号是否注册
     if not security.verify_password(
         req.password, row["password_hash"] if row else _dummy_hash()
