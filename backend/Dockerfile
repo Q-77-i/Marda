@@ -28,4 +28,6 @@ COPY app ./app
 COPY scripts ./scripts
 
 EXPOSE 8000
-CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# 多 worker（P4-E4）：状态在 PG checkpointer、协调在 Redis → 任意 worker 都能 resume 同一场。
+# 单 worker 形态用 `docker compose --profile legacy`（那条命令里写死了 --workers 1 的等价参数）。
+CMD ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

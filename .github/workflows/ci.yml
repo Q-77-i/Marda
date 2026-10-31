@@ -84,6 +84,52 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
+  p4-integration:
+    name: P4 集成（PostgreSQL + Redis）
+    runs-on: ubuntu-latest
+    # 生产形态的两块地基：**只有真 PG / 真 Redis 才验得到的那些东西**——
+    # 方言（%s / ON CONFLICT / BIGSERIAL）、单事务回滚、checkpointer 跨实例 resume、
+    # 快照保留的 PG 分支、会话锁/限流/全局 LLM 槽**跨 worker** 生效。
+    # 假 key、不打真模型（同其余 job 的口径）。
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: marda
+          POSTGRES_PASSWORD: marda
+          POSTGRES_DB: marda
+        options: >-
+          --health-cmd "pg_isready -U marda"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+        ports: ["5432:5432"]
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+        ports: ["6379:6379"]
+    env:
+      DEEPSEEK_API_KEY: ci-dummy-key
+      SILICONFLOW_API_KEY: ci-dummy-key
+      JWT_SECRET: ci-dummy-secret-0123456789abcdef0123456789
+      MARDA_TEST_DATABASE_URL: postgresql://marda:marda@localhost:5432/marda
+      MARDA_TEST_CHECKPOINT_URL: postgresql://marda:marda@localhost:5432/marda_checkpoints
+      MARDA_TEST_REDIS_URL: redis://localhost:6379/1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.13"
+      # checkpoint 库是**独立库**（不与业务库混在一起）：官方 PG 镜像只建一个库
+      - name: 建独立的 checkpoint 库
+        run: PGPASSWORD=marda psql -h localhost -U marda -d marda -c "CREATE DATABASE marda_checkpoints"
+      - name: 安装依赖（锁定文件）
+        working-directory: backend
+        run: uv sync --frozen --default-index https://pypi.org/simple
+      - name: pytest（PG + Redis 集成）
+        working-directory: backend
+        run: uv run pytest -m "postgres or redis" -q
+
   redline:
     name: 语料红线（CI 可查部分：入库守卫 + 检查器自检）
     runs-on: ubuntu-latest

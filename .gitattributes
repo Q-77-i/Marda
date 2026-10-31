@@ -1,0 +1,13 @@
+# ===== 行尾规范 =====
+# `core.autocrlf=true` 的 Windows 克隆会把 **.gitignore 本身**转成 CRLF，
+# 而 git 匹配忽略规则读的就是工作区那份内容 —— 于是 `!.env.example` 这条
+# **反选规则**（前面带 `!` 的那条）会带上看不见的 `\r` 而匹配不上，
+# 结果 .env.example 被 `.env.*` 忽略掉。
+# 症状：`git check-ignore` 说 .env.example 该被忽略，但 `git ls-files` 里明明有它；
+#      更糟的是**新克隆的机器上 `git add .env.example` 会被静默忽略**，
+#      而开发者以为文件已经提交了。
+#
+# 修法：把 .gitignore / .gitattributes 强制成 LF（`eol=lf`），
+#      不管谁在什么平台上 checkout，反选规则都按字面生效。
+.gitignore text eol=lf
+.gitattributes text eol=lf

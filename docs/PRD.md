@@ -274,6 +274,9 @@ stateDiagram-v2
 - **评分一致性门禁 = 自研 harness（非 DeepEval）**：DeepEval 无现成的一致性/准确性 metric，所需指标都得自研；纯函数 + 命令非零退出，零新依赖。
 - **「多方向能力模型」= 仅行为面（FR-22）**：新增技术方向需先补 PRD。
 - **PG 迁移与部署上云一并取消**：共享屏幕 + compose 一键起足够，PG 的价值（多 worker 共享）在单机 demo 下不成立。
+  - **修订（P4 生产化，2026-10）**：上云仍取消，但 **PG 迁移重新做了**——业务库与 checkpointer 迁 PostgreSQL
+    （多 worker 共享写 + finalize 单事务），协调层用 Redis；**题库不迁**（离线资产）。
+    口径与取舍见 [docs/P4-生产化.md](P4-生产化.md)。
 
 ### 8.2 阶段 3 + 二期（P2）细化（已交付）
 
