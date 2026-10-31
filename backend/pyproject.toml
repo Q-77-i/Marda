@@ -17,6 +17,14 @@ dependencies = [
     "pypdf>=5.0",
     "qdrant-client>=1.12",
     "langgraph-checkpoint-sqlite==3.1.1",
+    # P4 生产化：checkpointer 迁 PostgreSQL（多 worker 共享状态）
+    # 版本与 langgraph-checkpoint 4.2.0 配套（3.2.0 起要求 >=4.3.0，会把 langgraph 1.2.11 顶掉）
+    "langgraph-checkpoint-postgres==3.1.0",
+    # 业务库迁 PostgreSQL（psycopg 3 同步 + 连接池；调用方仍走 asyncio.to_thread）
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    # 协调层：会话锁 / per-user 限流 / 全局 LLM 槽（多 worker 共享）
+    "redis>=5.2",
     "pyjwt>=2.8",
     "langfuse==4.9.1",
     "python-multipart>=0.0.9",
@@ -43,6 +51,13 @@ dev = [
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# P4 集成测试的分组标记：需要真 PG / 真 Redis，没配环境变量就跳过。
+#   pytest -m postgres   # 需要 MARDA_TEST_DATABASE_URL / MARDA_TEST_CHECKPOINT_URL
+#   pytest -m redis      # 需要 MARDA_TEST_REDIS_URL
+markers = [
+    "postgres: 需要 PostgreSQL（MARDA_TEST_DATABASE_URL / MARDA_TEST_CHECKPOINT_URL）",
+    "redis: 需要 Redis（MARDA_TEST_REDIS_URL）",
+]
 
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"

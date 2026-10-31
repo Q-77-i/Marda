@@ -158,7 +158,7 @@ async def _ws_user(token: str) -> str | None:
     user_id = security.decode_token(token, get_settings().jwt_secret)
     if user_id is None:
         return None
-    row = await asyncio.to_thread(db.get_user, get_settings().db_path, user_id)
+    row = await asyncio.to_thread(db.get_user, get_settings().business_db, user_id)
     return user_id if row else None
 
 

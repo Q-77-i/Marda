@@ -48,6 +48,21 @@ def _git(*args: str) -> str:
     return result.stdout
 
 
+def _git_ls_files_z() -> bytes:
+    """`git ls-files -z` 的**原始字节**输出（NUL 分隔）。
+
+    不用 text=True：Windows 上 core.autocrlf=true 会让 git 在**输出**路径时自带 CR，
+    而 text 模式还会把 CR 归一成 \\n——路径内容就被改坏了。`-z` 输出的是原始路径字节。
+    """
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=REPO_ROOT, capture_output=True, check=True
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        pytest.fail(f"git ls-files -z 失败——仓库卫生守卫必须真跑，不能静默跳过：{exc}")
+    return result.stdout
+
+
 def _sensitive_hits(tracked: list[str]) -> list[str]:
     hits = []
     for path in tracked:
@@ -65,11 +80,21 @@ def test_没有已跟踪文件命中gitignore():
     tracked = [line for line in _git("ls-files").splitlines() if line.strip()]
     assert tracked, "git 索引为空——目录不对？"
 
+    # Windows 上 `core.autocrlf=true` 会让 git **输出路径时自带 CR**（`git ls-files` 的每一行都是
+    # `xxx\r`）。这个 CR 会被 git 当成**路径的一部分**（`.env.example\r`），于是本来被
+    # `!.env.example` 放行的文件反而「命中」了 .gitignore——整条判据在 Windows 上恒假。
+    #
+    # 修法：**进出都用 `-z`**（NUL 分隔）。输入端去 CR 不够——git 自己会在输出端再加回去；
+    # 而 `-z` 的输出是**原始路径**，不转义、不加引号，路径里有没有 CR 一目了然。
+    # （注：`check-ignore -z --stdin` 要求**输入**也是 NUL 分隔的，喂换行会让 git 把整段
+    #   当成一个路径，判据直接废掉。）
     result = subprocess.run(
-        ["git", "check-ignore", "--no-index", "--stdin"],
-        cwd=REPO_ROOT, input="\n".join(tracked), capture_output=True, text=True,
+        ["git", "check-ignore", "--no-index", "-z", "--stdin"],
+        cwd=REPO_ROOT,
+        input=_git_ls_files_z(),
+        capture_output=True,
     )
-    ignored = [line for line in result.stdout.splitlines() if line.strip()]
+    ignored = [p.decode("utf-8", "replace") for p in result.stdout.split(b"\x00") if p.strip()]
     assert not ignored, f"这些文件已被跟踪、却又命中 .gitignore（多半是 git add -f 塞进来的）：{ignored}"
 
 

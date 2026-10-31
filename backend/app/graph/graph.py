@@ -177,23 +177,6 @@ def run_config(interview_id: str, question_count: int = 10) -> dict:
     }
 
 
-def make_serde():
-    """checkpoint 序列化器：显式允许 state 模块的 Pydantic 类型
-    （Phase/ScoreItem/BehavioralScoreItem/QuestionRecord/InterviewState），否则 LangGraph
-    反序列化告警且未来版本会阻断。T5 服务层构造 saver 时复用。"""
-    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
-
-    from app.graph.state import (
-        BaseScore,
-        BehavioralScoreItem,
-        InterviewState,
-        Phase,
-        QuestionRecord,
-        ScoreItem,
-    )
-
-    return JsonPlusSerializer(
-        allowed_msgpack_modules=[
-            InterviewState, Phase, QuestionRecord, ScoreItem, BehavioralScoreItem, BaseScore
-        ]
-    )
+# checkpoint 序列化器已挪到 app/graph/serde.py（P4-E1：加 zlib 压缩、新旧 type 双读）。
+# 这里保留同名转发，调用方（service / 脚本 / 测试）的 import 路径不用改。
+from app.graph.serde import make_serde  # noqa: E402  —— 放在文件尾避免循环导入

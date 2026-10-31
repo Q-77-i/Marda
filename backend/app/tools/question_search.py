@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 import sqlite3
 from functools import lru_cache
@@ -26,8 +27,24 @@ from qdrant_client import AsyncQdrantClient, models as qm
 from app.config import get_settings
 from app.tools import bank_private
 
+logger = logging.getLogger(__name__)
+
 COLLECTION = "questions"
 SCROLL_LIMIT = 100  # 单域×难度组合远小于此数，一次 scroll 足够
+
+
+def _is_missing_collection(exc: BaseException) -> bool:
+    """这个异常是不是「collection 不存在」（= 还没 ingest 题库）？
+
+    Qdrant 客户端对 404 抛 `UnexpectedResponse`（不是一个专门的异常类），
+    只能看状态码与报文。**只认这一种**——连接失败、超时等其他故障照旧抛出，
+    不能把「检索服务挂了」也悄悄当成「没题库」。
+    """
+    status = getattr(exc, "status_code", None)
+    text = str(exc).lower()
+    if status == 404:
+        return True
+    return "not found" in text and COLLECTION in str(exc).lower()
 
 
 @lru_cache
@@ -82,13 +99,23 @@ async def search_questions(
     must = [qm.FieldCondition(key="domain", match=qm.MatchValue(value=domain))]
     if difficulty is not None:
         must.append(qm.FieldCondition(key="difficulty", match=qm.MatchValue(value=difficulty)))
-    points, _ = await get_qdrant_client().scroll(
-        collection_name=COLLECTION,
-        scroll_filter=qm.Filter(must=must),
-        limit=SCROLL_LIMIT,
-        with_payload=True,
-        with_vectors=False,
-    )
+    try:
+        points, _ = await get_qdrant_client().scroll(
+            collection_name=COLLECTION,
+            scroll_filter=qm.Filter(must=must),
+            limit=SCROLL_LIMIT,
+            with_payload=True,
+            with_vectors=False,
+        )
+    except Exception as exc:  # noqa: BLE001 —— Qdrant 的错很多种，见下
+        # **collection 不存在** = 「还没 ingest 题库」→ 视为**无命中**，
+        # 让出题走下一级（LLM 现场生成）。这不是降级、也不是屏蔽故障：
+        # 没有题库时本来就没有题可选，报错只会让整场面试直接崩掉
+        # （实测：clone 仓库但没跑 ingest 时，出题节点 404 → 整场 500）。
+        if _is_missing_collection(exc):
+            logger.info("题库 collection 不存在（还没 ingest？）→ 本次无命中，走 LLM 生成题")
+            return []
+        raise
     exclude = set(exclude_ids or [])
     ids = [
         qid
