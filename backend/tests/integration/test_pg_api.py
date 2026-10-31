@@ -466,72 +466,56 @@ def test_迁移失败不留半成品(pg, tmp_path):
 
 
 @requires_pg
-def test_多worker同时建checkpoint表不会撞DDL(pg):
-    """**两个 worker 同时 `saver.setup()` 不能撞 DDL**（对应用例证明重试接上了）。
+def test_DuplicateTable算并发冲突(pg):
+    """**`CREATE TABLE IF NOT EXISTS` 并发时抛的是 `DuplicateTable`，必须算可重试。**
 
-    官方 `AsyncPostgresSaver.setup()` 里是 `CREATE TABLE` + `CREATE INDEX CONCURRENTLY`，
-    两个进程同时跑会撞 `DeadlockDetected` / `UniqueViolation`（pg_class 里同名对象）。
-    业务库 schema 那边已有重试，checkpointer 这边以前**没接**——修一半等于没修。
+    CI 抓出来的真问题：`IF NOT EXISTS` 并**不**并发安全——两个会话同时看不到表、
+    同时去建，输的那个报 `DuplicateTable`（42P07，"relation ... already exists"），
+    **不是** `UniqueViolation`。原来的判据只认 `UniqueViolation`，
+    于是「两个 worker 同时建表」这个最常见的场景**重试根本不会触发**。
+    （本机第一次跑是绿的——**没真撞上**，看着像没问题。）
 
-    这里不连真 checkpointer 库（怕污染），只验证**重试封装本身**对真实 psycopg
-    异常的行为：四个线程并发跑同一段 DDL，撞上就该被 `retry_on_conflict` 兜住。
+    这个用例不靠运气：直接制造一个真的 `DuplicateTable`，断言判据与重试都认它。
     """
-    import concurrent.futures
-    import threading
+    import asyncio
 
     from app.pg_retry import is_concurrency_conflict, retry_on_conflict
 
-    ddl = """
-    CREATE TABLE IF NOT EXISTS _p4_probe_ddl (id BIGSERIAL PRIMARY KEY, v TEXT);
-    CREATE INDEX IF NOT EXISTS _p4_probe_ddl_v ON _p4_probe_ddl (v);
-    """
-
-    hit = {"conflict": False}
-    lock = threading.Lock()
-
-    def _one() -> None:
-        from app.db_postgres import PostgresStore
-
-        store = PostgresStore.connect(DSN, min_size=1, max_size=1)
-        try:
-            with store._pool.connection() as conn:  # noqa: SLF001
-                try:
-                    conn.execute(ddl)
-                    conn.commit()
-                except Exception as exc:  # noqa: BLE001
-                    if is_concurrency_conflict(exc):
-                        with lock:
-                            hit["conflict"] = True
-                        # 走重试封装：应当最终成功
-                        raise
-                    raise
-        finally:
-            store.close()
-
-    def _run(_: int) -> None:
-        for attempt in range(3):
-            try:
-                _one()
-                return
-            except Exception as exc:  # noqa: BLE001
-                if is_concurrency_conflict(exc) and attempt < 2:
-                    continue
-                raise
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        for f in [ex.submit(_run, i) for i in range(4)]:
-            f.result()  # 不该抛
-
-    # 清理探针表
-    with pg._pool.connection() as conn:  # noqa: SLF001
-        conn.execute("DROP TABLE IF EXISTS _p4_probe_ddl")
+    with pg._pool.connection() as conn:  # noqa: SLF001 —— 测试里直接建探针表
+        conn.execute("DROP TABLE IF EXISTS _p4_probe_dup")
+        conn.execute("CREATE TABLE _p4_probe_dup (id INT)")
         conn.commit()
 
-    # 判据：重试封装确实会放行并发冲突、拦住其它错误
-    assert callable(retry_on_conflict)
+    # ① 制造一个**真的** psycopg DuplicateTable（不加 IF NOT EXISTS）
+    real_error: BaseException | None = None
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        try:
+            conn.execute("CREATE TABLE _p4_probe_dup (id INT)")
+        except Exception as exc:  # noqa: BLE001
+            real_error = exc
+        conn.rollback()
+    assert real_error is not None, "应当撞上 DuplicateTable"
+    assert type(real_error).__name__ == "DuplicateTable", (
+        f"预期 DuplicateTable，实际 {type(real_error).__name__}: {real_error}"
+    )
 
-    class _Deadlock(Exception):
-        pass
+    # ② 判据必须认它
+    assert is_concurrency_conflict(real_error), (
+        "DuplicateTable 没被判成并发冲突 → 多 worker 同时建表时重试不会触发"
+    )
 
-    _Deadlock.__name__ = "DeadlockDetected"
-    assert is_concurrency_conflict(_Deadlock())
+    # ③ 重试真的会重试（前两次抛、第三次成功）
+    calls = {"n": 0}
+
+    async def _flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise real_error  # 同一个真实异常对象
+        return "ok"
+
+    assert asyncio.run(retry_on_conflict(_flaky, base_delay=0.01)) == "ok"
+    assert calls["n"] == 3, f"应当重试到第 3 次成功，实际调用 {calls['n']} 次"
+
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        conn.execute("DROP TABLE IF EXISTS _p4_probe_dup")
+        conn.commit()

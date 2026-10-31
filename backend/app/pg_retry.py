@@ -25,12 +25,21 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-# 这些都是「你来我也来」的典型，语义上都是「重试一次就好」
+# 这些都是「你来我也来」的典型，语义上都是「重试一次就好」。
+#
+# **`DuplicateTable` 必须有**（CI 抓出来的）：`CREATE TABLE IF NOT EXISTS`
+# 并**不**并发安全——两个会话同时看不到表、同时去建，
+# 输的那个报的是 `DuplicateTable`（42P07，"relation ... already exists"），
+# 不是 `UniqueViolation`。只认 `UniqueViolation` 的话，
+# 「两个 worker 同时建表」这个最常见的场景**重试根本不会触发**。
+# （本地那把测试是靠运气过的：没真撞上，看着绿。）
 CONFLICT_NAMES = frozenset({
-    "DeadlockDetected",      # 两个事务反向拿锁
-    "UniqueViolation",       # 两个都先 SELECT 再 INSERT（系统目录 / 表名）
-    "LockNotAvailable",      # lock_timeout / NOWAIT
-    "SerializationFailure",  # SERIALIZABLE 隔离级别下的正常竞争
+    "DeadlockDetected",      # 两个事务反向拿锁（40P01）
+    "UniqueViolation",       # 唯一约束冲突；并发建表时也会从 pg_type/pg_class 冒出来（23505）
+    "DuplicateTable",        # `CREATE TABLE IF NOT EXISTS` 并发时的输家（42P07）
+    "DuplicateObject",       # 并发建索引 / 序列 / 视图（42710）
+    "LockNotAvailable",      # lock_timeout / NOWAIT（55P03）
+    "SerializationFailure",  # SERIALIZABLE 隔离级别下的正常竞争（40001）
 })
 
 
