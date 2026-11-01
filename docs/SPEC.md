@@ -1,6 +1,6 @@
 # SPEC：Marda 码达 — 技术规格
 
-> 本文档 = 系统的技术规格（现行口径）。状态：**三个阶段全部完成**——阶段 1 demo 闭环（T1–T7b）、阶段 2 功能完善（P1-M1~M12）、二期多模态与企业级收尾（P2-M1~M12）。原定阶段 3 的**部署上云**已取消；**PG 迁移在 P4 生产化里重新做了**（业务库 + checkpointer 迁 PG，题库不迁——见 §8 与 [docs/P4-生产化.md](P4-生产化.md)）。
+> 本文档 = 系统的技术规格（现行口径）。状态：**三个阶段全部完成**——阶段 1 demo 闭环（T1–T7b）、阶段 2 功能完善（P1-M1~M12）、二期多模态与企业级收尾（P2-M1~M12）；**P4 生产化已完成**（多 worker + PostgreSQL + Redis）。原定阶段 3 的**部署上云**已取消；**PG 迁移在 P4 生产化里重新做了**（业务库 + checkpointer 迁 PG，题库不迁——见 §8 与 [docs/P4-生产化.md](P4-生产化.md)）。
 
 ---
 
@@ -10,14 +10,14 @@
 
 **读法**：正文里的 `P1-Mx` / `P2-Mx` 标记 = 该口径由哪次会话落地；§12 是本文档的改动索引（一行一条），决策理由与过程记录在 [开发历程](开发历程.md)。**章节号被代码注释引用 100+ 处，冻结不动**。
 
-**配套**：[README](../README.md) 门面与快速开始 · [PRD](PRD.md) 需求与验收 · [CLAUDE.md](../CLAUDE.md) 工程规约与语料红线。
+**配套**：[README](../README.md) 门面与快速开始 · [PRD](PRD.md) 需求与验收 · [P4-生产化](P4-生产化.md) 生产化形态 · [CLAUDE.md](../CLAUDE.md) 工程规约与语料红线。
 
 ## 2. 工程结构
 
 ```
 marda/
 ├── CLAUDE.md / .gitignore / .env(.example)
-├── docs/             # PRD、SPEC、开发历程（规划报告为个人留档，不进仓库）
+├── docs/             # PRD、SPEC、P4-生产化、开发历程
 ├── backend/
 │   ├── pyproject.toml            # uv 管理，Python 3.11+
 │   ├── app/
@@ -38,11 +38,10 @@ marda/
 │   │   ├── service.py            # 服务层（图单例 / 事件翻译 / 落库）
 │   │   └── db.py                 # 业务库七表（questions / question_sources / users / interviews / answers / reports / resumes）
 │   ├── evals/                    # 离线评测包（只被 scripts 调用，app 永不 import）
-│   ├── scripts/                  # smoke ×9（llm / graph / api / voice / vision / e2e / degraded / mcp / resume）
-│   │                             #   + eval 八件（build_golden / retrieval_run / ragas_context / judge_golden / judge_run / judge_gate / judge_vision / cost_report）
+│   ├── scripts/                  # 真链路 smoke、离线评测、迁移 / 备份 / 统计等运维脚本
 │   └── tests/                    # unit/ integration/ fixtures/
 ├── frontend/                     # Next.js 15 + TS + Tailwind + shadcn/ui + Recharts + Monaco（pnpm）
-│   ├── app/                      # 九个路由：login / 仪表盘 / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
+│   ├── app/                      # 十个路由：login / 仪表盘 / interviews / bank / bank/private / profile / learn / interview/[id] / report/[id] / trace/[id]
 │   ├── components/               # 页面客户端组件 + 共享件（PageShell / PageHeader / EmptyState / ErrorState / StatusBanner / InlinePanel）+ ui/
 │   ├── public/asr-worklet.js     # 录音采集 worklet（AudioWorklet 只能加载独立文件）
 │   ├── public/monaco/            # Monaco AMD 构建产物（dev/build 时从 node_modules 复制，gitignore）
@@ -58,6 +57,25 @@ marda/
 ├── .github/workflows/ci.yml      # CI：测试 / lint / build / P4 集成 / 语料入库守卫
 ├── docker/nginx.conf             # 唯一入口：/api → api，其余 → web
 └── docker-compose.yml            # P4：nginx + web + api(2 worker) + postgres + redis + qdrant + embedding
+```
+
+### 2.1 系统拓扑（默认形态）
+
+```mermaid
+flowchart LR
+  B["浏览器"] --> N["nginx :8080<br/>唯一入口"]
+  N -->|"/api/*"| A["FastAPI + LangGraph<br/>面试状态机（2 worker）"]
+  N -->|"其余"| W["Next.js 15<br/>standalone"]
+  A --> DB[("PostgreSQL<br/>业务库 + checkpoint 独立库")]
+  A --> R[("Redis<br/>会话锁 / 限流 / 全局 LLM 槽")]
+  A --> Q[("Qdrant<br/>dense + sparse")]
+  A --> E["embedding 容器<br/>本地 BGE-M3"]
+  A -.->|"出题 / 评分 / 报告"| DS["DeepSeek"]
+  A -.->|"rerank"| SF["SiliconFlow"]
+  A -.->|"trace 与成本"| LF["Langfuse"]
+  B -.->|"录音 PCM（WS 中继）"| A
+  A <-.->|"流式 ASR"| VC["豆包流式语音识别"]
+  A -.->|"TTS 播报"| ET["edge-tts"]
 ```
 
 **依赖**：后端 fastapi / uvicorn / sse-starlette / langgraph==1.2.11 / langchain==1.4.0 / langgraph-checkpoint-sqlite==3.1.1 / langgraph-checkpoint-postgres==3.1.0（P4）/ psycopg[binary] + psycopg-pool（P4）/ redis（P4）/ openai SDK / pydantic(+settings) / tenacity / httpx / qdrant-client / pypdf / pyjwt / python-multipart / weasyprint + jinja2 / langfuse==4.9.1 / edge-tts + websockets。评测依赖（ragas 等）与 `mcp>=2,<3` 在 dev 组，容器 `uv sync --no-dev` 不进镜像。前端 next@15 / react 19 / tailwindcss v4 / shadcn-ui / framer-motion / recharts / @monaco-editor/react + monaco-editor。
@@ -581,6 +599,18 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 
 ## 6. 语料解析与入库（data/scripts/）
 
+管道顺序：`parse_md` / `parse_xmind` / `parse_open` → `combine` → `enrich` → `ingest`。产物在 `data/parsed/`，最终写 SQLite + Qdrant；个人题库与派生文本不进仓库（红线见 [CLAUDE.md](../CLAUDE.md)）。命令在仓库根目录跑：
+
+```bash
+backend/.venv/bin/python data/scripts/parse_md.py      # 个人题库 md → 结构化 JSON
+backend/.venv/bin/python data/scripts/parse_xmind.py   # xmind → JSON
+backend/.venv/bin/python data/scripts/parse_open.py    # 开源语料 → JSON
+backend/.venv/bin/python data/scripts/combine.py       # 合并（自带零回归校验，不过则退出）
+backend/.venv/bin/python data/scripts/enrich.py        # LLM 补关键点 / 预置追问（可断点续跑）
+backend/.venv/bin/python data/scripts/ingest.py        # → SQLite + Qdrant 双写（含入库护栏）
+backend/.venv/bin/python data/scripts/check_redline.py # 提交前语料红线反查（--all 全量）
+```
+
 ### 6.1 md 解析（parse_md.py，主数据源）
 
 - 层级规则：`#` = round（一面/二面/三面）；`##` = company；`###` = topic；`####` = 题目。
@@ -725,6 +755,10 @@ domain_label(domain) -> str                   # DOMAIN_LABELS；project → 「�
 
 把**题库查询**能力按 MCP 暴露给任意客户端（Claude Code / Claude Desktop），验证「RAG 与题库能力不只服务自家前端」。
 
+```bash
+claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
+```
+
 - **协议版本锁定**：SDK `mcp>=2,<3`，协商出的规范修订 = **2026-07-28**（无状态核心：无 initialize 握手 / 无 session id）。**协议代码关在 `app/mcp_server/` 一个包里**（领域逻辑不重写：用的就是题库页那套 `bank_query` 与出题检索那套 `hybrid_search`）；源码扫描有单测钉死「其余 app 代码不得 import mcp」。
 - **传输只做 stdio**：MCP 客户端在本机把它当子进程起（`python -m app.mcp_server`），题库不经过网络。**不做 HTTP 传输**——无鉴权的 HTTP 会把题库暴露给任何能连上的进程。
 - **三个只读工具**：`search_questions`（混合检索，短查询保留 rerank）· `browse_questions`（SQL 浏览/分页）· `get_question`（单题 + 来源四要素）。出参是 Pydantic 模型（`output_schema` 随工具声明）。
@@ -845,7 +879,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 ### 9.4 设计系统与窄屏
 
-- **设计令牌**：暖灰纸面 / 深色左栏 / 单一钴蓝强调色（`globals.css`，含 `--success`、`--stage` 与面试间 `--room-*`）+ 中文回退字体栈（Geist 不含 CJK）+ 全局 `prefers-reduced-motion` 兜底；工作台跟随系统明暗，面试间独立亮 / 暗切换（默认亮场，localStorage 记忆）。taste-skill 基调、专注型对话布局，不做营销首页。
+- **设计令牌**：暖灰纸面 / 深色左栏 / 单一钴蓝强调色（`globals.css`，含 `--success`、`--stage` 与面试间 `--room-*`）+ 中文回退字体栈（Geist 不含 CJK）+ 全局 `prefers-reduced-motion` 兜底；工作台跟随系统明暗，面试间独立亮 / 暗切换（默认亮场，localStorage 记忆）。克制配色、强排版、微动效，专注型对话布局，不做营销首页。
 - **状态态各有唯一档位**：空态 / 加载态两档 / 错误态三档（可重试 = inline + 按钮、表单级 = 一行红字、全页 = 中性色 + 返回首页）。
 - **卡片材质两档**：面板 = `rounded-xl + 1px border`（表头带分隔线，无阴影、无 ring），内嵌面板 = `rounded-lg border + bg-muted/30`。共享件：`AppRail` / `PageShell` / `PageHeader` / `MonoLabel` / `StatStrip` / `Segmented` / `EmptyState` / `ErrorState` / `StatusBanner` / `InlinePanel`。
 - **窄屏导航**：移动端固定顶部图标条（56px），内容区预留 76px 顶部偏移；左栏在 1280px 以下折叠为 74px 图标栏，题库详情栏在 1280px 以下改为行内展开，面试间右侧舞台在 1280px 以下收回顶部卡片。验收 = 500px 视口截图（登录 / 仪表盘 / 题库 / 面试间）；320px 未覆盖。
@@ -872,7 +906,21 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（904 个，不需要任何密钥）· `cd frontend && pnpm test`（333 个）+ `pnpm lint && pnpm build` · smoke 与离线评测命令见 [README](../README.md)「验证与评估」。
+**跑法**：`cd backend && uv run pytest -q`（本机 975 passed / 17 skipped，未配 PG/Redis 时跳过集成用例）· `cd frontend && pnpm test`（343 passed）+ `pnpm lint && pnpm build`。
+
+真链路 smoke 与离线评测需要真 key / Qdrant，手动跑：
+
+```bash
+cd backend
+uv run python scripts/smoke_api.py            # 一场真面试：报告 / PDF / 回放 / 推荐 / 档案
+uv run python scripts/smoke_e2e.py            # 组合场：语音进 / 语音出 / 截图 / 文字
+uv run python scripts/smoke_degraded.py       # 降级链：假上游一律 503，面试仍走完并标注
+uv run python scripts/smoke_mcp.py            # MCP stdio 子进程 + 三工具
+uv run python scripts/eval_retrieval_run.py   # 检索基线（需 Qdrant + 嵌入容器）
+uv run python scripts/eval_judge_gate.py      # 评分门禁（改评分 prompt 后必跑）
+```
+
+P4 集成（真 PG / Redis）的建库与环境变量见 [P4-生产化 §7](P4-生产化.md)。
 
 **CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——**四个 job**：后端 pytest · 前端 lint+vitest+build · **P4 集成（真 PostgreSQL + 真 Redis，用 Actions services 起）** · **语料红线（CI 可查部分）**。
 
@@ -908,6 +956,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
+| 2026-11-01 | 文档精炼 | §2 路由与脚本口径 + 系统拓扑（从 README 移入） · §6 管道命令 · §7.4 MCP 启动命令 · §10 计数与常用命令 |
 | 2026-10-22 | 刷新体验补强 | §9.3 摄像头不在加载时自动取流；§9.5 工作台面板/代码快照/白板场景刷新恢复；§10 计数 |
 | 2026-10-21 | 多模态扩展（M13–M16） | §2 树补 coding / speech / 前端组件 · §3 调用点 10 个 · §4.1 State 补 `speech` / `current_speech` · §4.6 报告补逐题 `speech` 与顶层 `expression` · §7 messages 补 `speech`、新增 §7.5 代码工作台与 §7.6 表达复盘、§7.2 补白板结构点评 · §9.5 工作台与报告 UI · §10 计数与多模态验证 · §11 风险 19 |
 | 2026-10-21 | 界面重塑（P3-UI） | §9 前端设计：左栏工作台 / 面试间明暗双主题 / 题库三栏 / 设计令牌与共享件 / 窄屏导航；§9.1 页面要点同步 |

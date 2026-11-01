@@ -37,7 +37,7 @@
 ## 技术栈（版本线）
 
 - 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1` + `langgraph-checkpoint-postgres==3.1.0`（P4）+ `psycopg[binary]` / `psycopg-pool` / `redis`
-- 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）+ **Monaco**（代码工作台，同源 `/monaco/vs` 静态资源、不走 CDN）；设计规范参考 taste-skill
+- 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）+ **Monaco**（代码工作台，同源 `/monaco/vs` 静态资源、不走 CDN）；设计基调：克制配色、强排版、微动效
 - 数据：**P4 起 = PostgreSQL 16**（业务库 + checkpointer **独立库**）+ **Redis 7**（会话锁 / per-user 限流 / 全局 LLM 槽）+ SQLite（**题库只读**，离线资产不迁）+ Qdrant 1.19（向量，原生稀疏 + 服务端 RRF）。默认 compose 是 P4；单机形态保留为 `docker-compose.legacy.yml` 与 SQLite 开关（`DB_BACKEND=sqlite` / `CHECKPOINT_BACKEND=sqlite` / `COORDINATION_BACKEND=memory`）。**题库不迁 PG**——它是离线构建、运行时只读的资产，迁它会把语料管道与检索 join 一起拖进来
 - 业务库分派：**门面 `app/db.py` 按 target 类型分派**（`Path`→SQLite / DSN 字符串→PostgreSQL），两个实现（`db_sqlite.py` / `db_postgres.py`）**函数签名与语义必须一致**；路由层只传 `settings.business_db`，**不出现 SQL 方言分支**
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
@@ -61,7 +61,7 @@
 
 ## 岗位与题库（已拍板）
 
-- 岗位方向：**Agent/AI 工程师**；知识域与权重（规划报告 §5.3）：Agent 认知与架构 20% / 规划与推理范式 15% / Tool 与 Function Calling（含 MCP）15% / Memory 15% / RAG 20% / 工程化与可观测 15%
+- 岗位方向：**Agent/AI 工程师**；知识域与权重：Agent 认知与架构 20% / 规划与推理范式 15% / Tool 与 Function Calling（含 MCP）15% / Memory 15% / RAG 20% / 工程化与可观测 15%
 - 题库：个人题库 + 四源开源语料（JavaGuide / doocs / haizlin / tech-interview-handbook / InterviewGuide / WenQu 属白名单）= **1568 题（enabled 1096）**，结构化 JSON 携带 company/round/topic 元数据；难度按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档标注，12 个「难度 × 题量」组合全部可供
 - 面试范围：技术面 + 行为面/HR 面（复用同一状态机，只换能力模型与题源）
 
@@ -102,7 +102,7 @@
 
 ## 开发纪律
 
-- **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见规划报告 §8
+- **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/SPEC.md)
 - TDD：追问决策、评分聚合、语料解析等确定性逻辑先写测试
 - **单一来源**：凡是"两处算同一个东西"，抽成一份实现并用测试钉死——总分口径、检索 doc 文本、评测与生产共用的评分 prompt、决策与原因同源的 `explain_decision`。同一批数字两个来源，迟早不一致
 - **机械判据优先**：能用断言证明的不靠肉眼——图内标识串证明"模型读到了图"、转写重合率证明"语音进了引擎"、CDP Network 域零请求证明"帧没上传"、像素采样证明暗色主题
