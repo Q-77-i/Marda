@@ -70,7 +70,12 @@ import {
   redirectToLogin,
   setUnauthorizedHandler,
 } from "@/lib/session";
-import { Speaker } from "@/lib/tts";
+import {
+  Speaker,
+  TTS_VOICE_KEY,
+  loadChineseVoices,
+  parseSavedVoice,
+} from "@/lib/tts";
 import {
   EMPTY_TRANSCRIPT_HINT,
   VOICE_MODE_KEY,
@@ -133,6 +138,9 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [draftHydrated, setDraftHydrated] = useState(false);
   /* 语音通道（P2-M5 FR-24）：默认关，一键开启；记忆在 localStorage（不可用时仅本次有效） */
   const [voiceMode, setVoiceMode] = useState(false);
+  /* 系统语音（edge-tts 降级兜底）：可选音色由浏览器提供，偏好存 localStorage */
+  const [browserVoices, setBrowserVoices] = useState<string[]>([]);
+  const [ttsVoiceName, setTtsVoiceName] = useState("");
   const [recording, setRecording] = useState(false);
   const [connecting, setConnecting] = useState(false);
   /* 已停止录音、正在等最终转写（P2-M13）：独立态，避免「结束录音」按钮一直挂着 */
@@ -203,7 +211,7 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
         // 系统音音色明显差：降级发生时明确提示，不静默切换
         if (fallbackWarnedRef.current) return;
         fallbackWarnedRef.current = true;
-        setNotice("语音合成异常，已临时切换系统语音；题目以文字为准。");
+        setNotice("语音合成异常，已临时切换系统语音；可在右栏「状态」里更换系统语音，题目以文字为准。");
       },
     );
   }
@@ -361,6 +369,44 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
       voiceModeRef.current = false;
     }
   }, []);
+
+  /* 系统语音偏好（edge-tts 降级兜底）：启动时读回；开启语音播报后再加载可用音色 */
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = parseSavedVoice(window.localStorage.getItem(TTS_VOICE_KEY));
+    } catch {
+      saved = null;
+    }
+    if (!saved) return;
+    setTtsVoiceName(saved);
+    speakerRef.current?.setPreferredVoice(saved);
+  }, []);
+
+  useEffect(() => {
+    if (!voiceMode) return;
+    let active = true;
+    void loadChineseVoices().then((voices) => {
+      if (!active) return;
+      const names = voices.map((voice) => voice.name);
+      setBrowserVoices(names);
+      setTtsVoiceName((current) => {
+        if (current && !names.includes(current)) {
+          try {
+            window.localStorage.removeItem(TTS_VOICE_KEY);
+          } catch {
+            // 存储不可用：本次仍回自动
+          }
+          speakerRef.current?.setPreferredVoice(null);
+          return "";
+        }
+        return current;
+      });
+    });
+    return () => {
+      active = false;
+    };
+  }, [voiceMode]);
 
   /* 面试间配色偏好（默认亮场）：存储不可用（隐私模式）静默当没开过 */
   useEffect(() => {
@@ -557,10 +603,20 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     if (lastAssistant) speak(lastAssistant.content);
   };
 
+  const changeTtsVoice = (name: string) => {
+    setTtsVoiceName(name);
+    speakerRef.current?.setPreferredVoice(name || null);
+    try {
+      if (name) window.localStorage.setItem(TTS_VOICE_KEY, name);
+      else window.localStorage.removeItem(TTS_VOICE_KEY);
+    } catch {
+      // 存储不可用：本次有效
+    }
+  };
+
   const toggleRoomTheme = () => {
     setRoomTheme((prev) => {
-      const next = prev === "light" ? "dark" : "light";
-      try {
+      const next = prev === "light" ? "dark" : "light";      try {
         window.localStorage.setItem("marda.room.theme", next);
       } catch {
         // 隐私模式等存储不可用：只本次有效
@@ -1620,6 +1676,29 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
                     </b>
                   </div>
                 ))}
+                {voiceMode && browserVoices.length > 0 ? (
+                  <div className="border-t border-room-line px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[10.5px] text-room-muted">系统语音</span>
+                      <select
+                        aria-label="系统语音（edge-tts 降级时使用）"
+                        value={ttsVoiceName}
+                        onChange={(event) => changeTtsVoice(event.target.value)}
+                        className="max-w-[160px] rounded-md border border-room-line bg-room-panel px-1.5 py-1 font-mono text-[9.5px] text-room-ink"
+                      >
+                        <option value="">自动（推荐）</option>
+                        {browserVoices.map((name) => (
+                          <option key={name} value={name}>
+                            {name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="mt-1 text-[9px] leading-relaxed text-room-faint">
+                      edge-tts 不可用时才使用；音色由系统提供
+                    </p>
+                  </div>
+                ) : null}
               </>
             ) : roomTab === "board" ? (
               <div className="px-3 py-3.5">

@@ -88,7 +88,7 @@ docs/      PRD / SPEC / P4-生产化 / 开发历程
 
 ```bash
 cd backend && uv run pytest -q          # 986 passed / 20 skipped（未配 PG/Redis）
-cd frontend && pnpm test                # 349 passed
+cd frontend && pnpm test                # 353 passed
 ```
 
 本机实测（2026-11）；真链路 smoke、离线评测与评分门禁见 [SPEC §10](docs/SPEC.md)，P4 集成、备份与回滚见 [P4-生产化 §7](docs/P4-生产化.md)。CI 四个 job：后端 pytest · 前端 lint / vitest / build · P4 集成（真 PG + Redis）· 语料守卫。

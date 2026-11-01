@@ -722,6 +722,7 @@ backend/.venv/bin/python data/scripts/check_redline.py # 提交前语料红线�
 
 - **ASR**：`WS /api/asr` 中继到火山豆包流式识别（**v3 二进制协议**：4 字节头 + gzip JSON / gzip PCM；实现 `tools/asr.py`，帧格式已在真服务端验证）。鉴权 `X-Api-Key` = **豆包语音控制台**签发的 key（`VOLCANO_SPEECH_API_KEY`）——**与方舟 Ark key 不通用**（探针实测三种失败形态：401 Invalid X-Api-Key / 403 requested resource not granted / plan 路径 acquire 失败），错误文案按状态码给「该去哪解决」。音频 PCM 16k/16bit/单声道、每 100ms 一片；`partial` 是**累计文本**（前端按替换落框，不叠加）。
 - **TTS**：edge-tts（免费）；三档降级 = edge-tts → 浏览器 `speechSynthesis` → 纯文字。播报失败只提示一次，**不打断面试**；开麦即停播。**票据走协调层**（Redis 模式跨 worker 共享、memory 模式进程内，60s 过期）——P4 默认 2 worker，票据放模块级 dict 会「A 签发、B 收到 GET」直接 404。
+- **系统音兜底（2026-11）**：降级时按「zh-CN 优先 → Enhanced / 自然音色 → 避开 Grandma / Grandpa 等搞怪音色」排序；面试间右栏「状态」可选具体音色（`marda.ttsVoice`，仅 edge-tts 失败时使用）。
 - **前端**：`lib/voice.ts`（降采样/Int16/WS 地址/落框规则，纯逻辑 vitest）+ `lib/asr-client.ts` + `public/asr-worklet.js`（攒 2048 帧再送主线程）+ `lib/tts.ts`。**转写进输入框、发送前可编辑**（ASR 错字不能让评分官背锅）；开录时已有的草稿是底稿，转写整体替换其后那段。
 - **红线**：音频**不落盘、不落库、不写日志**，内存转发即弃；转写文本与手打文字同等对待。
 - **连接口径**：容器/生产走同源（nginx 加 `Upgrade`/`Connection` 头转发）；`next dev` 的 rewrites **不代理 WS upgrade**（已查实）→ 3000 端口一律直连后端 8000（`lib/voice.ts::asrUrl` 纯函数钉死）。
@@ -879,6 +880,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON,
 
 - **摄像头 = UI 模拟**：**帧不上传、不落库、AI 不看**——全仓画面只有 `getUserMedia → video.srcObject` 一条路；**轨道收摊是单一出口 `stopStream`**（关闭 / 离开页面 / 面试结束三处共用，漏一处摄像头灯就常亮）；「我」tile 角标如实交代（「仅本机可见，不上传」）；**权限被拒 / 无设备 / 被占用按 DOMException 分流文案**（`lib/camera.ts` 的 `cameraErrorMessage`），失败**不改偏好**。**默认关；localStorage 只记住「上次开过」用于按钮提示（「恢复摄像头」），不在页面加载时自动取流**——Safari 无用户手势调用 `getUserMedia` 会每次弹权限框；只读回放与已结束场次不恢复；取流约束用 ideal 不用 exact、`audio` 显式 false。
 - **控制条**在输入区（语音作答 / 摄像头 / 附截图 ｜ 发送，激活态 = filled）；容器 `flex-wrap`，窄屏整组换行、不把按钮压变形。
+- **状态 Tab**：当前题、阶段 / 进度、语音 / 摄像头开关，以及 **系统语音选择器**（edge-tts 降级时使用；偏好存 `localStorage["marda.ttsVoice"]`）；只读场次不显示语音开关。
 
 ### 9.4 设计系统与窄屏
 
@@ -910,7 +912,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON,
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（本机 986 passed / 20 skipped，未配 PG/Redis 时跳过集成用例）· `cd frontend && pnpm test`（349 passed）+ `pnpm lint && pnpm build`。
+**跑法**：`cd backend && uv run pytest -q`（本机 986 passed / 20 skipped，未配 PG/Redis 时跳过集成用例）· `cd frontend && pnpm test`（353 passed）+ `pnpm lint && pnpm build`。
 
 真链路 smoke 与离线评测需要真 key / Qdrant，手动跑：
 
@@ -960,7 +962,7 @@ P4 集成（真 PG / Redis）的建库与环境变量见 [P4-生产化 §7](P4-�
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
-| 2026-11-01 | 文档精炼 + 体验补强 | §2 路由与脚本口径 + 系统拓扑（从 README 移入） · §6 管道命令 · §7.1 TTS 票据跨 worker · §7.3 简历内容缓存 · §8 resumes.content_hash · §9.2 草稿刷新恢复 · §10 计数与常用命令 |
+| 2026-11-01 | 文档精炼 + 体验补强 | §2 路由与脚本口径 + 系统拓扑（从 README 移入） · §6 管道命令 · §7.1 TTS 票据跨 worker + 系统音兜底 · §7.3 简历内容缓存 · §8 resumes.content_hash · §9.2 草稿刷新恢复 · §9.3 系统音色选择器 · §10 计数与常用命令 |
 | 2026-10-22 | 刷新体验补强 | §9.3 摄像头不在加载时自动取流；§9.5 工作台面板/代码快照/白板场景刷新恢复；§10 计数 |
 | 2026-10-21 | 多模态扩展（M13–M16） | §2 树补 coding / speech / 前端组件 · §3 调用点 10 个 · §4.1 State 补 `speech` / `current_speech` · §4.6 报告补逐题 `speech` 与顶层 `expression` · §7 messages 补 `speech`、新增 §7.5 代码工作台与 §7.6 表达复盘、§7.2 补白板结构点评 · §9.5 工作台与报告 UI · §10 计数与多模态验证 · §11 风险 19 |
 | 2026-10-21 | 界面重塑（P3-UI） | §9 前端设计：左栏工作台 / 面试间明暗双主题 / 题库三栏 / 设计令牌与共享件 / 窄屏导航；§9.1 页面要点同步 |

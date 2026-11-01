@@ -45,19 +45,116 @@ export function takeFirstSentence(
   return null;
 }
 
+/** 系统音色偏好（edge-tts 失败时的兜底）；空 = 自动选择。 */
+export const TTS_VOICE_KEY = "marda.ttsVoice";
+
+export function parseSavedVoice(raw: string | null): string | null {
+  const name = raw?.trim();
+  return name ? name : null;
+}
+
+/** 较自然的中文音色；越靠前越优先。 */
+const NATURAL_VOICES = [
+  "tingting",
+  "ting-ting",
+  "eddy",
+  "flo",
+  "shelley",
+  "sandy",
+  "reed",
+  "meijia",
+  "sinji",
+];
+
+/** 明显不适合播报面试题的搞怪音色。 */
+const NOVELTY_VOICES = [
+  "grandma",
+  "grandpa",
+  "rocko",
+  "albert",
+  "bad news",
+  "bells",
+  "boing",
+  "bubbles",
+  "cellos",
+  "good news",
+  "jester",
+  "organ",
+  "superstar",
+  "trinoids",
+  "whisper",
+  "wobble",
+  "zarvox",
+];
+
+function normalizeLang(lang: string): string {
+  return lang.toLowerCase().replace("_", "-");
+}
+
+function voiceScore(voice: { lang: string; name?: string }): number {
+  const lang = normalizeLang(voice.lang);
+  const name = (voice.name ?? "").toLowerCase();
+  let score = lang === "zh-cn" ? 100 : 50;
+  if (name.includes("enhanced") || name.includes("premium") || name.includes("natural")) {
+    score += 40;
+  }
+  const rank = NATURAL_VOICES.findIndex((item) => name.includes(item));
+  if (rank >= 0) score += 30 - rank;
+  if (NOVELTY_VOICES.some((item) => name.includes(item))) score -= 100;
+  return score;
+}
+
 /**
- * 浏览器音色选择：优先 zh-CN，其次任意 zh；没有中文音色返回 null
- * （交给系统默认音色，仍按 zh-CN 朗读）。
+ * 浏览器音色选择：优先 zh-CN，其次任意 zh；同档内优先较自然的音色，
+ * 避开 Grandma/Grandpa 这类搞怪音色；没有中文音色返回 null。
  */
-export function chooseChineseVoice<T extends { lang: string }>(
+export function chooseChineseVoice<T extends { lang: string; name?: string }>(
   voices: readonly T[],
 ): T | null {
-  const lang = (voice: T) => voice.lang.toLowerCase().replace("_", "-");
-  return (
-    voices.find((voice) => lang(voice) === "zh-cn") ??
-    voices.find((voice) => lang(voice).startsWith("zh")) ??
-    null
+  let best: T | null = null;
+  let bestScore = -Infinity;
+  for (const voice of voices) {
+    if (!normalizeLang(voice.lang).startsWith("zh")) continue;
+    const score = voiceScore(voice);
+    if (score > bestScore) {
+      best = voice;
+      bestScore = score;
+    }
+  }
+  return best;
+}
+
+/** 取浏览器中文音色（按推荐度排序、按名字去重）。Safari/Chrome 首次常为空。 */
+export async function loadChineseVoices(): Promise<SpeechSynthesisVoice[]> {
+  if (typeof window === "undefined" || !("speechSynthesis" in window)) return [];
+  const synth = window.speechSynthesis;
+  if (!synth) return [];
+  const voices = await waitForVoices(synth);
+  const unique = new Map<string, SpeechSynthesisVoice>();
+  for (const voice of voices) {
+    if (!normalizeLang(voice.lang).startsWith("zh") || !voice.name) continue;
+    if (!unique.has(voice.name)) unique.set(voice.name, voice);
+  }
+  return [...unique.values()].sort(
+    (a, b) => voiceScore(b) - voiceScore(a) || a.name.localeCompare(b.name),
   );
+}
+
+/** Chrome 首次 getVoices() 常为空：等一次 voiceschanged（最多 800ms）。 */
+function waitForVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice[]> {
+  const current = synth.getVoices();
+  if (current.length > 0) return Promise.resolve(current);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(synth.getVoices()), 800);
+    synth.addEventListener(
+      "voiceschanged",
+      () => {
+        clearTimeout(timer);
+        resolve(synth.getVoices());
+      },
+      { once: true },
+    );
+  });
 }
 
 type SpeechSegment = { text: string; audio: HTMLAudioElement | null };
@@ -73,6 +170,7 @@ export class Speaker {
   private streamBuffer = "";
   private browserUtterance: SpeechSynthesisUtterance | null = null;
   private browserSpeaking = false;
+  private preferredVoiceName: string | null = null;
 
   /**
    * `onSpeakingChange` 供面试间舞台用（P2-M7：面试官 tile 的「正在播报」徽标）——
@@ -88,6 +186,11 @@ export class Speaker {
   /** 正在播报？（页面据此决定是否让位：开始录音时先停播） */
   get speaking(): boolean {
     return this.current !== null || this.browserSpeaking;
+  }
+
+  /** 系统音色偏好（null = 自动）；只影响 edge-tts 失败后的浏览器兜底。 */
+  setPreferredVoice(name: string | null): void {
+    this.preferredVoiceName = parseSavedVoice(name);
   }
 
   /** 一次性播报整段（切换语音模式时播当前题）：首句立即合成，剩余接上。 */
@@ -353,8 +456,11 @@ export class Speaker {
     }
     const synth = window.speechSynthesis;
     if (!synth) return false;
-    const voices = await this.loadVoices(synth);
-    const voice = chooseChineseVoice(voices);
+    const voices = await waitForVoices(synth);
+    const preferred = this.preferredVoiceName
+      ? voices.find((voice) => voice.name === this.preferredVoiceName)
+      : undefined;
+    const voice = preferred ?? chooseChineseVoice(voices);
     const utterance = new SpeechSynthesisUtterance(text);
     if (voice) {
       utterance.voice = voice;
@@ -395,23 +501,6 @@ export class Speaker {
       } catch {
         finish(false);
       }
-    });
-  }
-
-  /** Chrome 首次 getVoices() 常为空：等一次 voiceschanged（最多 800ms）。 */
-  private loadVoices(synth: SpeechSynthesis): Promise<SpeechSynthesisVoice[]> {
-    const current = synth.getVoices();
-    if (current.length > 0) return Promise.resolve(current);
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => resolve(synth.getVoices()), 800);
-      synth.addEventListener(
-        "voiceschanged",
-        () => {
-          clearTimeout(timer);
-          resolve(synth.getVoices());
-        },
-        { once: true },
-      );
     });
   }
 }

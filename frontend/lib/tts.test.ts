@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { chooseChineseVoice, takeFirstSentence } from "@/lib/tts";
+import {
+  TTS_VOICE_KEY,
+  chooseChineseVoice,
+  parseSavedVoice,
+  takeFirstSentence,
+} from "@/lib/tts";
 
 describe("首句切分（TTS 提前合成）", () => {
   it("在标点处切出首句，保留剩余", () => {
@@ -42,5 +47,39 @@ describe("浏览器语音降级", () => {
   it("没有中文音色返回 null（交给系统默认音色）", () => {
     expect(chooseChineseVoice([{ lang: "en-US" }])).toBeNull();
     expect(chooseChineseVoice([])).toBeNull();
+  });
+
+  it("避开搞怪音色，优先自然的中文音色", () => {
+    const voices = [
+      { lang: "zh-CN", name: "Grandma" },
+      { lang: "zh-CN", name: "Tingting" },
+      { lang: "zh-CN", name: "Eddy" },
+    ];
+    expect(chooseChineseVoice(voices)?.name).toBe("Tingting");
+  });
+
+  it("Enhanced 变体优先于普通变体", () => {
+    const voices = [
+      { lang: "zh-CN", name: "Tingting" },
+      { lang: "zh-CN", name: "Tingting (Enhanced)" },
+    ];
+    expect(chooseChineseVoice(voices)?.name).toBe("Tingting (Enhanced)");
+  });
+
+  it("没有 zh-CN 时，zh-TW/zh-HK 里也避开搞怪音色", () => {
+    const voices = [
+      { lang: "zh-TW", name: "Grandpa" },
+      { lang: "zh-TW", name: "Meijia" },
+    ];
+    expect(chooseChineseVoice(voices)?.name).toBe("Meijia");
+  });
+});
+
+describe("音色偏好持久化", () => {
+  it("键名与空值归一", () => {
+    expect(TTS_VOICE_KEY).toBe("marda.ttsVoice");
+    expect(parseSavedVoice(null)).toBeNull();
+    expect(parseSavedVoice("  ")).toBeNull();
+    expect(parseSavedVoice("  Tingting  ")).toBe("Tingting");
   });
 });
