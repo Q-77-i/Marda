@@ -2,8 +2,8 @@
 
 **需要真 PG**：默认跳过，靠环境变量打开：
 
-    export MARDA_TEST_DATABASE_URL=postgresql://marda:marda@localhost:5432/marda_test
-    export MARDA_TEST_CHECKPOINT_URL=postgresql://marda:marda@localhost:5432/marda_ckpt_test
+    export MARDA_TEST_DATABASE_URL=postgresql://marda:marda@localhost:55432/marda_test
+    export MARDA_TEST_CHECKPOINT_URL=postgresql://marda:marda@localhost:55432/marda_ckpt_test
     uv run pytest -m postgres
 
 CI 里对应 `p4-integration` job（GitHub Actions 的 postgres service，假 key、不打真模型）。

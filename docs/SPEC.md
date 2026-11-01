@@ -55,12 +55,12 @@ marda/
 │   ├── eval/                     # 评测产物：summary.md 入库，golden/ 与 results/ gitignore
 │   ├── parsed/ raw/              # 解析产物与开源语料原仓（gitignore）
 │   └── licenses/                 # 语料来源清单（入库）
-├── .github/workflows/ci.yml      # CI：测试 / lint / build / 语料入库守卫
+├── .github/workflows/ci.yml      # CI：测试 / lint / build / P4 集成 / 语料入库守卫
 ├── docker/nginx.conf             # 唯一入口：/api → api，其余 → web
-└── docker-compose.yml            # nginx + web + api + qdrant + embedding 一键起
+└── docker-compose.yml            # P4：nginx + web + api(2 worker) + postgres + redis + qdrant + embedding
 ```
 
-**依赖**：后端 fastapi / uvicorn / sse-starlette / langgraph==1.2.11 / langchain==1.4.0 / langgraph-checkpoint-sqlite==3.1.1 / openai SDK / pydantic(+settings) / tenacity / httpx / qdrant-client / pypdf / pyjwt / python-multipart / weasyprint + jinja2 / langfuse==4.9.1 / edge-tts + websockets。评测依赖（ragas 等）与 `mcp>=2,<3` 在 dev 组，容器 `uv sync --no-dev` 不进镜像。前端 next@15 / react 19 / tailwindcss v4 / shadcn-ui / framer-motion / recharts / @monaco-editor/react + monaco-editor。
+**依赖**：后端 fastapi / uvicorn / sse-starlette / langgraph==1.2.11 / langchain==1.4.0 / langgraph-checkpoint-sqlite==3.1.1 / langgraph-checkpoint-postgres==3.1.0（P4）/ psycopg[binary] + psycopg-pool（P4）/ redis（P4）/ openai SDK / pydantic(+settings) / tenacity / httpx / qdrant-client / pypdf / pyjwt / python-multipart / weasyprint + jinja2 / langfuse==4.9.1 / edge-tts + websockets。评测依赖（ragas 等）与 `mcp>=2,<3` 在 dev 组，容器 `uv sync --no-dev` 不进镜像。前端 next@15 / react 19 / tailwindcss v4 / shadcn-ui / framer-motion / recharts / @monaco-editor/react + monaco-editor。
 
 ## 3. LLM 集成（llm.py）
 
@@ -96,7 +96,7 @@ marda/
 - **降级 ≠ 错误**：`retryable=True` 的失败走降级（面试继续、发 `degraded` 事件、进 `degraded_reasons`）；`retryable=False`（内容类/配置类）仍抛 `LLMError` → SSE error → 用户重试（`degrade.reraise_if_content` 是这条分界，**重试能治好的不许静默降级**）。
 - **不产假信号**：整场未评分时报告 payload **不落 `scores`/`overall`**（缺数据 ≠ 0 分，同 §4.11「缺场不补零」口径）——报告页/PDF 收起分数区、能力档案按 `excluded.degraded` 排除并说明；部分未评分时分数照常展示，只标注未评分题数。
 - **如实交代三处**：SSE `degraded` 事件（实时横幅）+ `GET /interviews/{id}` 的 `degraded_reasons`（刷新/中途进入也有横幅）+ 报告 payload 的 `degraded` / `degraded_reasons` / `unscored_count`。
-- **已知边界**：闸门与熔断状态在**进程内存**，多 worker 不共享（demo 单进程形态成立）；**降级只覆盖 LLM**——Qdrant/嵌入/rerank 故障仍会卡出题（如实记入「已知不覆盖」）；不做 API 侧按用户限流，不做降级场次的事后补评分。
+- **已知边界**：P4 起 LLM 并发槽由 **Redis 全局共享**（memory 模式回退进程内闸门）；**断路器状态仍按进程**，跨 worker 不共享；已有 per-user 限流（Redis）。**降级只覆盖 LLM**——Qdrant/嵌入/rerank 故障仍会卡出题（如实记入「已知不覆盖」）；不做降级场次的事后补评分。
 ## 4. 面试状态机（LangGraph）
 
 ### 4.1 State
@@ -897,7 +897,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 13. 图片：**图独立成消息附件、不改任何既有 prompt 模板**——无图调用的消息列表必须与接入前**逐字一致**（单测钉死，评分基线与评测门禁靠它零漂移）；`state`/`checkpoint` **只存 image_id**；内容块必须是 `{"type": ...}` 对象；**图文件缺失/损坏 → 跳过 + 退化纯文字**，绝不因图丢文件拒答；**图必须落盘**（与语音「不落盘」刻意相反——否则回放丢证据）；上传走 nginx，`client_max_body_size`（10m）必须 ≥ 后端上限（8MB），否则前端拿到的是 HTML 413
 14. checkpoints 库（WAL + macOS 绑定挂载）的访问纪律：**宿主机「只读」也会 malformed**——凡碰它的脚本**一律在容器内跑**，或先停 api 再动；真库 2026-10-04 发现并修复了历史损坏页（波及 4 个无主孤儿线程、12 场真实场次完好）
 15. 摄像头：**帧不上传是结构性约束**——画面只许经 `video.srcObject` 进 DOM，不许加 canvas 抓帧 / 上传路径（CDP Network 域钉死：画面播放期间零新增请求）；`stopStream` 是收摊唯一出口（漏一处 = 摄像头灯常亮）；取流约束用 `ideal` 不用 `exact`、`audio` 显式 false。**浏览器验收的权限注入有顺序要求**：同一会话里先授权过再 `setPermission(denied)` **不生效**——拒绝分支必须全新进程先 deny
-16. 上游保护与降级链：**断路器只计「上游不可用」类失败**（内容类失败计入会把已知的偶发非法 JSON 误判成上游故障）；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口），且**未评分不产 0 分**；降级内容全部是确定性兜底，**不许在其中调 LLM**；闸门与熔断状态在**进程内存**（多 worker 不共享）
+16. 上游保护与降级链：**断路器只计「上游不可用」类失败**（内容类失败计入会把已知的偶发非法 JSON 误判成上游故障）；**闸门持有期 = 整流生命周期**（只包住建连段等于没限流）；**降级 = 照常走完 + 如实标注**（`degrade.mark` 是状态与 SSE 的成对唯一写入口），且**未评分不产 0 分**；降级内容全部是确定性兜底，**不许在其中调 LLM**；P4 起 LLM 并发槽在 **Redis 全局共享**（memory 模式回退进程内），**断路器状态仍按进程**
 17. MCP 与红线门禁：MCP **只做 stdio、只暴露公共题**，工具内异常必须转 `ToolError`——未捕获异常会被 SDK 换成「Error executing tool X」，**模型看不到原因**；`mcp` 只许 `app/mcp_server/` import（单测扫描钉死）。**红线检查器的语料取值要按列的存储形态取**：`key_points` 是 JSON **文本**，把它当可迭代不报错、只是静默少查一路（已改成显式解析 + 单测）
 18. 上游调用命名：`llm.*(purpose=...)` → drop-in 的 `name` **只在 Langfuse 启用时传**——原生 openai SDK 会把 `name` 当未知参数塞进请求体（400）。成本读回（`fetch_trace_observations` / `summarize_observations`）是 smoke_api 与 `cost_report.py` 的**同一份实现**（别写第二份）
 19. 多模态扩展（M13–M16）：Monaco **只走同源 `/monaco/vs`**（复制脚本 + gitignore + ESLint 忽略，不走 CDN）；`SpeechStats` 是 int，前端 `pause_ms` 必须取整；文字消息清空 `current_speech`；白板点评验收靠**手工探针**（评分门禁 golden 纯文字，证明不了读图）；Chrome 155 的 fake-audio 文件标志在本机实测无声，浏览器语音探针用页面内覆写 `getUserMedia` + 同源 WAV；**摄像头不在页面加载时自动取流**（Safari 无手势会弹权限），`marda.cameraMode` 只驱动「恢复摄像头」提示；工作台刷新恢复只存 localStorage（清站点数据即丢），面板写 URL `?panel=code|board`

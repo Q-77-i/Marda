@@ -61,7 +61,7 @@ flowchart LR
 
 **设计原则**：确定性逻辑（阶段推进、轮数上限、追问决策、配额）全部用代码写死——可解释、可单测、UI 可回放；LLM 只负责出题、评分、追问文案这类语义任务。
 
-> **P4 生产化形态**（多 worker + PostgreSQL + Redis）见 [docs/P4-生产化.md](docs/P4-生产化.md)：上图是**本地生产形态**（业务库与 checkpointer 在 PG，跨进程状态在 Redis，api 起 2 个 worker）；题库仍在 SQLite（离线资产、运行时只读）。单机形态（SQLite + 单 worker）仍是默认开关。
+> **P4 生产化形态**（多 worker + PostgreSQL + Redis）见 [docs/P4-生产化.md](docs/P4-生产化.md)：上图是**本地生产形态**（业务库与 checkpointer 在 PG，跨进程状态在 Redis，api 起 2 个 worker）；题库仍在 SQLite（离线资产、运行时只读）。单机形态（SQLite + 单 worker）保留为 `docker-compose.legacy.yml` 与 SQLite 开关。
 
 ## 快速开始
 
@@ -71,6 +71,8 @@ docker compose up -d --build  # → http://localhost:8080
 ```
 
 `nginx（唯一入口）→ web（Next standalone）/ api（uvicorn × 2 worker）`，背靠 `postgres`（业务库 + checkpoint 独立库）、`redis`（会话锁 / 限流 / 全局 LLM 槽）、`qdrant` 与 `embedding`（本地 BGE-M3）；题库与上传图片落宿主机 `data/`，容器重建不丢。语音 key 可选——不填则语音通道整体降级为文字，其余功能零影响。换端口：`MARDA_PORT=9000 docker compose up -d`。
+
+> **本机已有 PostgreSQL 时**：compose 把宿主机的 PG 映射到 **55432**（容器内仍是 5432），不会和本机 5432 冲突。宿主机跑迁移/备份脚本时用 `localhost:55432`；想改回 5432 就在 `.env` 设 `POSTGRES_HOST_PORT=5432`，并先停掉宿主 PostgreSQL。
 
 **单机形态**（不依赖 PG / Redis）：
 
@@ -186,15 +188,21 @@ uv run python scripts/smoke_mcp.py            # MCP：stdio 子进程 + 真握�
 uv run python scripts/eval_retrieval_run.py   # 检索基线：四变体 × golden（需 Qdrant + 嵌入容器）
 uv run python scripts/eval_judge_gate.py      # 评分门禁：超阈值非零退出（改评分 prompt 后必跑）
 
-cd frontend && pnpm test && pnpm lint && pnpm build   # vitest 333 个 + lint + 构建
+cd frontend && pnpm test && pnpm run lint && pnpm run build   # vitest 343 个 + lint + 构建
 
 # P4 集成（需要真 PG / 真 Redis；没配环境变量就跳过）
-MARDA_TEST_DATABASE_URL=postgresql://marda:marda@localhost:5432/marda MARDA_TEST_CHECKPOINT_URL=postgresql://marda:marda@localhost:5432/marda_checkpoints MARDA_TEST_REDIS_URL=redis://localhost:6379/1   uv run pytest -m "postgres or redis" -q
+# ⚠️ 必须用测试库：pg fixture 会清空业务表，绝不能指向 marda/marda_checkpoints
+docker compose exec -T postgres createdb -U marda marda_test
+docker compose exec -T postgres createdb -U marda marda_ckpt_test
+MARDA_TEST_DATABASE_URL=postgresql://marda:marda@localhost:55432/marda_test \
+MARDA_TEST_CHECKPOINT_URL=postgresql://marda:marda@localhost:55432/marda_ckpt_test \
+MARDA_TEST_REDIS_URL=redis://localhost:6379/1 \
+  uv run pytest -m "postgres or redis" -q
 ```
 
 **离线评估不进 pytest 常规套件**（要真 Qdrant + 嵌入 + LLM，且门禁余量取自指标自身波动，会被上游抖动误伤）：检索侧出 NDCG / RAGAS 指标，评分侧出 σ̄（同题同答重复评 K 次的自波动）、MAE（vs 独立标注）与三档单调性。**先量噪声地板再读差值**——低于地板的「变化」不构成结论。命令与口径见 [SPEC §4.13](docs/SPEC.md)。
 
-**CI** 跑不需要密钥的那一半：后端 pytest · 前端 lint + vitest + build · **语料入库守卫 + 红线检查器自检**。真比对与 smoke、评测不进 CI（语料不进仓库、真 key、花钱）。
+**CI** 跑不需要密钥的那一半：后端 pytest · 前端 lint + vitest + build · **P4 集成（真 PG + 真 Redis）** · **语料入库守卫 + 红线检查器自检**。真比对与 smoke、评测不进 CI（语料不进仓库、真 key、花钱）。
 
 ## MCP 题库查询
 

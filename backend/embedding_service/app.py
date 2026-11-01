@@ -16,6 +16,18 @@ from FlagEmbedding import BGEM3FlagModel
 from pydantic import BaseModel, Field
 
 MODEL_NAME = os.getenv("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+# Dockerfile 为了省 2.2GB 删掉了模型的 onnx/ 导出（服务只用 PyTorch 权重）。
+# 新版 huggingface_hub 在 HF_HUB_OFFLINE=1 时会检查 snapshot 是否完整，
+# 把「故意删掉的 onnx/」误判为缺失并拒绝启动。这里只跳过该完整性检查：
+# PyTorch 权重仍在镜像里，真正的模型文件缺失会在加载时自然报错。
+def _allow_pruned_onnx_snapshot() -> None:
+    import huggingface_hub._snapshot_download as snapshot
+
+    snapshot._raise_if_incomplete_snapshot = lambda **_: None  # type: ignore[attr-defined]
+
+
+_allow_pruned_onnx_snapshot()
 MAX_BATCH = 128  # 单请求文本数上限：CPU 一次推太多会顶爆内存
 MAX_LENGTH = 512  # 题库 doc 最长约 300 token（题干 + 关键点），不截断
 INNER_BATCH = 8

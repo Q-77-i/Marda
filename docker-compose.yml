@@ -29,8 +29,10 @@ services:
       # 初始化脚本：建独立的 checkpoint 库（业务库与 checkpoint 库分开，见 §4.1）
       - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
     ports:
-      # 只绑回环：宿主机跑迁移脚本 / 测试要连它
-      - "127.0.0.1:5432:5432"
+      # 只绑回环：宿主机跑迁移脚本 / 测试要连它。
+      # 容器内始终是 5432；宿主默认 55432，避开本机常见的 5432 占用。
+      # 想用 5432 时在 .env 设 POSTGRES_HOST_PORT=5432，并先停掉宿主 PostgreSQL。
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "${POSTGRES_USER:-marda}"]
       interval: 10s
@@ -65,6 +67,10 @@ services:
   embedding:
     build: ./backend/embedding_service
     restart: unless-stopped
+    environment:
+      # 权重已经烤进镜像；禁止运行时回 HF Hub 检查/下载，避免网络抖动把启动卡住。
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
     ports:
       # 只绑回环：宿主机跑 data/scripts/ingest.py（重嵌）要连它
       - "127.0.0.1:8091:8091"

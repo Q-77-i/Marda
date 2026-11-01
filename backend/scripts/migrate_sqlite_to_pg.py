@@ -208,17 +208,40 @@ def migrate(sqlite_path: Path, dsn: str, *, force: bool = False) -> dict[str, in
     return counts
 
 
+SENSITIVE_SAMPLE_COLUMNS = frozenset({"password_hash"})
+
+
 def sample(dsn: str, table: str, limit: int = 3) -> list[dict]:
-    """抽样打印（人眼核对：用户名、时间戳、报告 payload 是否合理）。"""
+    """抽样打印（人眼核对：用户名、时间戳、报告 payload 是否合理）。
+
+    `password_hash` 一律打码：迁移日志会进终端/CI 输出，密码哈希也不该裸露。
+    """
+    from psycopg.rows import dict_row
     from psycopg_pool import ConnectionPool
 
     from app.dsn import normalize_dsn
 
-    pool = ConnectionPool(normalize_dsn(dsn), min_size=1, max_size=1, open=True)
+    # dict_row：psycopg 默认返回 tuple，`dict(row)` 会抛
+    # "dictionary update sequence element #0 has length 32; 2 is required"
+    # （迁移已经成功，死在最后的抽样展示上——本机踩过一次）。
+    pool = ConnectionPool(
+        normalize_dsn(dsn),
+        min_size=1,
+        max_size=1,
+        open=True,
+        kwargs={"row_factory": dict_row},
+    )
     try:
         with pool.connection() as conn:
             cur = conn.execute(f"SELECT * FROM {table} LIMIT %s", (limit,))
-            return [dict(row) for row in cur.fetchall()]
+            rows = []
+            for row in cur.fetchall():
+                item = dict(row)
+                for column in SENSITIVE_SAMPLE_COLUMNS:
+                    if column in item:
+                        item[column] = "<redacted>"
+                rows.append(item)
+            return rows
     finally:
         pool.close()
 

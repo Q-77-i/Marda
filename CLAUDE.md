@@ -36,9 +36,9 @@
 
 ## 技术栈（版本线）
 
-- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1`
+- 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1` + `langgraph-checkpoint-postgres==3.1.0`（P4）+ `psycopg[binary]` / `psycopg-pool` / `redis`
 - 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）+ **Monaco**（代码工作台，同源 `/monaco/vs` 静态资源、不走 CDN）；设计规范参考 taste-skill
-- 数据：**P4 起 = PostgreSQL 16**（业务库 + checkpointer **独立库**）+ **Redis 7**（会话锁 / per-user 限流 / 全局 LLM 槽）+ SQLite（**题库只读**，离线资产不迁）+ Qdrant 1.19（向量，原生稀疏 + 服务端 RRF）。单机形态仍是默认开关（`DB_BACKEND=sqlite` / `CHECKPOINT_BACKEND=sqlite` / `COORDINATION_BACKEND=memory`），生产形态三组开关各自独立。**题库不迁 PG**——它是离线构建、运行时只读的资产，迁它会把语料管道与检索 join 一起拖进来
+- 数据：**P4 起 = PostgreSQL 16**（业务库 + checkpointer **独立库**）+ **Redis 7**（会话锁 / per-user 限流 / 全局 LLM 槽）+ SQLite（**题库只读**，离线资产不迁）+ Qdrant 1.19（向量，原生稀疏 + 服务端 RRF）。默认 compose 是 P4；单机形态保留为 `docker-compose.legacy.yml` 与 SQLite 开关（`DB_BACKEND=sqlite` / `CHECKPOINT_BACKEND=sqlite` / `COORDINATION_BACKEND=memory`）。**题库不迁 PG**——它是离线构建、运行时只读的资产，迁它会把语料管道与检索 join 一起拖进来
 - 业务库分派：**门面 `app/db.py` 按 target 类型分派**（`Path`→SQLite / DSN 字符串→PostgreSQL），两个实现（`db_sqlite.py` / `db_postgres.py`）**函数签名与语义必须一致**；路由层只传 `settings.business_db`，**不出现 SQL 方言分支**
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
 - 可观测：Langfuse（云形态，无 key 即整体降级为零开销）；评估：**自研评估 harness**（评分一致性门禁，失败非零退出）+ RAGAS（离线检索指标）
@@ -97,6 +97,8 @@
 10. **Windows 上 uvicorn 绕开 event loop policy**：uvicorn 的 `asyncio_loop_factory` 在 Windows 上直接 `return asyncio.ProactorEventLoop`（不读 policy），而 psycopg 的**异步**模式（官方 PG checkpointer）不支持它 → 报 “Psycopg cannot use the 'ProactorEventLoop' to run in async mode”。**切 policy 对 uvicorn 无效**，必须 `--loop app.graph.checkpointer:uvicorn_loop_factory`（compose 里已带上）。同理，脚本里要用 `asyncio.Runner(loop_factory=compatible_loop_factory())`——`asyncio.run()` **不接受 factory**
 11. **连接池不像裸连接那样回退 IPv4/IPv6**：Windows 上 `localhost` 优先解析成 `::1`，而 PG 端口只听 IPv4；`psycopg.connect` 会回退，**`psycopg_pool` 不会** → 只试一次 `::1` 就报 `PoolTimeout`（看着像「PG 连不上」）。所有建池处先过 `app/dsn.py::normalize_dsn`（只动 host）
 12. **PG 的 BIGSERIAL 不会因为显式插 id 而前进**：迁移脚本显式插原 id 保持一致 → 序列必须 `setval(pg_get_serial_sequence('answers','id'), max(id), true)`，否则迁移后新场次 finalize 第一次插 answers 就撞主键
+13. **embedding 镜像删了 onnx/，但新版 huggingface_hub 会在 `HF_HUB_OFFLINE=1` 时把它当“快照不完整”拒绝启动**：`backend/embedding_service/app.py` 启动前只跳过 completeness 检查（服务只用 PyTorch 权重）；否则离线启动会报 `IncompleteSnapshotError`，联网又会卡在 hf-mirror
+14. **宿主机 pg_dump 版本高于 PG server 时，备份在容器里 restore 不了**：PG18 的 `pg_dump` 生成 archive 1.16，PG16 的 `pg_restore` 报 `unsupported version (1.16)`；本机 compose 用 `PG_DUMP_MODE=docker`（容器内 pg_dump），恢复也用容器内 pg_restore
 
 ## 开发纪律
 
