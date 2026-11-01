@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Final
 
 from app import llm
@@ -55,6 +56,11 @@ def prepare_text(text: str) -> str:
     if len(stripped) > MAX_RESUME_CHARS:
         raise ResumeError(f"简历文本过长（上限 {MAX_RESUME_CHARS} 字符），请精简后再试")
     return stripped
+
+
+def content_hash(text: str) -> str:
+    """简历内容缓存键：sha256(归一后的文本)。同一用户同内容复用解析结果。"""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 async def parse_resume(text: str) -> ResumeExtraction:

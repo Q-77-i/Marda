@@ -9,7 +9,7 @@ export default async function InterviewPage({
   const { id } = await params;
   return (
     <AuthGuard>
-      <InterviewClient interviewId={id} />
+      <InterviewClient key={id} interviewId={id} />
     </AuthGuard>
   );
 }

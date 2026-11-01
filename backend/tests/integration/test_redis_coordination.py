@@ -79,6 +79,15 @@ async def test_LLM槽是全局的(coordinators):
 
 
 @requires_redis
+async def test_tts票据跨worker共享(coordinators):
+    """票据在 A 签发、GET 落到 B——必须仍能取到（P4 2 worker 的真实故障形态）。"""
+    a, b = coordinators
+    ticket = f"t-{uuid.uuid4().hex[:8]}"
+    await a.put_tts_ticket(ticket, "你好", ttl_s=60)
+    assert await b.get_tts_ticket(ticket) == "你好"
+
+
+@requires_redis
 async def test_锁的TTL会自动过期(coordinators):
     """worker 崩了不能把场次永久卡死——锁靠 TTL 过期。"""
     import asyncio

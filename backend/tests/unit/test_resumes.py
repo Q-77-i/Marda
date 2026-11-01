@@ -42,6 +42,13 @@ def test_归一去掉首尾空白():
     assert resumes.prepare_text("  简历内容\n ") == "简历内容"
 
 
+def test_内容哈希_稳定且区分内容():
+    a = resumes.content_hash("同一份简历")
+    assert a == resumes.content_hash("同一份简历")
+    assert a != resumes.content_hash("另一份简历")
+    assert len(a) == 64  # sha256 hex
+
+
 def test_空文本报错并指路粘贴():
     with pytest.raises(resumes.ResumeError, match="粘贴文本"):
         resumes.prepare_text("   \n  ")

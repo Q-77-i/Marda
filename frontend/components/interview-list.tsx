@@ -33,6 +33,7 @@ import { StatusBanner } from "@/components/ui/status-banner";
 import { StatusDot } from "@/components/ui/status-dot";
 import { deleteInterview, listInterviews, type InterviewPage } from "@/lib/api";
 import { difficultyLabel, interviewTypeLabel, isBehavioral } from "@/lib/constants";
+import { clearSavedDraft } from "@/lib/draft";
 import { formatDuration, formatTime } from "@/lib/format";
 import {
   EMPTY_INTERVIEW_FILTERS,
@@ -127,6 +128,7 @@ export function InterviewList({
     setDeleteError(null);
     try {
       await deleteInterview(id);
+      clearSavedDraft(id);
       // 删到当页空且不在第一页 → 回退一页；否则原地重取（total/counts 都要刷新）
       const remaining = (data?.items.length ?? 1) - 1;
       const nextPage = pageAfterDelete(filters.page, remaining);

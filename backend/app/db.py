@@ -45,6 +45,7 @@ _STORE_METHODS = (
     "save_resume",
     "prune_unreferenced_resumes",
     "get_resume",
+    "find_resume_by_hash",
     "get_report",
 )
 
@@ -205,10 +206,16 @@ def save_resume(
     filename: str,
     text: str,
     parsed: dict[str, Any],
+    content_hash: str,
 ) -> None:
     """落一份简历：原文 + 结构化结果。"""
     _store(target).save_resume(
-        resume_id=resume_id, user_id=user_id, filename=filename, text=text, parsed=parsed
+        resume_id=resume_id,
+        user_id=user_id,
+        filename=filename,
+        text=text,
+        parsed=parsed,
+        content_hash=content_hash,
     )
 
 
@@ -220,6 +227,15 @@ def prune_unreferenced_resumes(target: Path | str, *, user_id: str) -> int:
 def get_resume(target: Path | str, *, user_id: str, resume_id: str) -> dict | None:
     """取本人简历；非本人 / 不存在一律 None。"""
     return _store(target).get_resume(user_id=user_id, resume_id=resume_id)
+
+
+def find_resume_by_hash(
+    target: Path | str, *, user_id: str, content_hash: str
+) -> dict | None:
+    """按用户 + 内容哈希取简历（同一用户同一份内容复用解析结果）。"""
+    return _store(target).find_resume_by_hash(
+        user_id=user_id, content_hash=content_hash
+    )
 
 
 def get_report(target: Path | str, interview_id: str) -> dict | None:

@@ -63,6 +63,25 @@ async def create_resume(
     except resumes.ResumeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    content_hash = resumes.content_hash(content)
+    db_target = get_settings().business_db
+    existing = await asyncio.to_thread(
+        db.find_resume_by_hash,
+        db_target,
+        user_id=user["id"],
+        content_hash=content_hash,
+    )
+    if existing is not None:
+        # 同一用户同一份内容：复用上次解析结果，不再调 LLM、不新建行。
+        parsed = existing.get("parsed") or {}
+        return {
+            "resume_id": existing["id"],
+            "filename": existing["filename"],
+            "projects": parsed.get("projects") or [],
+            "skills": parsed.get("skills") or [],
+            "chars": len(existing.get("text") or content),
+        }
+
     try:
         parsed = await resumes.parse_resume(content)
     except llm.LLMError as exc:
@@ -72,7 +91,6 @@ async def create_resume(
         ) from exc
 
     resume_id = f"r_{uuid.uuid4().hex[:12]}"
-    db_target = get_settings().business_db
     # 先清旧的孤儿（解析了却没建场次的），再存新的——顺序反了会把刚存的行也清掉
     await asyncio.to_thread(db.prune_unreferenced_resumes, db_target, user_id=user["id"])
     await asyncio.to_thread(
@@ -83,6 +101,7 @@ async def create_resume(
         filename=filename,
         text=content,
         parsed=parsed.model_dump(),
+        content_hash=content_hash,
     )
     return {
         "resume_id": resume_id,

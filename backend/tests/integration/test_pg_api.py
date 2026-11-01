@@ -96,6 +96,41 @@ def test_finalize在PG上是单事务(pg):
 
 
 @requires_pg
+def test_简历内容哈希在PG上可查(pg):
+    db.save_resume(
+        DSN,
+        resume_id="r1",
+        user_id="u1",
+        filename="简历.md",
+        text="同一份简历",
+        parsed={"projects": ["A"], "skills": []},
+        content_hash="hash-1",
+    )
+    row = db.find_resume_by_hash(DSN, user_id="u1", content_hash="hash-1")
+    assert row is not None and row["id"] == "r1"
+
+
+@requires_pg
+def test_旧简历行在PG启动时回填哈希(pg):
+    import hashlib
+
+    with pg._pool.connection() as conn:  # noqa: SLF001
+        conn.execute(
+            "INSERT INTO resumes (id, user_id, filename, text, parsed, created_at)"
+            " VALUES ('r_old','u1','简历.md','同一份简历','{}','2026-01-01')"
+        )
+        conn.commit()
+    pg.ensure_schema()
+    row = db.find_resume_by_hash(
+        DSN,
+        user_id="u1",
+        content_hash=hashlib.sha256("同一份简历".encode("utf-8")).hexdigest(),
+    )
+    assert row is not None and row["id"] == "r_old"
+
+
+
+@requires_pg
 def test_finalize在PG上幂等(pg):
     db.create_interview(
         DSN, interview_id="iv-1", position="Agent", question_count=5, user_id="u1"

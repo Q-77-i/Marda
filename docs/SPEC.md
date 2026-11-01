@@ -46,7 +46,7 @@ marda/
 │   ├── public/asr-worklet.js     # 录音采集 worklet（AudioWorklet 只能加载独立文件）
 │   ├── public/monaco/            # Monaco AMD 构建产物（dev/build 时从 node_modules 复制，gitignore）
 │   ├── scripts/                  # copy-excalidraw-assets / copy-monaco-assets（构建前复制静态资产）
-│   └── lib/                      # sse / stream-render / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice / asr-client / tts / resume / camera / camera-client / interview-room / coding / expression
+│   └── lib/                      # sse / stream-render / api / http / session / auth / bank / learn / profile / trace / recovery / download / format / constants / chart-tokens / voice / asr-client / tts / resume / camera / camera-client / interview-room / coding / expression / draft
 ├── data/
 │   ├── scripts/                  # 语料管道（bootstrap / mapping / bank / parse_md / parse_xmind / parse_open / combine / enrich / ingest）
 │   │                             #   + 运维脚本（apply_overrides / apply_difficulty / annotate_difficulty / enable_behavioral / check_redline）
@@ -721,7 +721,7 @@ backend/.venv/bin/python data/scripts/check_redline.py # 提交前语料红线�
 音频只是另一条**与面试引擎完全无关**的通道：录音 → 转写 → 文本照常走 `POST /interviews/{id}/messages`；面试官消息 → 播报。图 / 状态机 / 落库 / SSE 事件表**一条未动**。
 
 - **ASR**：`WS /api/asr` 中继到火山豆包流式识别（**v3 二进制协议**：4 字节头 + gzip JSON / gzip PCM；实现 `tools/asr.py`，帧格式已在真服务端验证）。鉴权 `X-Api-Key` = **豆包语音控制台**签发的 key（`VOLCANO_SPEECH_API_KEY`）——**与方舟 Ark key 不通用**（探针实测三种失败形态：401 Invalid X-Api-Key / 403 requested resource not granted / plan 路径 acquire 失败），错误文案按状态码给「该去哪解决」。音频 PCM 16k/16bit/单声道、每 100ms 一片；`partial` 是**累计文本**（前端按替换落框，不叠加）。
-- **TTS**：edge-tts（免费）；三档降级 = edge-tts → 浏览器 `speechSynthesis` → 纯文字。播报失败只提示一次，**不打断面试**；开麦即停播。
+- **TTS**：edge-tts（免费）；三档降级 = edge-tts → 浏览器 `speechSynthesis` → 纯文字。播报失败只提示一次，**不打断面试**；开麦即停播。**票据走协调层**（Redis 模式跨 worker 共享、memory 模式进程内，60s 过期）——P4 默认 2 worker，票据放模块级 dict 会「A 签发、B 收到 GET」直接 404。
 - **前端**：`lib/voice.ts`（降采样/Int16/WS 地址/落框规则，纯逻辑 vitest）+ `lib/asr-client.ts` + `public/asr-worklet.js`（攒 2048 帧再送主线程）+ `lib/tts.ts`。**转写进输入框、发送前可编辑**（ASR 错字不能让评分官背锅）；开录时已有的草稿是底稿，转写整体替换其后那段。
 - **红线**：音频**不落盘、不落库、不写日志**，内存转发即弃；转写文本与手打文字同等对待。
 - **连接口径**：容器/生产走同源（nginx 加 `Upgrade`/`Connection` 头转发）；`next dev` 的 rewrites **不代理 WS upgrade**（已查实）→ 3000 端口一律直连后端 8000（`lib/voice.ts::asrUrl` 纯函数钉死）。
@@ -746,10 +746,11 @@ backend/.venv/bin/python data/scripts/check_redline.py # 提交前语料红线�
 
 - **文件与粘贴文本走同一端点、同一抽取管线**：`.pdf` 走 pypdf、`.md/.txt` 按 UTF-8/GBK 解码；粘贴文本是**扫描版 / 图片版简历的兜底**（抽不出文字时明确报错并指路，绝不静默退化成「没传简历」）。抽取走 flash + 关 thinking + `json_object`，schema = `summary / projects / skills`。
 - **只回结构化结果、不回原文**：原文留在 `resumes.text` 供重新解析；响应无 `text` 字段（集成测试钉死）。
+- **内容缓存（2026-11）**：`resumes.content_hash = sha256(归一后文本)`，按 `(user_id, content_hash)` 查；同一用户同一份内容直接复用上次解析结果，**不调 LLM、不新建行**。缓存查询必须排在 `prune_unreferenced_resumes` 之前（否则刚存的行会被当孤儿清掉）；不同内容 / 不同用户分别解析。启动时给旧行回填 hash。缓存跟随简历行生命周期（引用计数清理）：引用它的场次全部删除后缓存也消失，下次同份简历重新解析。
 - **注入 = 预填 `candidate_profile`**（唯一候选人插槽，三处出题模板都在消费它）→ **出题侧零代码改动就变具体**；`resume_id` 一并进 state 与 `interviews` 行。
 - **图内三处「有则追加、无则逐字一致」**（同款零回归模式；集成测试**逐字**钉死无简历路径）：`intro_node` 开场白追加「已看过简历」（只提一句、不复述）；`profile_node` 追加【已提交简历】块要求**合并**（简历为骨架、自我介绍补充与更新，冲突以当场所说为准）；`ask_node` 在口吻层与项目生成题上追加「**点名**其项目 / 技术点、几道项目题覆盖不同项目」。
 - **归属与生命周期**：他人简历一律 404；简历是用户级资产、同一份可跑多场，**按引用计数清理**——删场次时无引用才销毁；解析了没建场次的孤儿在下一次解析时清掉（已知边界：多标签同时开着表单时，一边解析会清掉另一边尚未使用的简历）。
-- **如实交代**（前端）：表单写明「简历会发送给模型解析，仅用于本场出题与评分；不解析也可以开始面试」。
+- **如实交代**（前端）：表单写明「简历会发送给模型解析；原文与解析结果会保留在服务端以便下次复用，只用于出题与评分；不解析也可以开始面试」。
 
 ### 7.4 MCP 通道：题库查询 server
 
@@ -814,8 +815,10 @@ answers(id INTEGER PK AUTOINCREMENT, interview_id TEXT, question_id TEXT,
   domain TEXT, difficulty TEXT, candidate_answer TEXT, followup_count INT,
   skipped INT DEFAULT 0, score_json TEXT, created_at TEXT)
 reports(id TEXT PK, interview_id TEXT, payload JSON, created_at TEXT)
-resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created_at TEXT)
+resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON,
+  content_hash TEXT, created_at TEXT)
   -- 简历原文 + 结构化抽取结果：接口只回结构化结果、不回原文，原文留库供重新解析
+  -- content_hash = sha256(归一后文本)，(user_id, content_hash) 索引，同内容复用解析结果
 ```
 
 面试过程以 **checkpointer state 为权威**，answers/reports 为落库产物（结束后一次写入）。
@@ -847,7 +850,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | 全局导航 | **左侧导航栏**：宽屏 236px、1280px 以下 74px 图标栏、移动端顶部图标条；顶层是平级工具页。面试页使用独立的面试间外壳，报告 / 回放页仍走左栏。未上线页不发出会 404 的链接 |
 | 登录与守卫 | 登录页为深色主张面板 + 纸面表单分屏，登录 / 注册同页 tab；`lib/session.ts` 管 token（localStorage 优先 → sessionStorage 降级 → 都禁用则明确提示，不静默失败）；`lib/http.ts` 注入 Bearer 并统一 401 处置；`auth-guard.tsx` 判断完成前先渲染载入态，不闪受保护内容。**401 默认直跳登录页，唯独面试页弹确认再跳**（答到一半被踢走体感太差）；登录接口自身的 401/409 只当表单错误；登录成功统一 `replace("/")` |
 | 仪表盘（创建） | 方向固定 + **面试类型** + 题量 5/10/15 + **难度**（自适应 / L1 / L2 / L3）+ **简历（可选，默认收起）**：文件（.pdf/.md/.txt，≤2MB）或粘贴文本。**选行为面后隐藏难度选择器与容量校验**（容量按「难度 × 域配额」算，与行为面题源无关），题量只给 5/10；表单用分段控件，主操作「开始面试」保持在第一屏 |
-| 仪表盘（简历区） | 「解析简历」→ 摘要条（「已读到 N 段项目经历 · M 项技能 · 约 K 字」，**解析错当场看得见**，可移除重传；解析态与输入态互斥）+ 一行如实交代「会发送给模型解析，仅用于本场出题与评分」 |
+| 仪表盘（简历区） | 「解析简历」→ 摘要条（「已读到 N 段项目经历 · M 项技能 · 约 K 字」，**解析错当场看得见**，可移除重传；解析态与输入态互斥）+ 一行如实交代「会发送给模型解析；原文与解析结果会保留在服务端以便下次复用，只用于出题与评分」 |
 | 仪表盘（历史） | 默认只列最近 5 场（服务端 pageSize=5），右上「全部场次」进面试记录页；进入报告；**每条带物理删除按钮**（确认弹窗后调 DELETE）；行为面场次挂类型徽标且不显示难度；**统计条读接口 counts（全量状态分布），不从列表行里数**；下方给能力快照与按最近报告生成的「下一步」 |
 | 面试记录页 | 全量场次列表：复用仪表盘同一列表组件，服务端分页 + 过滤（状态 / 类型 / 时间），工具条 +「共 N 场 / 第 x / y 页」；改过滤回第一页、删到空页回退一页、空结果与「还没有记录」文案分开；行内续面 / 报告 / 删除口径不变；页头由页面提供 |
 | 题库页 | **筛选 / 结果 / 详情三栏**：搜索框（关键词走混合检索，提交后与筛选叠加）+ 域列表 + 难度分段 + 厂商/面次下拉；结果行选中后右侧看详情，窄屏改为行内展开。详情含参考答案 / 关键点 / **来源合规四要素**（主源标注、`原文` 外链 `rel=noreferrer`）+ 分页。卡头按模式切换文案：「按相关性排序 · 最多 20 条」（search，无 total）vs「共 N 题 · 第 x/y 页」（browse）。**筛选或搜索任一项变更即回第一页**（判据在 `lib/bank.ts` 的 `withFilter`，vitest 钉死） |
@@ -862,7 +865,7 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 
 - **SSE 走 POST**：`EventSource` 只支持 GET → `lib/sse.ts` 用 `fetch` + 手动分帧，兼容心跳注释与中文跨 chunk 截断。
 - **流式渲染 + 打字机兜底**（`lib/stream-render.ts` 的 `StreamBuffer`）：`delta_start` 开气泡 → `delta_chunk` 追加给最近一条未结算消息 → `delta` 按序 FIFO **用终稿替换**累积文本（服务端会 strip 两侧空白，分片拼接可能与终稿差几个不可见字符，以终稿为准、前端不二次拼接）。旧打字机（`TypewriterQueue`）只剩两条路：无分片的消息走它逐字吐、未注册事件名静默丢弃。**未结算气泡在错误或流结束时收走**（没终稿 = 从未落 checkpoint，留着就是「看得见、刷新就没」的假消息）。
-- **刷新恢复**：刷新后从 checkpoint 重建消息列表；网络失败 / HTTP 4xx / 流内 `error` 都转中文文案 + 重试按钮，**判据由服务端 `stalled` 给**（`lib/recovery.ts` 纯函数分两路），重试不重复插入消息。已结束场次进只读回放（隐藏输入框、顶部操作区换「查看报告」，报告页与回放页互链）。
+- **刷新恢复**：刷新后从 checkpoint 重建消息列表；网络失败 / HTTP 4xx / 流内 `error` 都转中文文案 + 重试按钮，**判据由服务端 `stalled` 给**（`lib/recovery.ts` 纯函数分两路），重试不重复插入消息。已结束场次进只读回放（隐藏输入框、顶部操作区换「查看报告」，报告页与回放页互链）。**输入框草稿**按场次存 localStorage（`marda.draft.{interviewId}`，只存文本、不落服务端），会话加载成功后恢复；发送成功、场次结束 / 只读、删除场次时清除；存储不可用时静默降级。
 - **输入体验**：Enter 发送、Shift+Enter 换行（输入法「上屏回车」不误发送）；**随内容自增长、初始 2 行、封顶 6 行**（`fitInput()` 读 CSS 的 `maxHeight` 当唯一上限来源，超了框内滚动）。
 - **语音作答**：点击开始、再点结束；录音期间**禁用发送与结束面试**、开麦即停播。转写实时落输入框、**不自动发送**；一个字都没转出来给「没有听清」提示。**语音播报**为面试间顶部开关（默认关、localStorage 记忆），开启后终稿自动播报、先播当前这道题；播报失败只提示一次。**权限被拒 / 服务不可用一律降级回文字**。
 
@@ -901,12 +904,13 @@ resumes(id TEXT PK, user_id TEXT, filename TEXT, text TEXT, parsed JSON, created
 | API | `test_api`（httpx）：SSE 事件序、报告、历史、回放（未结束可查 / 他人场次 404 / 未登录 401）、**重发不重复计分**（图停在失败节点，resume = 重跑该节点） |
 | 可观测 | `test_observability`（注入 InMemorySpanExporter 离线跑）：一场一 trace（多轮 resume 同 trace_id）、generation 归父、无 key 零开销 |
 | 数据与语料 | `test_parse_md` / `test_parse_open` / `test_ingest_sqlite`：老库迁移幂等、多源明细、全量同步删除、**私有题不被管道重跑删除** |
-| 前端（vitest） | 只覆盖 lib 纯逻辑：SSE 分帧、打字机 FIFO、恢复两路决策、题库筛选分页与容量判据、档案整形、文件名与展示格式化、代码工作台请求体、表达指标（阈值/停顿/多段累计/整数校验） |
+| 前端（vitest） | 只覆盖 lib 纯逻辑：SSE 分帧、打字机 FIFO、恢复两路决策、题库筛选分页与容量判据、档案整形、文件名与展示格式化、代码工作台请求体、表达指标（阈值/停顿/多段累计/整数校验）、草稿存储（键/空值/异常降级） |
 | 多模态扩展（M13–M16） | 白板附件规则与报告确定性补回；`/api/coding/*`（安全投影 / 422 / 503 / 追问）；`speech` 整数校验与报告汇总；PDF 表达复盘节。浏览器探针：Monaco 零 CDN + 18 个同源 `/monaco/vs` 请求；合成麦克风 → `/messages` 载荷含 `speech`（实测 `pause_count=1`、整数计数） |
+| 简历缓存 | 同用户同内容命中（不调 LLM）/ 不同内容与用户分别解析 / 旧库 hash 回填 / PG 同口径 |
 | 评测口径 | 指标纯函数（退化输入返回 0 而不抛错）、golden 校验（同组题干必须一致、维度键与类型绑定）、**评测消息与生产节点逐字一致** |
 | 验收清单 | PRD §7 八条（第 8 条 P95 在开发环境经 nginx 实测）；FR-21「按场次可查 trace」= smoke 从云端读回核对，不靠肉眼看控制台 |
 
-**跑法**：`cd backend && uv run pytest -q`（本机 975 passed / 17 skipped，未配 PG/Redis 时跳过集成用例）· `cd frontend && pnpm test`（343 passed）+ `pnpm lint && pnpm build`。
+**跑法**：`cd backend && uv run pytest -q`（本机 986 passed / 20 skipped，未配 PG/Redis 时跳过集成用例）· `cd frontend && pnpm test`（349 passed）+ `pnpm lint && pnpm build`。
 
 真链路 smoke 与离线评测需要真 key / Qdrant，手动跑：
 
@@ -956,7 +960,7 @@ P4 集成（真 PG / Redis）的建库与环境变量见 [P4-生产化 §7](P4-�
 
 | 日期 | 会话 | 本文档改动 |
 | --- | --- | --- |
-| 2026-11-01 | 文档精炼 | §2 路由与脚本口径 + 系统拓扑（从 README 移入） · §6 管道命令 · §7.4 MCP 启动命令 · §10 计数与常用命令 |
+| 2026-11-01 | 文档精炼 + 体验补强 | §2 路由与脚本口径 + 系统拓扑（从 README 移入） · §6 管道命令 · §7.1 TTS 票据跨 worker · §7.3 简历内容缓存 · §8 resumes.content_hash · §9.2 草稿刷新恢复 · §10 计数与常用命令 |
 | 2026-10-22 | 刷新体验补强 | §9.3 摄像头不在加载时自动取流；§9.5 工作台面板/代码快照/白板场景刷新恢复；§10 计数 |
 | 2026-10-21 | 多模态扩展（M13–M16） | §2 树补 coding / speech / 前端组件 · §3 调用点 10 个 · §4.1 State 补 `speech` / `current_speech` · §4.6 报告补逐题 `speech` 与顶层 `expression` · §7 messages 补 `speech`、新增 §7.5 代码工作台与 §7.6 表达复盘、§7.2 补白板结构点评 · §9.5 工作台与报告 UI · §10 计数与多模态验证 · §11 风险 19 |
 | 2026-10-21 | 界面重塑（P3-UI） | §9 前端设计：左栏工作台 / 面试间明暗双主题 / 题库三栏 / 设计令牌与共享件 / 窄屏导航；§9.1 页面要点同步 |

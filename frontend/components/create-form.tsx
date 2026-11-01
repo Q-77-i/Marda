@@ -282,7 +282,7 @@ export function CreateForm() {
                 size="icon-sm"
                 disabled={busy}
                 onClick={clearResume}
-                aria-label="移除已解析的简历"
+                aria-label="本次不使用已解析的简历"
               >
                 <X className="size-3.5" />
               </Button>

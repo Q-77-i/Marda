@@ -11,10 +11,10 @@ export const RESUME_SUFFIX_HINT = "支持 .pdf / .md / .txt，≤2MB";
 
 /**
  * 如实交代（用户口径：涉及个人数据的处理不许用户猜）：
- * 简历原文会发给模型解析、只用于本场出题与评分；不解析也能开始面试。
+ * 简历原文会发给模型解析；解析结果保留以便下次复用，只用于出题与评分；不解析也能开始面试。
  */
 export const RESUME_DISCLOSURE =
-  "简历会发送给模型解析，仅用于本场出题与评分；不解析也可以开始面试。";
+  "简历会发送给模型解析；原文与解析结果会保留在服务端以便下次复用，只用于出题与评分；不解析也可以开始面试。";
 
 export const RESUME_TITLE = "简历（可选，用于把项目深挖题与追问变得具体）";
 export const RESUME_PASTE_PLACEHOLDER =

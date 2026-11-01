@@ -107,6 +107,42 @@ async def test_粘贴文本走同一端点(client):
     assert r.json()["chars"] == len("我是张三，做过检索系统。")
 
 
+def _resume_calls(fake_llm) -> int:
+    return sum(1 for call in fake_llm.calls if "简历解析器" in call["system"])
+
+
+async def test_同一用户同一内容命中缓存_不重复解析(client, fake_llm):
+    first = await _upload(client)
+    calls = _resume_calls(fake_llm)
+
+    second = await _upload(client)
+
+    assert second["resume_id"] == first["resume_id"], "同一份内容应复用同一行"
+    assert second["projects"] == first["projects"]
+    assert second["chars"] == first["chars"]
+    assert _resume_calls(fake_llm) == calls, "命中缓存不能再调简历解析 LLM"
+
+
+async def test_同一内容不同文件名_仍命中缓存(client):
+    first = await _upload(client, filename="简历.md")
+    second = await _upload(client, filename="换个名字.md")
+
+    assert second["resume_id"] == first["resume_id"]
+    assert second["filename"] == "简历.md", "命中缓存返回原行的来源文件名"
+
+
+async def test_不同内容与不同用户_分别重新解析(client, fake_llm, login_as):
+    first = await _upload(client, content="# 简历 A\n内容 A")
+    second = await _upload(client, content="# 简历 B\n内容 B")
+    assert second["resume_id"] != first["resume_id"]
+
+    other = await login_as("bob")
+    third = await _upload(other, content="# 简历 A\n内容 A")
+    assert third["resume_id"] != first["resume_id"], "缓存按用户隔离"
+
+    assert _resume_calls(fake_llm) == 3
+
+
 async def test_校验_二选一_后缀_大小(client):
     none = await client.post("/api/resumes")
     assert none.status_code == 400 and "二选一" in none.json()["detail"]

@@ -16,6 +16,7 @@ PostgreSQL 侧是 app/db_postgres.py——**两份实现的函数签名与语义
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from contextlib import closing
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS resumes (
     filename TEXT,
     text TEXT,
     parsed JSON,
+    content_hash TEXT,
     created_at TEXT
 );
 """
@@ -140,6 +142,24 @@ class SqliteStore:
             question_columns = {row["name"] for row in conn.execute("PRAGMA table_info(questions)")}
             if "user_id" not in question_columns:
                 conn.execute("ALTER TABLE questions ADD COLUMN user_id TEXT")
+
+        # 简历内容缓存（2026-11）：老库补列 + 回填 hash，已有简历也能按内容命中。
+        if self._table_exists(conn, "resumes"):
+            resume_columns = {row["name"] for row in conn.execute("PRAGMA table_info(resumes)")}
+            if "content_hash" not in resume_columns:
+                conn.execute("ALTER TABLE resumes ADD COLUMN content_hash TEXT")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS resumes_user_hash_idx"
+                " ON resumes (user_id, content_hash)"
+            )
+            for row in conn.execute(
+                "SELECT id, text FROM resumes WHERE content_hash IS NULL AND text IS NOT NULL"
+            ).fetchall():
+                conn.execute(
+                    "UPDATE resumes SET content_hash=? WHERE id=?",
+                    (hashlib.sha256(row["text"].encode("utf-8")).hexdigest(), row["id"]),
+                )
+        conn.commit()
 
     @staticmethod
     def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
@@ -483,18 +503,20 @@ class SqliteStore:
         filename: str,
         text: str,
         parsed: dict[str, Any],
+        content_hash: str,
     ) -> None:
         """落一份简历（P2-M11）：原文 + 结构化结果。parsed 存 JSON 文本，读取侧解析。"""
         self._write(
             lambda conn: conn.execute(
-                "INSERT INTO resumes (id, user_id, filename, text, parsed, created_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
+                "INSERT INTO resumes (id, user_id, filename, text, parsed, content_hash, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     resume_id,
                     user_id,
                     filename,
                     text,
                     json.dumps(parsed, ensure_ascii=False),
+                    content_hash,
                     self.clock(),
                 ),
             )
@@ -534,6 +556,19 @@ class SqliteStore:
         item = dict(row)
         item["parsed"] = json.loads(item["parsed"]) if item["parsed"] else {}
         return item
+
+    def find_resume_by_hash(self, *, user_id: str, content_hash: str) -> dict | None:
+        """按用户 + 内容哈希取简历（同内容复用，不再调 LLM）。"""
+        row = self._read(
+            lambda conn: conn.execute(
+                "SELECT id FROM resumes WHERE user_id=? AND content_hash=?"
+                " ORDER BY created_at DESC LIMIT 1",
+                (user_id, content_hash),
+            ).fetchone()
+        )
+        if row is None:
+            return None
+        return self.get_resume(user_id=user_id, resume_id=row["id"])
 
     def get_report(self, interview_id: str) -> dict | None:
         row = self._read(

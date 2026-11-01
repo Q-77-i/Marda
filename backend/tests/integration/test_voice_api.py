@@ -177,6 +177,45 @@ async def test_tts_ticket_未登录_401(anon_client):
     assert r.status_code == 401
 
 
+class _SharedTtsStore:
+    def __init__(self) -> None:
+        self.tickets: dict[str, str] = {}
+
+
+class _TtsOnlyCoordinator:
+    """只实现票据方法的协调器替身：两个实例共享 store = 两个 worker 共享 Redis。"""
+
+    def __init__(self, store: _SharedTtsStore) -> None:
+        self.store = store
+
+    async def put_tts_ticket(self, ticket: str, text: str, *, ttl_s: float) -> None:
+        self.store.tickets[ticket] = text
+
+    async def get_tts_ticket(self, ticket: str) -> str | None:
+        return self.store.tickets.get(ticket)
+
+
+async def test_tts票据跨worker读取_路由必须走协调层(monkeypatch, install_tts, client):
+    store = _SharedTtsStore()
+    worker_a = _TtsOnlyCoordinator(store)
+    worker_b = _TtsOnlyCoordinator(store)
+
+    monkeypatch.setattr(
+        voice_api.coordination, "get_coordinator", lambda settings=None: worker_a
+    )
+    r = await client.post("/api/tts/ticket", json={"text": " 你好 "})
+    assert r.status_code == 200
+    ticket = r.json()["ticket"]
+
+    # GET 落到另一个 worker：票据必须还能取到，否则真实 2 worker 下就是 404
+    monkeypatch.setattr(
+        voice_api.coordination, "get_coordinator", lambda settings=None: worker_b
+    )
+    r = await client.get(f"/api/tts/stream/{ticket}")
+    assert r.status_code == 200
+    assert r.content == b"ID3\x01\x02\x03"
+
+
 # ---------- 转写智能校对 ----------
 
 

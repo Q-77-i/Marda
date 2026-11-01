@@ -20,14 +20,13 @@ import asyncio
 import contextlib
 import json
 import secrets
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app import db, security
+from app import coordination, db, security
 from app.api.auth import get_current_user
 from app.config import get_settings
 from app.tools import asr, transcript, tts
@@ -89,43 +88,33 @@ async def synthesize_speech(req: TtsRequest, user: dict = Depends(get_current_us
 
 
 # ---- 流式播报票据（P2-M13 追加）----
-# <audio src> 不能带 Bearer，票据就是这次播放的鉴权：POST（带 auth）签发、GET 单次消费。
-# 只在 api 进程内存里（demo 单进程，与 M9 的闸门/熔断同一口径）；60s 过期，避免堆积。
+# <audio src> 不能带 Bearer，票据就是这次播放的鉴权：POST（带 auth）签发、GET 读取。
+# **票据必须走协调层**：P4 默认 2 个 uvicorn worker，进程内 dict 会让「A 签发、B 收到
+# GET」直接 404（实测同一票据 404 → 200）。Redis 模式跨 worker 共享；memory 模式
+# 仍是进程内（单进程 demo / 单测）。60s 过期，避免堆积。
 TTS_TICKET_TTL = 60.0
-_TTS_TICKETS: dict[str, tuple[str, float]] = {}
-
-
-def _prune_tts_tickets(now: float) -> None:
-    for ticket, (_, expires) in list(_TTS_TICKETS.items()):
-        if expires < now:
-            _TTS_TICKETS.pop(ticket, None)
 
 
 @router.post("/tts/ticket")
 async def create_tts_ticket(
     req: TtsRequest, user: dict = Depends(get_current_user)
 ) -> dict[str, str]:
-    """签发一次性播报票据（带 Bearer）；真正的合成在 GET 时才流式开始。"""
+    """签发播报票据（带 Bearer）；真正的合成在 GET 时才流式开始。"""
     text = tts.normalize_text(req.text)
     if not text:
         raise HTTPException(status_code=422, detail="没有可播报的文本")
-    now = time.time()
-    _prune_tts_tickets(now)
     ticket = secrets.token_urlsafe(18)
-    _TTS_TICKETS[ticket] = (text, now + TTS_TICKET_TTL)
+    await coordination.get_coordinator().put_tts_ticket(
+        ticket, text, ttl_s=TTS_TICKET_TTL
+    )
     return {"ticket": ticket}
 
 
 @router.get("/tts/stream/{ticket}")
 async def stream_speech(ticket: str) -> StreamingResponse:
     """票据 → 流式 MP3：`<audio>` 的预加载与播放可能各请求一次，故 TTL 内可重复使用。"""
-    now = time.time()
-    _prune_tts_tickets(now)
-    item = _TTS_TICKETS.get(ticket)
-    if item is None:
-        raise HTTPException(status_code=404, detail="语音播报链接已失效，请重试")
-    text, expires = item
-    if expires < now:
+    text = await coordination.get_coordinator().get_tts_ticket(ticket)
+    if text is None:
         raise HTTPException(status_code=404, detail="语音播报链接已失效，请重试")
 
     stream = tts.synthesize(text, voice=get_settings().tts_voice)

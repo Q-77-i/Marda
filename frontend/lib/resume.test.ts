@@ -42,8 +42,11 @@ describe("resumeDigest（解析结果摘要，不含原文）", () => {
 });
 
 describe("如实交代", () => {
-  it("写明会发给模型、用途、以及可以不用", () => {
+  it("写明会发给模型、会保留复用、用途、以及可以不用", () => {
     expect(RESUME_DISCLOSURE).toContain("发送给模型");
+    expect(RESUME_DISCLOSURE).toContain("原文与解析结果");
+    expect(RESUME_DISCLOSURE).toContain("保留在服务端以便下次复用");
+    expect(RESUME_DISCLOSURE).toContain("出题与评分");
     expect(RESUME_DISCLOSURE).toContain("不解析也可以");
   });
 });

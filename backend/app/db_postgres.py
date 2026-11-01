@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from collections.abc import Callable
@@ -77,6 +78,7 @@ CREATE TABLE IF NOT EXISTS resumes (
     filename TEXT,
     text TEXT,
     parsed TEXT,
+    content_hash TEXT,
     created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS interviews_user_id_idx ON interviews (user_id);
@@ -90,6 +92,7 @@ MIGRATIONS = [
     "ALTER TABLE interviews ADD COLUMN IF NOT EXISTS user_id TEXT",
     "ALTER TABLE interviews ADD COLUMN IF NOT EXISTS interview_type TEXT",
     "ALTER TABLE interviews ADD COLUMN IF NOT EXISTS resume_id TEXT",
+    "ALTER TABLE resumes ADD COLUMN IF NOT EXISTS content_hash TEXT",
 ]
 
 
@@ -146,6 +149,19 @@ class PostgresStore:
             conn.execute(SCHEMA)
             for stmt in MIGRATIONS:
                 conn.execute(stmt)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS resumes_user_hash_idx"
+                " ON resumes (user_id, content_hash)"
+            )
+            # 简历内容缓存（2026-11）：老行回填 hash，已有简历也能按内容命中。
+            rows = conn.execute(
+                "SELECT id, text FROM resumes WHERE content_hash IS NULL AND text IS NOT NULL"
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "UPDATE resumes SET content_hash=%s WHERE id=%s",
+                    (hashlib.sha256(row["text"].encode("utf-8")).hexdigest(), row["id"]),
+                )
             conn.commit()
 
     # ---------- users ----------
@@ -424,17 +440,19 @@ class PostgresStore:
         filename: str,
         text: str,
         parsed: dict[str, Any],
+        content_hash: str,
     ) -> None:
         with self._pool.connection() as conn:
             conn.execute(
-                "INSERT INTO resumes (id, user_id, filename, text, parsed, created_at)"
-                " VALUES (%s, %s, %s, %s, %s, %s)",
+                "INSERT INTO resumes (id, user_id, filename, text, parsed, content_hash, created_at)"
+                " VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     resume_id,
                     user_id,
                     filename,
                     text,
                     json.dumps(parsed, ensure_ascii=False),
+                    content_hash,
                     self.clock(),
                 ),
             )
@@ -461,6 +479,18 @@ class PostgresStore:
         item = dict(row)
         item["parsed"] = json.loads(item["parsed"]) if item["parsed"] else {}
         return item
+
+    def find_resume_by_hash(self, *, user_id: str, content_hash: str) -> dict | None:
+        """按用户 + 内容哈希取简历（同内容复用，不再调 LLM）。"""
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT id FROM resumes WHERE user_id=%s AND content_hash=%s"
+                " ORDER BY created_at DESC LIMIT 1",
+                (user_id, content_hash),
+            ).fetchone()
+        if row is None:
+            return None
+        return self.get_resume(user_id=user_id, resume_id=row["id"])
 
     def get_report(self, interview_id: str) -> dict | None:
         with self._pool.connection() as conn:

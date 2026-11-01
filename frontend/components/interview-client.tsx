@@ -36,6 +36,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { clearSavedDraft, readSavedDraft, writeSavedDraft } from "@/lib/draft";
 import {
   correctTranscript,
   dispatcher,
@@ -128,6 +129,8 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
   const [degraded, setDegraded] = useState<string[]>([]);
   const [pending, setPending] = useState<PendingTurn | null>(null);
   const [draft, setDraft] = useState("");
+  /* 草稿只在会话加载完成后恢复；hydrated 之前不写 localStorage，避免把刚恢复的草稿清掉 */
+  const [draftHydrated, setDraftHydrated] = useState(false);
   /* 语音通道（P2-M5 FR-24）：默认关，一键开启；记忆在 localStorage（不可用时仅本次有效） */
   const [voiceMode, setVoiceMode] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -426,6 +429,32 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     };
   }, [interviewId, applySession]);
 
+  /* 草稿恢复（2026-11）：会话加载成功后再恢复；只读回放 / 加载失败不恢复。 */
+  useEffect(() => {
+    if (loading || draftHydrated) return;
+    if (readonly || error) {
+      draftRef.current = "";
+      setDraft("");
+      setDraftHydrated(true);
+      clearSavedDraft(interviewId);
+      return;
+    }
+    const saved = readSavedDraft(interviewId);
+    if (saved !== null) {
+      draftRef.current = saved;
+      setDraft(saved);
+    }
+    setDraftHydrated(true);
+  }, [loading, readonly, error, interviewId, draftHydrated]);
+
+  /* 场次结束 / 只读回放：输入框不再能作答，草稿也不该留在浏览器里。 */
+  useEffect(() => {
+    if (!readonly) return;
+    draftRef.current = "";
+    setDraft("");
+    clearSavedDraft(interviewId);
+  }, [readonly, interviewId]);
+
   /* 吐字循环：busy 期间运行，队列排空且流已关闭时收尾 */
   useEffect(() => {
     if (!busy) return;
@@ -646,10 +675,24 @@ export function InterviewClient({ interviewId }: { interviewId: string }) {
     attachmentsRef.current = attachments;
   }, [attachments]);
 
-  /* 输入框镜像：智能校对回来时判断「用户有没有在等待期间改过/发出去」 */
+  /* 输入框镜像 + 草稿持久化：智能校对回来时判断「用户有没有在等待期间改过/发出去」；
+     会话加载完成前不写，避免把刚恢复的草稿清掉。 */
   useEffect(() => {
     draftRef.current = draft;
-  }, [draft]);
+    if (!draftHydrated) return;
+    writeSavedDraft(interviewId, draft);
+  }, [draft, draftHydrated, interviewId]);
+
+  /* 刷新 / 关页前的兜底：最后一次 state 更新还没落盘时也不丢草稿。 */
+  useEffect(() => {
+    if (!draftHydrated) return;
+    const flush = () => writeSavedDraft(interviewId, draftRef.current);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [draftHydrated, interviewId]);
 
   /* 智能校对需要当前题目做语境（刷新/回放时最后一条面试官消息就是当前题） */
   useEffect(() => {

@@ -88,7 +88,7 @@
 1. **压缩 serde 的 type 要带后缀**：checkpoint 的 type 存在库的 `type` 列里，写成 `msgpack+zlib` 之后**旧 `msgpack` 行必须照常可读**——不兼容等于老场次全废，比膨胀更糟。`JsonPlusSerializer.loads_typed` 收的是**元组** `(type, payload)`，不是一个字符串
 2. **PG saver 的表结构与 SQLite 版不同**：`checkpoints.checkpoint` 是 **JSONB**（通道值另存 `checkpoint_blobs` BYTEA，按 version 索引），删快照时要连**没人引用的孤儿 blob** 一起清，但只删「没有任何现存快照引用」的——删多了会读不出状态
 3. **`langgraph-checkpoint-postgres` 的版本要对齐**：`langgraph-checkpoint 4.2.0` 配 `3.1.0`（3.2.0 起要求 `>=4.3.0`，会把 `langgraph 1.2.11` 顶掉）
-4. **Redis 的三种用途失败语义各不相同**：会话锁 **fail closed**（503，宁可拒绝也不能两 worker 同跑一场）、限流 **fail open**（放行，限流是保护不是正确性）、LLM 槽**回退进程内闸门**（上游保护不能因为 Redis 挂了就没了）
+4. **Redis 的四种用途失败语义各不相同**：会话锁 **fail closed**（503，宁可拒绝也不能两 worker 同跑一场）、限流 **fail open**（放行，限流是保护不是正确性）、LLM 槽**回退进程内闸门**（上游保护不能因为 Redis 挂了就没了）、TTS 票据**回退进程内**（播报是可选能力，不阻断面试）
 5. **Redis 模式下不要再叠进程内 Semaphore**：全局槽就是闸门，两层叠加等于「上限 × worker 数」，「全局上限」这个语义直接废掉。`UpstreamGuard` 因此多了一个 `acquire_breaker()`（只走断路器不占槽）
 6. **会话锁的 TTL 要大于一轮最长耗时**（默认 600s）：worker 崩了靠 TTL 自动过期，不永久卡死一场面试；释放锁要用 **Lua 比对 token 再删**（A 的锁过期后 B 拿到锁，A 来释放不能把 B 的删了）
 7. **锁要在路由层拿、在流的 finally 里放**：拿不到锁要能在**开流之前**返回 409（流开始后就只能发 SSE error 事件了）；开场是「先锁后写库」，否则会留下「有行没流程」的孤儿场次
@@ -99,12 +99,14 @@
 12. **PG 的 BIGSERIAL 不会因为显式插 id 而前进**：迁移脚本显式插原 id 保持一致 → 序列必须 `setval(pg_get_serial_sequence('answers','id'), max(id), true)`，否则迁移后新场次 finalize 第一次插 answers 就撞主键
 13. **embedding 镜像删了 onnx/，但新版 huggingface_hub 会在 `HF_HUB_OFFLINE=1` 时把它当“快照不完整”拒绝启动**：`backend/embedding_service/app.py` 启动前只跳过 completeness 检查（服务只用 PyTorch 权重）；否则离线启动会报 `IncompleteSnapshotError`，联网又会卡在 hf-mirror
 14. **宿主机 pg_dump 版本高于 PG server 时，备份在容器里 restore 不了**：PG18 的 `pg_dump` 生成 archive 1.16，PG16 的 `pg_restore` 报 `unsupported version (1.16)`；本机 compose 用 `PG_DUMP_MODE=docker`（容器内 pg_dump），恢复也用容器内 pg_restore
+15. **TTS 票据必须跨 worker 共享**：`POST /api/tts/ticket` 签发票据、`GET /api/tts/stream/{ticket}` 读取；票据放模块级 dict 时，2 worker 下 A 签发、B 收到 GET 就 404（实测同一票据 404 → 200，重试落到 A 才成功）。票据走 `Coordinator`（Redis 模式共享、memory 模式进程内），60s 过期；不要退回进程内 dict
 
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/SPEC.md)
 - TDD：追问决策、评分聚合、语料解析等确定性逻辑先写测试
 - **单一来源**：凡是"两处算同一个东西"，抽成一份实现并用测试钉死——总分口径、检索 doc 文本、评测与生产共用的评分 prompt、决策与原因同源的 `explain_decision`。同一批数字两个来源，迟早不一致
+- **简历缓存先查后清**：同一用户同一份内容按 sha256 复用解析结果；缓存查询必须排在 `prune_unreferenced_resumes` 之前，否则刚存的行会被当孤儿清掉。输入框草稿只存浏览器 localStorage，不落服务端
 - **机械判据优先**：能用断言证明的不靠肉眼——图内标识串证明"模型读到了图"、转写重合率证明"语音进了引擎"、CDP Network 域零请求证明"帧没上传"、像素采样证明暗色主题
 - **诚实的边界**：没覆盖的写"未覆盖"，降级如实标注而不是静默掉质量；"缺数据"与"0 分"必须分得开
 - 概率性断言与确定性断言长得一样：改了会影响某条断言前提的行为，回头看它是否还成立——**绿一次说明不了问题**

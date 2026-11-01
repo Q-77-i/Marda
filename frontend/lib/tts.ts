@@ -264,7 +264,7 @@ export class Speaker {
       });
   }
 
-  /** 播放失败先换一张新票据重试一次（API 重启/票据过期/预加载吃票），再降级系统音。 */
+  /** 播放失败先换一张新票据重试一次（API 重启 / 票据过期 / worker 落错），再降级系统音。 */
   private async recoverSegment(text: string, retried: boolean): Promise<void> {
     const generation = this.generation;
     if (!retried) {

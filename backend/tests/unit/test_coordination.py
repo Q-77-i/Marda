@@ -64,6 +64,20 @@ async def test_限流按用户隔离(coordinator):
     assert await coordinator.allow_request("u2", limit=1) is True
 
 
+async def test_tts票据写入后可读(coordinator):
+    await coordinator.put_tts_ticket("t-1", "你好", ttl_s=60)
+    assert await coordinator.get_tts_ticket("t-1") == "你好"
+    assert await coordinator.get_tts_ticket("不存在") is None
+
+
+async def test_tts票据按实例隔离_memory_单进程语义():
+    """memory 后端本来就不跨进程；跨 worker 共享由 Redis 后端负责。"""
+    a = MemoryCoordinator(slots={"flash": 1, "pro": 1})
+    b = MemoryCoordinator(slots={"flash": 1, "pro": 1})
+    await a.put_tts_ticket("t-1", "你好", ttl_s=60)
+    assert await b.get_tts_ticket("t-1") is None
+
+
 async def test_槽位用满后取不到(coordinator):
     first = await coordinator.acquire_slot("flash", timeout=0.2)
     second = await coordinator.acquire_slot("flash", timeout=0.2)
@@ -108,6 +122,22 @@ async def test_redis挂掉时LLM槽回退进程内():
     assert isinstance(lease, SlotLease)
 
 
+async def test_redis_tts票据跨worker共享():
+    """两个协调器实例 = 两个 worker；票据必须在共享存储里，不能各存各的。"""
+    fake = _FakeRedis()
+    a = RedisCoordinator(fake, slots={"flash": 1, "pro": 1})
+    b = RedisCoordinator(fake, slots={"flash": 1, "pro": 1})
+    await a.put_tts_ticket("t-1", "你好", ttl_s=60)
+    assert await b.get_tts_ticket("t-1") == "你好"
+
+
+async def test_redis挂掉时tts票据回退进程内():
+    """播报是可选能力：Redis 挂了也不能让签发票据直接 500。"""
+    broken = RedisCoordinator(_BrokenRedis(), slots={"flash": 1, "pro": 1})
+    await broken.put_tts_ticket("t-1", "你好", ttl_s=60)
+    assert await broken.get_tts_ticket("t-1") == "你好"
+
+
 # ---------- 假 Redis ----------
 
 
@@ -123,6 +153,9 @@ class _FakeRedis:
             return None
         self.store[key] = value if isinstance(value, str) else value.decode()
         return True
+
+    async def get(self, key):
+        return self.store.get(key)
 
     async def incr(self, key):
         self.store[key] = str(int(self.store.get(key, "0")) + 1)
@@ -143,6 +176,9 @@ class _FakeRedis:
 
 class _BrokenRedis:
     async def set(self, *args, **kwargs):
+        raise ConnectionError("redis down")
+
+    async def get(self, *args, **kwargs):
         raise ConnectionError("redis down")
 
     async def incr(self, *args, **kwargs):

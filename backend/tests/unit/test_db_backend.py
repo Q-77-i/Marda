@@ -98,3 +98,30 @@ def test_finalize中途失败要整体回滚(sqlite_db):
             "SELECT COUNT(*) FROM answers WHERE interview_id='iv-1'"
         ).fetchone()[0]
     assert n == 0
+
+
+def test_旧简历行启动时回填内容哈希(tmp_path):
+    """老库的 resumes 没有 content_hash；ensure_schema 要补列并回填，缓存才能命中。"""
+    import hashlib
+    import sqlite3
+
+    path = tmp_path / "old.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE resumes (id TEXT PRIMARY KEY, user_id TEXT, filename TEXT,"
+            " text TEXT, parsed TEXT, created_at TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO resumes VALUES ('r_old','u1','简历.md','同一份简历','{}','2026-01-01')"
+        )
+        conn.commit()
+
+    db.ensure_schema(path)
+
+    row = db.find_resume_by_hash(
+        path,
+        user_id="u1",
+        content_hash=hashlib.sha256("同一份简历".encode("utf-8")).hexdigest(),
+    )
+    assert row is not None
+    assert row["id"] == "r_old"

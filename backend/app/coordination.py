@@ -1,21 +1,22 @@
-"""跨进程协调层（P4-E4）：会话锁 + per-user 限流 + 全局 LLM 并发槽。
+"""跨进程协调层（P4-E4）：会话锁 + per-user 限流 + 全局 LLM 并发槽 + TTS 票据。
 
 为什么要有这一层：升级前的进程内状态（`Semaphore(16/4)`、会话进行中标记）在
 **多 worker 下互不可见**——两个 worker 能同时 resume 同一场面试、各自算各自的闸门，
-并发上限被放大 N 倍。这三件事必须搬到 worker 之间共享的地方，Redis 是最轻的选择。
+并发上限被放大 N 倍。这几件事必须搬到 worker 之间共享的地方，Redis 是最轻的选择。
 
-三种用途与失败语义（升级方案 §4.3，**行为要能背出来**）：
+四种用途与失败语义（升级方案 §4.3，**行为要能背出来**）：
 
 | 用途 | Key | Redis 不可用时 |
 | --- | --- | --- |
 | 会话锁 | `interview:{id}:lock` | **fail closed** → 503（宁可拒绝，也不能两 worker 同时 resume） |
 | per-user 限流 | `rl:user:{id}:{minute}` | **fail open** → 放行（限流是保护，不是正确性） |
 | 全局 LLM 槽 | `llm:{tier}:slot:{i}` | 回退**进程内**闸门（上游保护降级但不失效） |
+| TTS 票据 | `tts:ticket:{ticket}` | 回退**进程内**（播报是可选能力，不阻断面试） |
 
 后端选择：`COORDINATION_BACKEND=memory|redis`，默认 memory（单进程 demo / 单测），
 生产 profile 用 redis。两种实现**同一套接口**，调用方不感知。
 
-状态权威仍然在 PG checkpointer——Redis 里**不存面试状态**，只存锁与计数。
+状态权威仍然在 PG checkpointer——Redis 里**不存面试状态**，只存锁、计数与 60s 票据。
 """
 
 from __future__ import annotations
@@ -71,6 +72,14 @@ class Coordinator(Protocol):
         """释放 LLM 槽。"""
         ...
 
+    async def put_tts_ticket(self, ticket: str, text: str, *, ttl_s: float) -> None:
+        """存 TTS 播报票据（多 worker 共享；只存待播文本，不含音频）。"""
+        ...
+
+    async def get_tts_ticket(self, ticket: str) -> str | None:
+        """取 TTS 播报票据；不存在 / 过期返回 None。"""
+        ...
+
     async def close(self) -> None:
         """收尾（关连接）。"""
         ...
@@ -85,6 +94,7 @@ class MemoryCoordinator:
     def __init__(self, slots: dict[str, int] | None = None) -> None:
         self._sessions: dict[str, tuple[str, float]] = {}  # interview_id → (token, 过期时间)
         self._rate: dict[str, int] = {}  # "user:window" → 计数
+        self._tts_tickets: dict[str, tuple[str, float]] = {}  # ticket → (text, 过期时间)
         # tier → 槽位 token 列表（None = 空闲）。**容量在这里定死**，
         # 与 Redis 侧的槽位数保持同一口径（否则两个后端行为不一致）。
         self._slots: dict[str, list[str | None]] = {
@@ -152,6 +162,24 @@ class MemoryCoordinator:
                 return
             if 0 <= index < len(slots) and slots[index] == lease.token:
                 slots[index] = None
+
+    async def put_tts_ticket(self, ticket: str, text: str, *, ttl_s: float) -> None:
+        now = time.monotonic()
+        async with self._lock:
+            self._tts_tickets[ticket] = (text, now + ttl_s)
+            if len(self._tts_tickets) > 1024:
+                for key, (_, expires) in list(self._tts_tickets.items()):
+                    if expires <= now:
+                        self._tts_tickets.pop(key, None)
+
+    async def get_tts_ticket(self, ticket: str) -> str | None:
+        now = time.monotonic()
+        async with self._lock:
+            entry = self._tts_tickets.get(ticket)
+            if entry is None or entry[1] <= now:
+                self._tts_tickets.pop(ticket, None)
+                return None
+            return entry[0]
 
     async def close(self) -> None:
         return None
@@ -270,6 +298,28 @@ class RedisCoordinator:
             await self._client.eval(_RELEASE_LUA, 1, key, lease.token)
         except Exception as exc:  # noqa: BLE001 —— 释放失败靠 TTL 过期
             logger.warning("释放 LLM 槽失败（将等 TTL 过期）：%s", exc)
+
+    # ---------- TTS 票据 ----------
+
+    async def put_tts_ticket(self, ticket: str, text: str, *, ttl_s: float) -> None:
+        key = f"tts:ticket:{ticket}"
+        try:
+            await self._client.set(key, text, ex=max(1, int(ttl_s)))
+        except Exception as exc:  # noqa: BLE001 —— 播报是可选能力，回退进程内
+            logger.warning("TTS 票据写入 Redis 失败（回退进程内）：%s", exc)
+            await self._fallback.put_tts_ticket(ticket, text, ttl_s=ttl_s)
+
+    async def get_tts_ticket(self, ticket: str) -> str | None:
+        key = f"tts:ticket:{ticket}"
+        try:
+            value = await self._client.get(key)
+        except Exception as exc:  # noqa: BLE001 —— 读失败同样回退进程内
+            logger.warning("TTS 票据读取 Redis 失败（回退进程内）：%s", exc)
+            return await self._fallback.get_tts_ticket(ticket)
+        if value is None:
+            # put 曾经回退到进程内时，后续 Redis 恢复后仍要能读到
+            return await self._fallback.get_tts_ticket(ticket)
+        return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
     async def close(self) -> None:
         try:
