@@ -2,7 +2,7 @@
 
 > 版本 v1.1 ｜ 2026-11-01 ｜ 状态：已交付（阶段 1 / P1 / P2 / M13–M16 / P4）｜ 下游：SPEC
 >
-> 本文档只写「要什么」与「验收什么」；实现口径见 [SPEC](SPEC.md)，过程记录见 [开发历程](开发历程.md)。
+> 本文档只写「要什么」与「验收什么」；实现口径见 [SPEC](SPEC.md)，过程记录见 [里程碑](里程碑.md)。
 
 ---
 
@@ -136,17 +136,9 @@
 
 ### 4.1 面试阶段机
 
-```mermaid
-stateDiagram-v2
-    [*] --> INTRO: 开始面试
-    INTRO --> WARMUP: 开场说明完成
-    WARMUP --> TECH_BASE: 自我介绍评估完（提取项目/方向）
-    TECH_BASE --> PROJECT: 技术轮答满（轮次 − 场景题数）
-    PROJECT --> CLOSING: 场景题完成
-    CLOSING --> FINISHED: 反问环节结束
-    FINISHED --> REPORT: 评估报告生成
-    REPORT --> [*]
-```
+![面试阶段机](assets/diagrams/prd-interview-phases.png)
+
+*图：面试阶段机（产品视角）。计分阶段为蓝色，报告为产物。*
 
 | 阶段 | 行为 | 计分 |
 | --- | --- | --- |
@@ -273,7 +265,7 @@ stateDiagram-v2
 | 多模态扩展（M13–M16） | 白板、代码工作台、表达复盘、语音动效 | 完成 |
 | P4（工程） | 多 worker + PostgreSQL + Redis、checkpoint 压缩与保留 | 完成；见 [P4-生产化](P4-生产化.md) |
 
-**交付后的关键口径**（过程与证据见 [开发历程](开发历程.md)）：
+**交付后的关键口径**（过程与证据见 [里程碑](里程碑.md)）：
 
 - 评分一致性门禁 = 自研 harness（DeepEval 无现成的一致性 / 准确性 metric），纯函数 + 非零退出，零新依赖。
 - 「多方向能力模型」= 仅行为面（FR-22）；新增技术方向需先补 PRD。

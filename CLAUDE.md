@@ -8,9 +8,10 @@
 | --- | --- |
 | [README.md](README.md) | 门面：定位 / 演示 / 快速开始 / 技术栈 |
 | [docs/PRD.md](docs/PRD.md) | 需求：功能清单、业务规则、页面、验收标准 |
-| [docs/SPEC.md](docs/SPEC.md) | 技术规格：状态机 schema、API 契约、数据库、前端设计、风险评估（**正式版，章节号被代码注释引用 100+ 处，冻结**） |
+| [docs/SPEC.md](docs/SPEC.md) | 技术规格索引：正文按域拆分到 [docs/spec/](docs/spec/)；**章节号被代码注释引用 100+ 处，冻结** |
 | [docs/P4-生产化.md](docs/P4-生产化.md) | P4 生产化：多 worker + PG + Redis、checkpoint 压缩与保留、迁移与回滚、已知边界 |
-| [docs/开发历程.md](docs/开发历程.md) | 过程记录：每个里程碑做了什么、为什么这么定、怎么验证的 |
+| [docs/P5-Java业务.md](docs/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/里程碑.md](docs/里程碑.md) | 里程碑索引：每个阶段做了什么、关键决策、验证证据（详细过程在本地 private） |
 | 本文档 | 规约：协作方式、环境密钥、坑位清单、架构原则、语料红线 |
 
 ## 协作规则
@@ -103,7 +104,7 @@
 
 ## 开发纪律
 
-- **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/SPEC.md)
+- **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)
 - TDD：追问决策、评分聚合、语料解析等确定性逻辑先写测试
 - **单一来源**：凡是"两处算同一个东西"，抽成一份实现并用测试钉死——总分口径、检索 doc 文本、评测与生产共用的评分 prompt、决策与原因同源的 `explain_decision`。同一批数字两个来源，迟早不一致
 - **简历缓存先查后清**：同一用户同一份内容按 sha256 复用解析结果；缓存查询必须排在 `prune_unreferenced_resumes` 之前，否则刚存的行会被当孤儿清掉。输入框草稿只存浏览器 localStorage，不落服务端

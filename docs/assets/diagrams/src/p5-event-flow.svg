@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1180" viewBox="0 0 2400 1180">
+<rect width="2400" height="1180" fill="#FFFFFF"/>
+<defs>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto"><path d="M0,0 L0,8 L11,4 z" fill="#5B6478"/></marker>
+<marker id="arrowStart" markerWidth="12" markerHeight="12" refX="2" refY="4" orient="auto"><path d="M11,0 L11,8 L0,4 z" fill="#5B6478"/></marker>
+</defs>
+<text x="80.0" y="62.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="36" fill="#1F2430" text-anchor="start" font-weight="700">事件流：报告完成 → 学习计划 → 通知</text>
+<text x="80.0" y="102.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#5C6478" text-anchor="start" font-weight="normal">面试主链路只到 commit；后续异步、可重试、可重放</text>
+<rect x="50" y="140" width="260" height="76" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="180.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">agent</text>
+<text x="180.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">Python</text>
+<line x1="180" y1="216" x2="180" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="430" y="140" width="260" height="76" rx="12" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<text x="560.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">PostgreSQL</text>
+<text x="560.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">业务库</text>
+<line x1="560" y1="216" x2="560" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="810" y="140" width="260" height="76" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="940.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">outbox relay</text>
+<text x="940.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">轮询</text>
+<line x1="940" y1="216" x2="940" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="1190" y="140" width="260" height="76" rx="12" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<text x="1320.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">Kafka</text>
+<text x="1320.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">事件</text>
+<line x1="1320" y1="216" x2="1320" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="1570" y="140" width="260" height="76" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1700.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">business</text>
+<text x="1700.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">Java</text>
+<line x1="1700" y1="216" x2="1700" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="1950" y="140" width="260" height="76" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="2080.0" y="167.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="23" fill="#1F2430" text-anchor="middle" font-weight="700">worker</text>
+<text x="2080.0" y="203.4" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">Java</text>
+<line x1="2080" y1="216" x2="2080" y2="1120" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="7 7"/>
+<rect x="60" y="365" width="2280" height="725" rx="14" fill="none" stroke="#8E97B8" stroke-width="2" stroke-dasharray="9 8"/>
+<text x="80.0" y="420.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#4F5D8A" text-anchor="start" font-weight="normal">异步 · 最终一致（失败可重试 / 可重放）</text>
+<polyline points="180.0,260.0 560.0,260.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="247.2" y="225.0" width="245.5" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="370.0" y="248.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">finalize 事务 + outbox</text>
+<circle cx="198" cy="260" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="198.0" y="266.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">1</text>
+<polyline points="560.0,330.0 180.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="8 7" marker-end="url(#arrow)"/>
+<rect x="330.1" y="295.0" width="79.8" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="370.0" y="318.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">commit</text>
+<circle cx="542" cy="330" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="542.0" y="336.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">2</text>
+<polyline points="940.0,410.0 560.0,410.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="666.8" y="375.0" width="166.5" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="750.0" y="398.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">取未发布 outbox</text>
+<circle cx="922" cy="410" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="922.0" y="416.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">3</text>
+<polyline points="940.0,490.0 1320.0,490.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="978.4" y="455.0" width="303.3" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1130.0" y="478.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">publish interview.finalized</text>
+<circle cx="958" cy="490" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="958.0" y="496.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">4</text>
+<polyline points="1320.0,570.0 1700.0,570.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1464.8" y="535.0" width="90.5" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1510.0" y="558.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">consume</text>
+<circle cx="1338" cy="570" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="1338.0" y="576.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">5</text>
+<polyline points="1700.0,650.0 560.0,650.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1019.0" y="615.0" width="222.0" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1130.0" y="638.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">幂等建 plan + outbox</text>
+<circle cx="1682" cy="650" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="1682.0" y="656.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">6</text>
+<polyline points="940.0,730.0 1320.0,730.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="962.4" y="695.0" width="335.2" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1130.0" y="718.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">publish notification.requested</text>
+<circle cx="958" cy="730" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="958.0" y="736.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">7</text>
+<polyline points="1320.0,810.0 2080.0,810.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1585.6" y="775.0" width="228.8" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1700.0" y="798.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">consume notification</text>
+<circle cx="1338" cy="810" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="1338.0" y="816.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">8</text>
+<polyline points="2080,870 2180,870 2180,950 2080,950" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" marker-end="url(#arrow)"/>
+<circle cx="2110" cy="910" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="2110.0" y="916.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">9</text>
+<rect x="2051.6" y="827.0" width="176.7" height="26" rx="5" fill="#FFFFFF" opacity="0.94"/>
+<text x="2140.0" y="848.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="normal">发送 / 重试 / DLQ</text>
+<polyline points="2080.0,1000.0 560.0,1000.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1218.5" y="965.0" width="203.0" height="29" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1320.0" y="988.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="normal">标记 sent / failed</text>
+<circle cx="2062" cy="1000" r="15" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="2062.0" y="1006.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="17" fill="#1F2430" text-anchor="middle" font-weight="700">10</text>
+<text x="80.0" y="1140.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="start" font-weight="normal">面试主链路只到第 2 步；学习计划 / 通知失败不影响报告与 done 事件。</text>
+</svg>

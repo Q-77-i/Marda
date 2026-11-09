@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2600" height="820" viewBox="0 0 2600 820">
+<rect width="2600" height="820" fill="#FFFFFF"/>
+<defs>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto"><path d="M0,0 L0,8 L11,4 z" fill="#5B6478"/></marker>
+<marker id="arrowStart" markerWidth="12" markerHeight="12" refX="2" refY="4" orient="auto"><path d="M11,0 L11,8 L0,4 z" fill="#5B6478"/></marker>
+</defs>
+<text x="80.0" y="62.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="36" fill="#1F2430" text-anchor="start" font-weight="700">面试阶段机（产品视角）</text>
+<text x="80.0" y="102.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#5C6478" text-anchor="start" font-weight="normal">不计分阶段为浅色，计分阶段为蓝色，报告为产物</text>
+<rect x="80" y="250" width="300" height="160" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="230.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">INTRO 开场</text>
+<text x="230.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">面试官介绍 + 流程</text>
+<text x="230.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">不计分</text>
+<rect x="435" y="250" width="300" height="160" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="585.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">WARMUP 自我介绍</text>
+<text x="585.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">提炼项目 / 方向</text>
+<text x="585.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">不计分</text>
+<rect x="790" y="250" width="300" height="160" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="940.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">TECH_BASE 技术问答</text>
+<text x="940.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">默认 9 道</text>
+<text x="940.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">计分</text>
+<rect x="1145" y="250" width="300" height="160" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1295.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">PROJECT 场景深挖</text>
+<text x="1295.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">1 道架构设计</text>
+<text x="1295.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">计分</text>
+<rect x="1500" y="250" width="300" height="160" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
+<text x="1650.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">CLOSING 反问</text>
+<text x="1650.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">候选人提问 1–2 个</text>
+<text x="1650.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">不计分</text>
+<rect x="1855" y="250" width="300" height="160" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="2005.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">FINISHED 结束</text>
+<text x="2005.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">汇总评分</text>
+<text x="2005.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400"></text>
+<rect x="2210" y="250" width="300" height="160" rx="12" fill="#F7F2E7" stroke="#8E97B8" stroke-width="2"/>
+<text x="2360.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">REPORT 报告</text>
+<text x="2360.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">五维 + 短板 + 推荐</text>
+<text x="2360.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">产物</text>
+<polyline points="380.0,330.0 435.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="735.0,330.0 790.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1090.0,330.0 1145.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1445.0,330.0 1500.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1800.0,330.0 1855.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="2155.0,330.0 2210.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="720" y="530" width="860" height="110" rx="12" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="8 7"/>
+<text x="1150.0" y="568.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#4F5D8A" text-anchor="middle" font-weight="600">技术问答与场景深挖的内部循环</text>
+<text x="1150.0" y="606.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="middle" font-weight="400">出题 → 作答 → 评分 → 追问决策（纯代码，单题追问上限 3 次）</text>
+<rect x="80" y="754" width="26" height="26" rx="6" fill="#F6F7FB" stroke="#8E97B8" stroke-width="1.5"/>
+<text x="118.0" y="774.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="start" font-weight="normal">不计分阶段</text>
+<rect x="380" y="754" width="26" height="26" rx="6" fill="#EDF1F8" stroke="#8E97B8" stroke-width="1.5"/>
+<text x="418.0" y="774.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="start" font-weight="normal">计分阶段</text>
+<rect x="680" y="754" width="26" height="26" rx="6" fill="#F7F2E7" stroke="#8E97B8" stroke-width="1.5"/>
+<text x="718.0" y="774.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="start" font-weight="normal">报告产物</text>
+</svg>

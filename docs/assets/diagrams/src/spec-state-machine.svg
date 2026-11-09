@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="950" viewBox="0 0 2400 950">
+<rect width="2400" height="950" fill="#FFFFFF"/>
+<defs>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto"><path d="M0,0 L0,8 L11,4 z" fill="#5B6478"/></marker>
+<marker id="arrowStart" markerWidth="12" markerHeight="12" refX="2" refY="4" orient="auto"><path d="M11,0 L11,8 L0,4 z" fill="#5B6478"/></marker>
+</defs>
+<text x="80.0" y="62.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="36" fill="#1F2430" text-anchor="start" font-weight="700">面试状态机（主链路与追问循环）</text>
+<text x="80.0" y="102.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#5C6478" text-anchor="start" font-weight="normal">route 按 phase 分发；图中只画主链路与追问 / 换题循环</text>
+<rect x="70" y="270" width="150" height="80" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="145.0" y="317.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">入口</text>
+<polygon points="340,235.0 445.0,310 340,385.0 235.0,310" fill="#F7F2E7" stroke="#8E97B8" stroke-width="2"/>
+<text x="340.0" y="302.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="25" fill="#1F2430" text-anchor="middle" font-weight="700">route</text>
+<text x="340.0" y="334.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">纯代码</text>
+<rect x="500" y="260" width="200" height="100" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="600.0" y="299.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">开场</text>
+<text x="600.0" y="335.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">LLM</text>
+<rect x="740" y="260" width="230" height="100" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="855.0" y="299.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">自我介绍</text>
+<text x="855.0" y="335.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">提炼 LLM</text>
+<rect x="1010" y="260" width="200" height="100" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1110.0" y="299.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">出题</text>
+<text x="1110.0" y="335.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">题库 / LLM</text>
+<rect x="1250" y="260" width="200" height="100" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1350.0" y="299.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">评分</text>
+<text x="1350.0" y="335.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">结构化 LLM</text>
+<polygon points="1600,230.0 1720.0,310 1600,390.0 1480.0,310" fill="#F7F2E7" stroke="#8E97B8" stroke-width="2"/>
+<text x="1600.0" y="301.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">追问决策</text>
+<text x="1600.0" y="333.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">纯代码</text>
+<polyline points="220.0,310.0 235.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="445.0,310.0 500.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="437.0" y="270.0" width="70.0" height="28" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="472.0" y="292.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="normal">新会话</text>
+<polyline points="700.0,310.0 740.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="970.0,310.0 1010.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1210.0,310.0 1250.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1450.0,310.0 1480.0,310.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1600.0,230.0 1600.0,170.0 1350.0,170.0 1350.0,260.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1389.9" y="139.0" width="170.2" height="26" rx="5" fill="#FFFFFF" opacity="0.94"/>
+<text x="1475.0" y="160.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="normal">追问（≤3 次/题）</text>
+<polyline points="1600.0,390.0 1600.0,465.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polygon points="1600,465.0 1710.0,540 1600,615.0 1490.0,540" fill="#F7F2E7" stroke="#8E97B8" stroke-width="2"/>
+<text x="1600.0" y="531.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">轮数判断</text>
+<text x="1600.0" y="563.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">纯代码</text>
+<polyline points="1490.0,540.0 1110.0,540.0 1110.0,360.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1274.0" y="500.0" width="52.0" height="28" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1300.0" y="522.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="normal">继续</text>
+<polyline points="1710.0,540.0 1980.0,540.0 1980.0,620.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1819.0" y="500.0" width="52.0" height="28" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1845.0" y="522.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="normal">收尾</text>
+<rect x="1880" y="620" width="200" height="90" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1980.0" y="654.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">收尾</text>
+<text x="1980.0" y="690.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">反问邀请</text>
+<rect x="2120" y="620" width="200" height="90" rx="12" fill="#F7F2E7" stroke="#8E97B8" stroke-width="2"/>
+<text x="2220.0" y="654.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">报告</text>
+<text x="2220.0" y="690.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">聚合 + LLM</text>
+<rect x="2120" y="770" width="200" height="70" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="2220.0" y="812.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">结束</text>
+<polyline points="2080.0,665.0 2120.0,665.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="2220.0,710.0 2220.0,770.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<text x="80.0" y="900.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="start" font-weight="normal">route 分支：新会话 / 自我介绍 / 作答 / 反问 / 结束指令；未画分支由 route 纯代码分发。</text>
+</svg>

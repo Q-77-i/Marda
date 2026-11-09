@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1240" viewBox="0 0 2400 1240">
+<rect width="2400" height="1240" fill="#FFFFFF"/>
+<defs>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="4" orient="auto"><path d="M0,0 L0,8 L11,4 z" fill="#5B6478"/></marker>
+<marker id="arrowStart" markerWidth="12" markerHeight="12" refX="2" refY="4" orient="auto"><path d="M11,0 L11,8 L0,4 z" fill="#5B6478"/></marker>
+</defs>
+<text x="80.0" y="62.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="36" fill="#1F2430" text-anchor="start" font-weight="700">P4 生产形态：多 worker + 共享状态</text>
+<text x="80.0" y="102.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#5C6478" text-anchor="start" font-weight="normal">同一容器 2 个 uvicorn worker；会话状态在 PostgreSQL / Redis，任意 worker 可接手</text>
+<rect x="80" y="120" width="2240" height="270" rx="16" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2"/>
+<text x="102.0" y="154.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#4F5D8A" text-anchor="start" font-weight="600">接入层</text>
+<rect x="1000" y="160" width="400" height="80" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="1200.0" y="190.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="25" fill="#1F2430" text-anchor="middle" font-weight="700">浏览器 / Next.js</text>
+<text x="1200.0" y="226.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">HTTP / SSE / WS</text>
+<rect x="960" y="275" width="480" height="95" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="1200.0" y="313.1" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="27" fill="#1F2430" text-anchor="middle" font-weight="700">nginx</text>
+<text x="1200.0" y="349.1" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">唯一入口 · SSE 关缓冲</text>
+<polyline points="1200.0,240.0 1200.0,275.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="560" y="440" width="1280" height="230" rx="16" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2"/>
+<text x="582.0" y="474.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#4F5D8A" text-anchor="start" font-weight="600">api 容器（2 uvicorn worker）</text>
+<rect x="620" y="510" width="540" height="110" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="890.0" y="537.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="25" fill="#1F2430" text-anchor="middle" font-weight="700">worker 1</text>
+<text x="890.0" y="573.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">uvicorn</text>
+<text x="890.0" y="609.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">图 / SSE / 落库</text>
+<rect x="1200" y="510" width="540" height="110" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1470.0" y="537.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="25" fill="#1F2430" text-anchor="middle" font-weight="700">worker 2</text>
+<text x="1470.0" y="573.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="400">uvicorn</text>
+<text x="1470.0" y="609.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">图 / SSE / 落库</text>
+<polyline points="1200.0,390.0 1200.0,425.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="1148.0" y="391.0" width="104.0" height="32" rx="5" fill="#FFFFFF" opacity="0.92"/>
+<text x="1200.0" y="417.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="middle" font-weight="normal">负载均衡</text>
+<polyline points="890.0,425.0 1470.0,425.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="890.0,425.0 890.0,510.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1470.0,425.0 1470.0,510.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="80" y="740" width="2240" height="290" rx="16" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2"/>
+<text x="102.0" y="774.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#4F5D8A" text-anchor="start" font-weight="600">共享状态层</text>
+<path d="M 110 842 a 165.0 12 0 0 1 330 0 v 126 a 165.0 12 0 0 1 -330 0 z" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<ellipse cx="275.0" cy="842" rx="165.0" ry="12" fill="#F7FAF8" stroke="#8E97B8" stroke-width="2"/>
+<text x="275.0" y="867.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">PostgreSQL</text>
+<text x="275.0" y="901.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">业务库</text>
+<text x="275.0" y="935.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">users / interviews</text>
+<text x="275.0" y="969.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">answers / reports</text>
+<path d="M 465 842 a 165.0 12 0 0 1 330 0 v 126 a 165.0 12 0 0 1 -330 0 z" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<ellipse cx="630.0" cy="842" rx="165.0" ry="12" fill="#F7FAF8" stroke="#8E97B8" stroke-width="2"/>
+<text x="630.0" y="867.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">PostgreSQL</text>
+<text x="630.0" y="901.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">checkpoint 库</text>
+<text x="630.0" y="935.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">thread_id =</text>
+<text x="630.0" y="969.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">interview_id</text>
+<path d="M 820 842 a 165.0 12 0 0 1 330 0 v 126 a 165.0 12 0 0 1 -330 0 z" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<ellipse cx="985.0" cy="842" rx="165.0" ry="12" fill="#F7FAF8" stroke="#8E97B8" stroke-width="2"/>
+<text x="985.0" y="867.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">Redis 7</text>
+<text x="985.0" y="901.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">会话锁 / 限流</text>
+<text x="985.0" y="935.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">全局 LLM 槽</text>
+<text x="985.0" y="969.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">TTS 票据</text>
+<path d="M 1175 842 a 165.0 12 0 0 1 330 0 v 126 a 165.0 12 0 0 1 -330 0 z" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<ellipse cx="1340.0" cy="842" rx="165.0" ry="12" fill="#F7FAF8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1340.0" y="867.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">Qdrant</text>
+<text x="1340.0" y="901.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">questions</text>
+<text x="1340.0" y="935.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">dense + sparse</text>
+<text x="1340.0" y="969.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">服务端 RRF</text>
+<path d="M 1530 842 a 165.0 12 0 0 1 330 0 v 126 a 165.0 12 0 0 1 -330 0 z" fill="#EEF4F1" stroke="#8E97B8" stroke-width="2"/>
+<ellipse cx="1695.0" cy="842" rx="165.0" ry="12" fill="#F7FAF8" stroke="#8E97B8" stroke-width="2"/>
+<text x="1695.0" y="867.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">SQLite</text>
+<text x="1695.0" y="901.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">题库（只读）</text>
+<text x="1695.0" y="935.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">离线资产</text>
+<text x="1695.0" y="969.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">不随业务库迁移</text>
+<rect x="1885" y="830" width="330" height="140" rx="12" fill="#FFFFFF" stroke="#8E97B8" stroke-width="2"/>
+<text x="2050.0" y="853.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#1F2430" text-anchor="middle" font-weight="700">本地磁盘</text>
+<text x="2050.0" y="889.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">data/uploads</text>
+<text x="2050.0" y="925.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">图片 / 附件</text>
+<text x="2050.0" y="961.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="18" fill="#5C6478" text-anchor="middle" font-weight="400">容器重建不丢</text>
+<polyline points="1200.0,670.0 1200.0,705.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="275.0,705.0 2050.0,705.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"/>
+<polyline points="275.0,705.0 275.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="630.0,705.0 630.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="985.0,705.0 985.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1340.0,705.0 1340.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="1695.0,705.0 1695.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<polyline points="2050.0,705.0 2050.0,830.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
+<rect x="393.4" y="669.0" width="413.2" height="28" rx="5" fill="#FFFFFF" opacity="0.94"/>
+<text x="600.0" y="692.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="20" fill="#5C6478" text-anchor="middle" font-weight="normal">共享状态：任意 worker 可 resume 同一场</text>
+<rect x="80" y="1070" width="2240" height="100" rx="12" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2"/>
+<text x="1200.0" y="1109.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="24" fill="#4F5D8A" text-anchor="middle" font-weight="700">协调语义</text>
+<text x="1200.0" y="1145.7" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">会话锁 fail closed（503） · 限流 fail open · LLM 槽回退进程内 · TTS 票据跨 worker 共享</text>
+</svg>

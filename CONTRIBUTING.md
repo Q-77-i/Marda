@@ -53,4 +53,4 @@ PR 描述用仓库模板；必须写测试命令和结果。单个 PR 尽量不�
 
 ## 文档分工
 
-README 是门面；需求看 [PRD](docs/PRD.md)，技术口径看 [SPEC](docs/SPEC.md)，生产化看 [P4-生产化](docs/P4-生产化.md)，过程记录看 [开发历程](docs/开发历程.md)。改动涉及哪一层，就同步更新对应文档。
+README 是门面；需求看 [PRD](docs/PRD.md)，技术口径看 [SPEC](docs/SPEC.md)，生产化看 [P4-生产化](docs/P4-生产化.md)，过程记录看 [里程碑](docs/里程碑.md)。改动涉及哪一层，就同步更新对应文档。
