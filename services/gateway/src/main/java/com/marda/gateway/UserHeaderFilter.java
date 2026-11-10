@@ -34,8 +34,7 @@ public class UserHeaderFilter implements WebFilter, Ordered {
                 .map(context -> context.getAuthentication())
                 .filter(Authentication::isAuthenticated)
                 .filter(JwtAuthenticationToken.class::isInstance)
-                .cast(JwtAuthenticationToken.class)
-                .map(token -> token.getToken().getSubject())
+                .map(UserIdentity::of)
                 .defaultIfEmpty("")
                 .flatMap(userId -> chain.filter(withHeaders(exchange, userId)));
     }

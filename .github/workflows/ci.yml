@@ -84,6 +84,24 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
+  java-gateway:
+    name: Java 网关（Maven + Testcontainers Redis）
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # 对齐 services/gateway/pom.xml 的 Maven enforcer
+          cache: maven
+          cache-dependency-path: services/gateway/pom.xml
+      # Testcontainers 用 runner 自带的 Docker 起 redis:7-alpine；
+      # 限流 / fail-open 必须真 Redis 才验得到（与本地同一条测试路径）。
+      - name: mvn verify
+        working-directory: services/gateway
+        run: mvn -B verify
+
   p4-integration:
     name: P4 集成（PostgreSQL + Redis）
     runs-on: ubuntu-latest

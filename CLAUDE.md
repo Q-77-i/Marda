@@ -48,7 +48,7 @@
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
 - 可观测：Langfuse（云形态，无 key 即整体降级为零开销）；评估：**自研评估 harness**（评分一致性门禁，失败非零退出）+ RAGAS（离线检索指标）
 - MCP：仅"题库查询"1 个 server（stdio only、只公共题），协议代码关在 `app/mcp_server/`（单测扫描钉死别的模块不许 import `mcp`）；A2A 不引入
-- CI：GitHub Actions **四 job**（后端 pytest / 前端 lint+vitest+build / **P4 集成（真 PG + 真 Redis）** / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
+- CI：GitHub Actions **五 job**（后端 pytest / 前端 lint+vitest+build / **P4 集成（真 PG + 真 Redis）** / **Java 网关（Maven + Testcontainers Redis）** / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
 - 语音：**豆包流式 ASR**（`WS /api/asr` 中继，v3 二进制协议）+ **edge-tts 播报**（三档降级）。**引擎与模态解耦**——语音只是新增一条音频通道，图/状态机/落库/SSE 事件表一条未动。**两把火山 key 不通用**（方舟 Bearer ≠ 豆包语音 X-Api-Key）
 - 视觉：**deepseek-flash 视觉**（代码截图先行）。图存磁盘 `data/uploads/`、state 只存 image_id；**图独立成附件消息、不改任何 prompt 模板**（无图路径逐字一致）
 - 白板（M14/M14b）：Excalidraw 导出 PNG 走既有图片通道；白板结构点评规则**只加在带图的附件说明里**（`NOTE_JUDGE_IMAGE_RULE`），不动 `JUDGE_TEMPLATE`——纯文字评分 prompt 逐字不变。报告官可能为「答非所问」丢掉缺失项，`build_per_question_comments` 会从评分官 comment 抽原句**确定性补回**（只对有图题、只抽含缺失语义的句子）
