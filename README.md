@@ -24,7 +24,7 @@
 - **降级不静默**：并发闸门 + 熔断 + 确定性兜底；上游不可用时面试仍能走完，未评分不产 0 分，降级在报告里如实标注。
 - **语料合规**：开源语料只取白名单，每题带来源四要素（`source/license/url/source_detail`）；个人题库与派生文本不进 git，提交前机械反查。
 
-细节与取舍见 [SPEC](docs/SPEC.md)，过程记录见 [里程碑](docs/里程碑.md)。
+细节与取舍见 [SPEC](docs/spec/SPEC.md)，过程记录见 [里程碑](docs/里程碑.md)。
 
 ## 界面
 
@@ -58,7 +58,7 @@ cd frontend && pnpm install && pnpm dev                          # :3000
 
 > macOS 上导出报告 PDF 还需 `brew install pango && brew install --cask font-noto-sans-cjk-sc`（见 [SPEC §4.9](docs/spec/04-state-machine.md)）。
 
-单机形态（SQLite + 单 worker）用 `docker-compose.legacy.yml`；端口、Windows、三组开关与回滚见 [P4-生产化](docs/P4-生产化.md)。
+单机形态（SQLite + 单 worker）用 `docker-compose.legacy.yml`；端口、Windows、三组开关与回滚见 [P4-生产化](docs/ops/P4-生产化.md)。
 
 ## 技术栈
 
@@ -79,10 +79,11 @@ cd frontend && pnpm install && pnpm dev                          # :3000
 backend/   FastAPI + LangGraph（状态机 / agents / RAG / API / 服务层）
 frontend/  Next.js 15（页面 / lib 纯逻辑 / components）
 data/      语料管道、题库、评测与上传文件
-docs/      PRD / SPEC（索引）/ spec（正文）/ P4-生产化 / P5-Java业务 / 里程碑
+services/  Java 网关 / 业务服务（P5 J2+，Spring Boot）
+docs/      PRD / spec（SPEC 索引 + 正文）/ ops（P4 生产化）/ p5（README / 评估稿 / contracts）/ 里程碑
 ```
 
-完整目录树与逐文件职责见 [SPEC §2](docs/spec/02-structure.md)；系统拓扑见 [SPEC §2.1](docs/spec/02-structure.md)，设计原则是**确定性逻辑用代码写死、语义任务交给 LLM**；P4 多 worker 形态见 [P4-生产化 §2](docs/P4-生产化.md)。
+完整目录树与逐文件职责见 [SPEC §2](docs/spec/02-structure.md)；系统拓扑见 [SPEC §2.1](docs/spec/02-structure.md)，设计原则是**确定性逻辑用代码写死、语义任务交给 LLM**；P4 多 worker 形态见 [P4-生产化 §2](docs/ops/P4-生产化.md)。
 
 ## 验证
 
@@ -91,11 +92,11 @@ cd backend && uv run pytest -q          # 986 passed / 20 skipped（未配 PG/Re
 cd frontend && pnpm test                # 353 passed
 ```
 
-本机实测（2026-11）；真链路 smoke、离线评测与评分门禁见 [SPEC §10](docs/spec/10-testing.md)，P4 集成、备份与回滚见 [P4-生产化 §7](docs/P4-生产化.md)。CI 四个 job：后端 pytest · 前端 lint / vitest / build · P4 集成（真 PG + Redis）· 语料守卫。
+本机实测（2026-11）；真链路 smoke、离线评测与评分门禁见 [SPEC §10](docs/spec/10-testing.md)，P4 集成、备份与回滚见 [P4-生产化 §7](docs/ops/P4-生产化.md)。CI 四个 job：后端 pytest · 前端 lint / vitest / build · P4 集成（真 PG + Redis）· 语料守卫。
 
 ## 题库与合规
 
-题库是离线资产：个人题库 + 四源开源语料，共 **1568 题（enabled 1096）**，按 L1 / L2 / L3 标注，每题带来源四要素（`source/license/url/source_detail`）。个人题库与派生文本不进 git；提交前跑：
+题库是离线资产：个人题库 + 四源开源语料，共 **1576 题（公共 enabled 1096 + 私有 enabled 8）**，按 L1 / L2 / L3 标注，每题带来源四要素（`source/license/url/source_detail`）。个人题库与派生文本不进 git；提交前跑：
 
 ```bash
 backend/.venv/bin/python data/scripts/check_redline.py
@@ -117,11 +118,14 @@ claude mcp add marda-bank -- uv run --directory backend python -m app.mcp_server
 
 | 文档 | 读什么 |
 | --- | --- |
+| [docs/README.md](docs/README.md) | 文档导航：公开文档 / 私有文档怎么分 |
 | [docs/PRD.md](docs/PRD.md) | 产品需求：功能、业务规则、页面、验收标准 |
-| [docs/SPEC.md](docs/SPEC.md) | 技术规格索引：正文按域拆分到 docs/spec/（状态机、API、数据库、前端、测试） |
+| [docs/spec/SPEC.md](docs/spec/SPEC.md) | 技术规格索引：正文按域拆分到 docs/spec/（状态机、API、数据库、前端、测试） |
 | [docs/spec/](docs/spec/) | 技术规格正文：按域拆分的 §1–§12 |
-| [docs/P4-生产化.md](docs/P4-生产化.md) | 生产化：多 worker + PG + Redis、迁移、备份、已知边界 |
-| [docs/P5-Java业务.md](docs/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/ops/P4-生产化.md](docs/ops/P4-生产化.md) | 生产化：多 worker + PG + Redis、迁移、备份、已知边界 |
+| [docs/p5/README.md](docs/p5/README.md) | P5：为什么做——面试诊断到学习执行的闭环、业务目标与边界 |
+| [docs/p5/P5-Java业务.md](docs/p5/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/p5/contracts/](docs/p5/contracts/) | P5：OpenAPI 骨架 + 事件 JSON Schema |
 | [docs/里程碑.md](docs/里程碑.md) | 每个里程碑做了什么、关键决策与验证证据 |
 | [data/eval/summary.md](data/eval/summary.md) | 离线检索 / 评分评估结论（纯数字，不含语料文本） |
 | [data/licenses/语料来源清单.md](data/licenses/语料来源清单.md) | 语料来源与许可明细 |

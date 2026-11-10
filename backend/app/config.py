@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     checkpoint_backend: str = "sqlite"
     checkpoint_database_url: str = ""  # CHECKPOINT_DATABASE_URL（独立库）
     checkpoint_pool_max_size: int = 10
-    # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/P4-生产化.md §4.3）
+    # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/ops/P4-生产化.md §4.3）
     checkpoint_retention: int = 20
 
     # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）

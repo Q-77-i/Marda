@@ -7,10 +7,13 @@
 | 文档 | 角色 |
 | --- | --- |
 | [README.md](README.md) | 门面：定位 / 演示 / 快速开始 / 技术栈 |
+| [docs/README.md](docs/README.md) | 文档导航：公开 / 私有边界与各目录职责 |
 | [docs/PRD.md](docs/PRD.md) | 需求：功能清单、业务规则、页面、验收标准 |
-| [docs/SPEC.md](docs/SPEC.md) | 技术规格索引：正文按域拆分到 [docs/spec/](docs/spec/)；**章节号被代码注释引用 100+ 处，冻结** |
-| [docs/P4-生产化.md](docs/P4-生产化.md) | P4 生产化：多 worker + PG + Redis、checkpoint 压缩与保留、迁移与回滚、已知边界 |
-| [docs/P5-Java业务.md](docs/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/spec/SPEC.md](docs/spec/SPEC.md) | 技术规格索引：正文按域拆分到 [docs/spec/](docs/spec/)；**章节号被代码注释引用 100+ 处，冻结** |
+| [docs/ops/P4-生产化.md](docs/ops/P4-生产化.md) | P4 生产化：多 worker + PG + Redis、checkpoint 压缩与保留、迁移与回滚、已知边界 |
+| [docs/p5/README.md](docs/p5/README.md) | P5 业务动机：面试诊断 → 学习执行的闭环、业务目标与成功标准 |
+| [docs/p5/P5-Java业务.md](docs/p5/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/p5/contracts/](docs/p5/contracts/) | P5：OpenAPI 骨架 + 事件 JSON Schema |
 | [docs/里程碑.md](docs/里程碑.md) | 里程碑索引：每个阶段做了什么、关键决策、验证证据（详细过程在本地 private） |
 | 本文档 | 规约：协作方式、环境密钥、坑位清单、架构原则、语料红线 |
 
@@ -39,12 +42,13 @@
 
 - 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1` + `langgraph-checkpoint-postgres==3.1.0`（P4）+ `psycopg[binary]` / `psycopg-pool` / `redis`
 - 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）+ **Monaco**（代码工作台，同源 `/monaco/vs` 静态资源、不走 CDN）；设计基调：克制配色、强排版、微动效
+- Java（P5 J2+）：**JDK 21** + Spring Boot 3.3 + Spring Cloud Gateway + Maven；`services/gateway` 是 J2 骨架（JWT HS256、`/api/v1/learning/**` 路由、`X-User-Id` / `X-Service-Token` / trace 头注入、访问日志）；**虚拟线程**只用于网关访问日志的阻塞 I/O（`VirtualThreadConfig`），**不要**套到 Netty 请求路径；J3 的 Spring MVC business 用 `spring.threads.virtual.enabled=true` 跑阻塞 DB / HTTP
 - 数据：**P4 起 = PostgreSQL 16**（业务库 + checkpointer **独立库**）+ **Redis 7**（会话锁 / per-user 限流 / 全局 LLM 槽）+ SQLite（**题库只读**，离线资产不迁）+ Qdrant 1.19（向量，原生稀疏 + 服务端 RRF）。默认 compose 是 P4；单机形态保留为 `docker-compose.legacy.yml` 与 SQLite 开关（`DB_BACKEND=sqlite` / `CHECKPOINT_BACKEND=sqlite` / `COORDINATION_BACKEND=memory`）。**题库不迁 PG**——它是离线构建、运行时只读的资产，迁它会把语料管道与检索 join 一起拖进来
 - 业务库分派：**门面 `app/db.py` 按 target 类型分派**（`Path`→SQLite / DSN 字符串→PostgreSQL），两个实现（`db_sqlite.py` / `db_postgres.py`）**函数签名与语义必须一致**；路由层只传 `settings.business_db`，**不出现 SQL 方言分支**
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）
 - 可观测：Langfuse（云形态，无 key 即整体降级为零开销）；评估：**自研评估 harness**（评分一致性门禁，失败非零退出）+ RAGAS（离线检索指标）
 - MCP：仅"题库查询"1 个 server（stdio only、只公共题），协议代码关在 `app/mcp_server/`（单测扫描钉死别的模块不许 import `mcp`）；A2A 不引入
-- CI：GitHub Actions **四 job**（后端 pytest / 前端 lint+vitest+build / **P4 集成（真 PG + 真 Redis）** / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
+- CI：GitHub Actions **五 job**（后端 pytest / 前端 lint+vitest+build / **P4 集成（真 PG + 真 Redis）** / **Java 网关（Maven + Testcontainers Redis）** / 语料入库守卫 + 检查器自检）。**真比对与 smoke、评测不进 CI**（语料不进仓库、真 key、花钱、会被上游抖动误伤）
 - 语音：**豆包流式 ASR**（`WS /api/asr` 中继，v3 二进制协议）+ **edge-tts 播报**（三档降级）。**引擎与模态解耦**——语音只是新增一条音频通道，图/状态机/落库/SSE 事件表一条未动。**两把火山 key 不通用**（方舟 Bearer ≠ 豆包语音 X-Api-Key）
 - 视觉：**deepseek-flash 视觉**（代码截图先行）。图存磁盘 `data/uploads/`、state 只存 image_id；**图独立成附件消息、不改任何 prompt 模板**（无图路径逐字一致）
 - 白板（M14/M14b）：Excalidraw 导出 PNG 走既有图片通道；白板结构点评规则**只加在带图的附件说明里**（`NOTE_JUDGE_IMAGE_RULE`），不动 `JUDGE_TEMPLATE`——纯文字评分 prompt 逐字不变。报告官可能为「答非所问」丢掉缺失项，`build_per_question_comments` 会从评分官 comment 抽原句**确定性补回**（只对有图题、只抽含缺失语义的句子）
@@ -63,7 +67,7 @@
 ## 岗位与题库（已拍板）
 
 - 岗位方向：**Agent/AI 工程师**；知识域与权重：Agent 认知与架构 20% / 规划与推理范式 15% / Tool 与 Function Calling（含 MCP）15% / Memory 15% / RAG 20% / 工程化与可观测 15%
-- 题库：个人题库 + 四源开源语料（JavaGuide / doocs / haizlin / tech-interview-handbook / InterviewGuide / WenQu 属白名单）= **1568 题（enabled 1096）**，结构化 JSON 携带 company/round/topic 元数据；难度按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档标注，12 个「难度 × 题量」组合全部可供
+- 题库：个人题库 + 四源开源语料（JavaGuide / doocs / haizlin / tech-interview-handbook / InterviewGuide / WenQu 属白名单）= **1576 题（公共 enabled 1096 + 私有 enabled 8；J0 实测 2026-11-10）**，结构化 JSON 携带 company/round/topic 元数据；难度按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档标注，12 个「难度 × 题量」组合全部可供
 - 面试范围：技术面 + 行为面/HR 面（复用同一状态机，只换能力模型与题源）
 
 ## 语料合规（红线）

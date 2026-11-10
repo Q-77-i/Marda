@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marda.local/contracts/event-envelope.schema.json",
+  "title": "Marda 事件信封",
+  "description": "Kafka 领域事件的统一信封；payload 由 type/version 对应的 schema 约束。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["event_id", "type", "version", "occurred_at", "payload"],
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "全局唯一；消费者用它做幂等。"
+    },
+    "type": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(\\.[a-z][a-z0-9-]*)+$",
+      "examples": ["interview.finalized", "notification.requested"]
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "payload 的 schema 版本；不兼容变更必须递增。"
+    },
+    "occurred_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "事件发生时间，RFC3339 UTC。"
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "W3C trace-id；可选，用于跨服务追踪。"
+    },
+    "producer": {
+      "type": "string",
+      "enum": ["agent", "business", "worker", "gateway"],
+      "description": "生产者；可选，便于排障与审计。"
+    },
+    "payload": {
+      "type": "object",
+      "description": "事件载荷；由 type/version 对应的 schema 约束。"
+    }
+  }
+}

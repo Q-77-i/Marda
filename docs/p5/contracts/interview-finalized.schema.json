@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marda.local/contracts/interview-finalized.schema.json",
+  "title": "interview.finalized payload",
+  "description": "面试收尾事件载荷。只携带建学习计划所需的摘要，不含题干/答案/关键点原文。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "interview_id",
+    "user_id",
+    "position",
+    "interview_type",
+    "finished_at",
+    "report_id",
+    "report_summary"
+  ],
+  "properties": {
+    "interview_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "user_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "position": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "interview_type": {
+      "type": "string",
+      "enum": ["tech", "behavioral"]
+    },
+    "finished_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "report_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "report_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["overall", "weak_domains"],
+      "properties": {
+        "overall": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "weak_domains": {
+          "type": "array",
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["domain", "score"],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]*$"
+              },
+              "score": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 5
+              },
+              "advice": {
+                "type": "string",
+                "maxLength": 200,
+                "description": "学习建议；不得包含题库题干/答案/关键点原文。"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,93 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: marda-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # 限流是保护而不是正确性：命令/连接都设硬超时，Redis 挂时尽快 fail open。
+      timeout: 200ms
+      connect-timeout: 200ms
+  cloud:
+    gateway:
+      httpclient:
+        # 连接 / 整体响应超时是底层兜底；单次调用的 2s 上界由 Resilience4j TimeLimiter 负责。
+        connect-timeout: 500
+        response-timeout: 5s
+      routes:
+        - id: learning
+          uri: ${BUSINESS_URL:http://localhost:8081}
+          predicates:
+            - Path=/api/v1/learning/**
+          filters:
+            # 顺序有意义：限流 → 舱壁 → 熔断 → 路由。
+            # 舱壁必须在熔断外层，本地降载不能被记成下游失败。
+            - name: TokenBucket
+            - name: Bulkhead
+              args:
+                name: learning
+            - name: CircuitBreaker
+              args:
+                name: learning
+                fallbackUri: forward:/fallback/learning
+                # 默认 statusCodes 是空集；不配的话下游 5xx 不会触发熔断。
+                # 标准 5xx 全集（500–511，跳过非标准 509）。
+                statusCodes: 500,501,502,503,504,505,506,507,508,510,511
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # J2 只暴露健康/信息；Prometheus 抓取留 J8（连同鉴权 / 抓取策略一起定）。
+        include: health,info
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    # Redis 只做限流计数，不是正确性依赖。默认的 Redis 健康指标会在 Redis 挂时
+    # 把网关标成 DOWN，等于让编排层把整个业务 API 摘掉——与 fail open 语义相反。
+    redis:
+      enabled: false
+    # 熔断器打开只说明某个下游不可用，不代表网关自身不能服务；
+    # 不能因此让编排层把整个网关摘掉（其他路由仍可能正常）。
+    circuitbreakers:
+      enabled: false
+
+gateway:
+  jwt:
+    secret: ${JWT_SECRET:}
+  service-token: ${SERVICE_TOKEN:}
+  rate-limit:
+    enabled: ${GATEWAY_RATE_LIMIT_ENABLED:true}
+    # tokens/秒（int）：1 + burst 20 ≈ 60 次/分钟/用户，允许 20 次突发。
+    replenish-rate: ${GATEWAY_RATE_LIMIT_REPLENISH_RATE:1}
+    burst-capacity: ${GATEWAY_RATE_LIMIT_BURST_CAPACITY:20}
+    requested-tokens: 1
+    redis-timeout: ${GATEWAY_RATE_LIMIT_REDIS_TIMEOUT:200ms}
+    key-resolve-timeout: 100ms
+    retry-after-seconds: 1
+    trust-forwarded-for: ${GATEWAY_TRUST_FORWARDED_FOR:false}
+  resilience:
+    bulkhead-enabled: true
+    bulkhead-max-concurrent-calls: ${GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS:20}
+    sliding-window-size: 20
+    minimum-number-of-calls: 10
+    failure-rate-threshold: 50
+    wait-duration-in-open-state: 10s
+    permitted-number-of-calls-in-half-open-state: 5
+    automatic-transition-from-open-to-half-open-enabled: true
+    timeout-duration: ${GATEWAY_TIMEOUT_DURATION:2s}
+  canary:
+    enabled: ${GATEWAY_CANARY_ENABLED:true}
+    # 0 = 全稳定版；按 user hash 分桶，同一用户始终落在同一侧。
+    percent: ${GATEWAY_CANARY_PERCENT:0}
+    canary-uri: ${BUSINESS_CANARY_URL:}
+    # 只有内部测试 / 运维需要时才打开；默认不让客户端自己给自己灰度。
+    header-enabled: ${GATEWAY_CANARY_HEADER_ENABLED:false}
+    header-name: X-Canary
+    route-id: learning
+    salt: ${GATEWAY_CANARY_SALT:marda-gateway}
