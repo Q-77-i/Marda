@@ -51,6 +51,10 @@ data/backups/
 # ===== Docker（阶段 3）=====
 docker/volumes/
 
+# ===== Java / Maven（P5-J2+）=====
+services/*/target/
+
 # ===== 本地工具/缓存 =====
 # 本机装的第三方工具与镜像缓存（不入仓库）
 .tools/
+.vscode/

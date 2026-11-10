@@ -1,7 +1,7 @@
 # P5 · Java 业务融合与分布式工程演进（评估稿）
 
 > 2026-11-09 · 评估稿，供决策；不含题库原文、密钥、个人数据。
-> 2026-11-10 · J0 基线已完成；J1 评审稿已完成（内部记录，不随仓库）。
+> 2026-11-10 · J0 基线已完成；J1 已评审通过（内部记录，不随仓库）。
 > 前置：P4 生产化（多 worker + PostgreSQL + Redis）已完成；P5 不以“重写”为目标。
 >
 > **业务动机**：P5 不是“把 Python 换成 Java”，而是把产品闭环从“面试诊断”延伸到“学习执行”——
@@ -233,7 +233,9 @@
 
 ### 3.1 技术选型
 
-- Spring Boot 3.3.x + JDK 17（本机已有 JDK 17 / Maven 3.9；无 Gradle）。
+- Spring Boot 3.3.x + **JDK 21**（Maven 3.9；无 Gradle）。**虚拟线程**：J3 的 Spring MVC business 用
+  `spring.threads.virtual.enabled=true` 跑阻塞 DB / HTTP；J2 网关是 WebFlux，虚拟线程只用于访问日志等
+  阻塞 I/O，不套到 Netty 请求路径。
 - 网关：Spring Cloud Gateway（WebFlux）；如果只想少依赖，可用 Spring Boot WebFlux + `RouterFunction`，但“Spring Cloud Gateway”在简历上更直观。
 - 安全：Spring Security（JWT resource server，HS256 共享密钥或 JWKS）。
 - 韧性：Resilience4j（circuit breaker / bulkhead / time limiter / rate limiter）。
@@ -702,8 +704,8 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 | 阶段 | 内容 | 预估 | 出口 |
 | --- | --- | --- | --- |
 | P5-J0 | 评估、v1.0.0、基线、SLO | 3–5 天 | ✅ 2026-11-10：v1.0.0 + 基线证据；决策见 §12 |
-| P5-J1 | 架构、数据所有权、契约 | 3–5 天 | ⏳ 评审中：内部 J1 评审稿 |
-| P5-J2 | Java 网关 + 可观测骨架 | 1–2 周 | 鉴权 / 限流 / 熔断 / 灰度 |
+| P5-J1 | 架构、数据所有权、契约 | 3–5 天 | ✅ 2026-11-10：内部评审通过；公开契约见 contracts/ |
+| P5-J2 | Java 网关 + 可观测骨架 | 1–2 周 | 🚧 进行中：骨架完成；限流 / 熔断 / 灰度待续 |
 | P5-J3 | Java 业务服务 + 学习计划 | 1–2 周 | E2E + 幂等 |
 | P5-J4 | Redis 缓存 + Sentinel | 1 周 | 命中率 / 故障演练 |
 | P5-J5 | Kafka + outbox + worker | 1–2 周 | 零丢失 / 幂等 / DLQ |

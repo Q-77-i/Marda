@@ -42,6 +42,7 @@
 
 - 后端：Python 3.11+ / FastAPI / uvicorn / sse-starlette；`langgraph==1.2.11` + `langchain==1.4.0` + `langgraph-checkpoint-sqlite==3.1.1` + `langgraph-checkpoint-postgres==3.1.0`（P4）+ `psycopg[binary]` / `psycopg-pool` / `redis`
 - 前端：Next.js 15 + TypeScript + Tailwind CSS + shadcn/ui + Framer Motion + Recharts（雷达图）+ **Monaco**（代码工作台，同源 `/monaco/vs` 静态资源、不走 CDN）；设计基调：克制配色、强排版、微动效
+- Java（P5 J2+）：**JDK 21** + Spring Boot 3.3 + Spring Cloud Gateway + Maven；`services/gateway` 是 J2 骨架（JWT HS256、`/api/v1/learning/**` 路由、`X-User-Id` / `X-Service-Token` / trace 头注入、访问日志）；**虚拟线程**只用于网关访问日志的阻塞 I/O（`VirtualThreadConfig`），**不要**套到 Netty 请求路径；J3 的 Spring MVC business 用 `spring.threads.virtual.enabled=true` 跑阻塞 DB / HTTP
 - 数据：**P4 起 = PostgreSQL 16**（业务库 + checkpointer **独立库**）+ **Redis 7**（会话锁 / per-user 限流 / 全局 LLM 槽）+ SQLite（**题库只读**，离线资产不迁）+ Qdrant 1.19（向量，原生稀疏 + 服务端 RRF）。默认 compose 是 P4；单机形态保留为 `docker-compose.legacy.yml` 与 SQLite 开关（`DB_BACKEND=sqlite` / `CHECKPOINT_BACKEND=sqlite` / `COORDINATION_BACKEND=memory`）。**题库不迁 PG**——它是离线构建、运行时只读的资产，迁它会把语料管道与检索 join 一起拖进来
 - 业务库分派：**门面 `app/db.py` 按 target 类型分派**（`Path`→SQLite / DSN 字符串→PostgreSQL），两个实现（`db_sqlite.py` / `db_postgres.py`）**函数签名与语义必须一致**；路由层只传 `settings.business_db`，**不出现 SQL 方言分支**
 - RAG：本地 BGE-M3（1024d）+ bge-reranker-v2-m3（**按查询形态开关**：短查询 rerank、多漏点长查询直接走融合序——长查询实测净贡献为负）+ 每题一 doc 分块 + 混合检索（dense+sparse RRF）

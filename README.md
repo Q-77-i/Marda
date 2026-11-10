@@ -79,6 +79,7 @@ cd frontend && pnpm install && pnpm dev                          # :3000
 backend/   FastAPI + LangGraph（状态机 / agents / RAG / API / 服务层）
 frontend/  Next.js 15（页面 / lib 纯逻辑 / components）
 data/      语料管道、题库、评测与上传文件
+services/  Java 网关 / 业务服务（P5 J2+，Spring Boot）
 docs/      PRD / spec（SPEC 索引 + 正文）/ ops（P4 生产化）/ p5（README / 评估稿 / contracts）/ 里程碑
 ```
 
