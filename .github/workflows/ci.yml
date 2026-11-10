@@ -1,6 +1,6 @@
 # CI（P2-M10）：push / PR 上跑**不需要密钥**的那一半——测试、lint、构建、能离线跑的守卫。
 #
-# 不进 CI 的（口径见 docs/SPEC.md §10）：
+# 不进 CI 的（口径见 docs/spec/SPEC.md §10）：
 # - smoke_*（真 DeepSeek / 语音 key / Qdrant，手动跑）；
 # - 评测与评分门禁（花真钱，且门禁的余量按「同一 golden 连跑三次」的波动定，CI 里跑会被
 #   上游抖动误伤）；

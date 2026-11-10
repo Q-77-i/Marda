@@ -7,10 +7,13 @@
 | 文档 | 角色 |
 | --- | --- |
 | [README.md](README.md) | 门面：定位 / 演示 / 快速开始 / 技术栈 |
+| [docs/README.md](docs/README.md) | 文档导航：公开 / 私有边界与各目录职责 |
 | [docs/PRD.md](docs/PRD.md) | 需求：功能清单、业务规则、页面、验收标准 |
-| [docs/SPEC.md](docs/SPEC.md) | 技术规格索引：正文按域拆分到 [docs/spec/](docs/spec/)；**章节号被代码注释引用 100+ 处，冻结** |
-| [docs/P4-生产化.md](docs/P4-生产化.md) | P4 生产化：多 worker + PG + Redis、checkpoint 压缩与保留、迁移与回滚、已知边界 |
-| [docs/P5-Java业务.md](docs/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/spec/SPEC.md](docs/spec/SPEC.md) | 技术规格索引：正文按域拆分到 [docs/spec/](docs/spec/)；**章节号被代码注释引用 100+ 处，冻结** |
+| [docs/ops/P4-生产化.md](docs/ops/P4-生产化.md) | P4 生产化：多 worker + PG + Redis、checkpoint 压缩与保留、迁移与回滚、已知边界 |
+| [docs/p5/README.md](docs/p5/README.md) | P5 业务动机：面试诊断 → 学习执行的闭环、业务目标与成功标准 |
+| [docs/p5/P5-Java业务.md](docs/p5/P5-Java业务.md) | P5：Java 业务融合与分布式工程演进（评估稿） |
+| [docs/p5/contracts/](docs/p5/contracts/) | P5：OpenAPI 骨架 + 事件 JSON Schema |
 | [docs/里程碑.md](docs/里程碑.md) | 里程碑索引：每个阶段做了什么、关键决策、验证证据（详细过程在本地 private） |
 | 本文档 | 规约：协作方式、环境密钥、坑位清单、架构原则、语料红线 |
 
@@ -63,7 +66,7 @@
 ## 岗位与题库（已拍板）
 
 - 岗位方向：**Agent/AI 工程师**；知识域与权重：Agent 认知与架构 20% / 规划与推理范式 15% / Tool 与 Function Calling（含 MCP）15% / Memory 15% / RAG 20% / 工程化与可观测 15%
-- 题库：个人题库 + 四源开源语料（JavaGuide / doocs / haizlin / tech-interview-handbook / InterviewGuide / WenQu 属白名单）= **1568 题（enabled 1096）**，结构化 JSON 携带 company/round/topic 元数据；难度按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档标注，12 个「难度 × 题量」组合全部可供
+- 题库：个人题库 + 四源开源语料（JavaGuide / doocs / haizlin / tech-interview-handbook / InterviewGuide / WenQu 属白名单）= **1576 题（公共 enabled 1096 + 私有 enabled 8；J0 实测 2026-11-10）**，结构化 JSON 携带 company/round/topic 元数据；难度按「L1 概念 / L2 原理与选型 / L3 底层与权衡」三档标注，12 个「难度 × 题量」组合全部可供
 - 面试范围：技术面 + 行为面/HR 面（复用同一状态机，只换能力模型与题源）
 
 ## 语料合规（红线）

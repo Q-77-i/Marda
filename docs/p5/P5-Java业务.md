@@ -1,7 +1,11 @@
 # P5 · Java 业务融合与分布式工程演进（评估稿）
 
 > 2026-11-09 · 评估稿，供决策；不含题库原文、密钥、个人数据。
+> 2026-11-10 · J0 基线已完成；J1 评审稿已完成（内部记录，不随仓库）。
 > 前置：P4 生产化（多 worker + PostgreSQL + Redis）已完成；P5 不以“重写”为目标。
+>
+> **业务动机**：P5 不是“把 Python 换成 Java”，而是把产品闭环从“面试诊断”延伸到“学习执行”——
+> 让报告里的短板变成可执行、可提醒、可追踪的学习计划。完整业务背景见 [README](README.md)。
 >
 > 本文回答三个问题：
 >
@@ -33,13 +37,18 @@
 | 能力 | 现状 | 证据 |
 | --- | --- | --- |
 | 多 worker | 1 容器 2 个 uvicorn worker | `docker-compose.yml` |
-| 业务库 / checkpoint | PostgreSQL 16，两个独立库 | `docs/P4-生产化.md` |
+| 业务库 / checkpoint | PostgreSQL 16，两个独立库 | `docs/ops/P4-生产化.md` |
 | 协调层 | Redis：会话锁 / per-user 限流 / 全局 LLM 槽 / TTS 票据 | `backend/app/coordination.py` |
-| checkpoint 治理 | zlib 压缩（14.6×）+ 保留最近 N 张 | `backend/app/graph/retention.py` |
+| checkpoint 治理 | zlib 压缩（SQLite 14.6× / PG 约 1.7–2.0×）+ 保留最近 N 张 | `backend/app/graph/retention.py` |
 | 可靠性 | 并发闸门 + 断路器 + 降级链 | `backend/app/reliability.py` |
-| 测试 | P4 记录 986 passed / 20 skipped；当前 92 个测试文件 / 952 个 `def test_` | `backend/tests/` |
-| 并发实测 | 50 路同场：1×200 + 49×409，p95 373ms；10 场并行 p50 1244ms | `docs/P4-生产化.md` |
+| 测试 | J0 实测（2026-11-10）：pytest 1006 collected = 986 passed + 20 skipped；PG/Redis 集成 20 passed；vitest 353 passed | 内部基线 |
+| 并发实测 | 50 路同场：1×200 + 49×409，p95 373ms；J0：10 场 p95 315ms / 50 场 p95 1247ms（FakeLLM，开场+1轮） | [P4](../ops/P4-生产化.md) · 内部基线 |
 | CI | 后端 pytest / 前端 lint+vitest+build / P4 集成（真 PG + Redis）/ 语料守卫 | `.github/workflows/` |
+
+> **J0 基线（2026-11-10）**：业务读（隔离 API，api-direct，c=20）543–776 RPS，p95 77–127ms，0 错误；
+> 数据量 1 用户 / 12 场 / 93 答 / 11 报告；题库 1576（公共 enabled 1096 + 私有 enabled 8）；
+> checkpoint 1 场 20 张 / 0.40MB。完整口径、未覆盖项与证据见内部基线。
+> 检索路径（`q=`）未覆盖：短查询走 SiliconFlow rerank，J0 未使用真 key。
 
 结论：**当前项目不是“没有工程”，而是“工程能力没有被组织成可展示的证据”**。缺的是服务边界、消息队列、容量证据、故障演练和统一可观测，不是基础代码质量。
 
@@ -137,10 +146,10 @@
 
 ### 1.8 前置动作
 
-1. **打 `v1.0.0` Release**：当前只有 tag（`m-p1`…`m-p4`），`gh release list` 只有 `m-p2-ui`；先冻结纯 Python 基线。
-2. 记录基线：测试数、compose 镜像、checkpoint 体积、业务端点 p95、Agent 轮次 p95。
-3. 分支：`exp/microservices`（按项目约定，需要时再建；本次 P5 就是“需要时”）。`main` 始终可演示，P5 验收后 PR 合回。
-4. 所有压测产物放 `docs/P5/evidence/`，不含密钥、题库原文、个人数据。
+1. **打 `v1.0.0` Release**：✅ 2026-11-09 已发布（[release](https://github.com/Q-77-i/Marda/releases/tag/v1.0.0)）；纯 Python 基线已冻结。
+2. 记录基线：✅ 2026-11-10 完成，测试 / 数据 / 业务读 p95 / Agent 轮次 p95 见内部基线。
+3. 分支：✅ `exp/microservices` 已建；`main` 始终可演示，P5 验收后 PR 合回。
+4. 所有压测产物放内部证据目录（不随仓库）：✅ 已落；不含密钥、题库原文、个人数据。
 
 ---
 
@@ -148,7 +157,7 @@
 
 ### 2.1 拓扑
 
-![P5 目标架构](assets/diagrams/p5-target-topology.png)
+![P5 目标架构](../assets/diagrams/p5-target-topology.png)
 
 *图：目标架构（规划稿）。Java 只接业务 API，面试 SSE / WS 直连 Python。*
 
@@ -168,13 +177,16 @@
 
 | 数据 | 所有者 | Java | Python |
 | --- | --- | --- | --- |
-| `learning_*` / `notification_*` / `user_preference` / `outbox` | Java | 读写 | 只读（经 API/事件） |
-| `interviews` / `answers` / `reports` / `resumes` | Python | 只读（经 API/视图） | 读写 |
+| `learning_*` / `notification_*` / `user_preference` / `business_outbox` | Java | 读写 | 只读（经 API/事件） |
+| `interviews` / `answers` / `reports` / `resumes` / `agent_outbox` | Python | 只读（经 API/视图） | 读写 |
 | checkpoints | Python | 不可见 | 读写 |
 | questions（公共 / 私有） | Python + 离线管线 | 不碰 | 读写 / 检索 |
 | uploads | Python / MinIO | 不碰 | 读写 |
 
 **原则：一张表只能有一个写者；跨域只读走 API，不共享写。** 这条不满足，后面所有“微服务”都是分布式单体。
+
+> **J1 修正（2026-11-10）**：`outbox` 按服务拆分——Python 的 `agent_outbox` 在 finalize 本地事务内写，
+> Java 的 `business_outbox` 在业务本地事务内写；不共享表。详见内部 J1 评审稿 §3.1。
 
 ### 2.4 同步 / 异步边界
 
@@ -188,8 +200,8 @@
 
 ### 2.5 契约
 
-- 同步：OpenAPI 3，版本前缀 `/api/v1`、`/internal/v1`；生成客户端或手写 DTO，**不共享数据库表当契约**。
-- 异步：事件信封 `{event_id, type, version, occurred_at, trace_id, payload}`；JSON Schema 放仓库；消费者按版本兼容。
+- 同步：OpenAPI 3.1，版本前缀 `/api/v1`、`/internal/v1`；生成客户端或手写 DTO，**不共享数据库表当契约**。骨架见 [contracts/learning-api.yaml](contracts/learning-api.yaml)。
+- 异步：事件信封 `{event_id, type, version, occurred_at, trace_id, payload}`；JSON Schema 见 [contracts/](contracts/)；消费者按版本兼容。
 - 内部鉴权：service token + `X-User-Id`；只允许内网；用户 JWT 只用于浏览器 → 网关。
 - 追踪：W3C `traceparent` 贯穿网关 → 业务 → Agent → DB / Redis / Kafka。
 
@@ -235,12 +247,16 @@
 | --- | --- | --- |
 | 鉴权 | 校验 Bearer JWT；注入 `X-User-Id`、`X-Request-Id`、`traceparent` | 401 / 403，fail closed |
 | 限流 | Redis 令牌桶，按 user / IP；返回 429 + `Retry-After` | Redis 不可用：fail open（保护而非正确性） |
-| 路由 | `/api/learning/**`、`/api/business/**` → business；其余业务 API 按表 | 无路由：404 |
+| 路由 | MVP 只接 `/api/v1/learning/**` → business；现有 Python `/api/**` 与 SSE/WS 仍 nginx → agent | 无路由：404 |
 | 熔断 | 每路由一个 circuit breaker；超时 / 5xx 触发 | 503 + 降级 JSON |
 | 重试 | 只对幂等 GET；POST 必须带 idempotency key | 不重试非幂等 |
 | 灰度 | 按 header / user hash 权重路由到新版本 | 灰度异常自动回切 |
 | 日志 | 结构化，脱敏 token / 密码 | 不影响业务 |
 | 健康 | `/actuator/health/liveness`、`/readiness`；优雅下线 | 摘流后再停 |
+
+> **J1 决议**：MVP 网关只接新业务 API（`/api/v1/learning/**`）；现有 Python `/api/**` 与
+> SSE / WebSocket 仍走 nginx → agent 直连。统一鉴权若以后需要，用 nginx `auth_request`
+> 调网关轻量校验端点，不代理流。见内部 J1 评审稿 §2.1。
 
 ### 3.3 为什么不让网关代理 SSE
 
@@ -275,25 +291,29 @@
 | --- | --- | --- |
 | `learning_plan` | id, user_id, source_interview_id, goal, status, version, created_at, updated_at | 一个场次最多一个计划（source_interview_id 唯一） |
 | `learning_task` | id, plan_id, domain, title, resource_url, status, due_at, priority, version | 任务状态：todo / in_progress / done / skipped |
-| `notification` | id, user_id, channel, template, payload, status, retry_count, next_retry_at, idempotency_key | 渠道：in_app / email / webhook |
-| `outbox` | id, aggregate_type, aggregate_id, event_type, payload, status, created_at, published_at | 本地事务内写，relay 发 Kafka |
+| `notification` | id, user_id, channel, template, payload, status, retry_count, next_retry_at, idempotency_key | 渠道：MVP 只做 in_app；email / webhook 留 J3/J6 |
+| `business_outbox` | id, aggregate_type, aggregate_id, event_type, payload, status, created_at, published_at, attempts, next_attempt_at | Java 本地事务内写，Java relay 发 Kafka |
 | `processed_event` | event_id, consumer, processed_at | 消费幂等 |
 | `user_preference` | user_id, channels, quiet_hours, timezone | 通知偏好 |
 
-索引：`learning_plan(user_id, status)`、`learning_task(plan_id, status)`、`notification(status, next_retry_at)`、`outbox(status, created_at)`。
+> Python 侧另有 `agent_outbox`（同构，归 Python，finalize 本地事务内写）；不共享表，见内部 J1 评审稿 §3.1。
+
+索引：`learning_plan(user_id, status)`、`learning_task(plan_id, status)`、`notification(status, next_retry_at)`、`business_outbox(status, created_at)`。
 
 ### 4.3 API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/learning/plans` | 从报告创建计划；`Idempotency-Key = source_interview_id` |
-| GET | `/api/learning/plans?status=active` | 列表 |
-| GET | `/api/learning/plans/{id}` | 详情 |
-| PATCH | `/api/learning/tasks/{id}` | 更新状态 / 截止时间 |
-| GET | `/api/learning/today` | 今日任务 |
-| POST | `/api/learning/reminders/test` | 测试通知 |
+| POST | `/api/v1/learning/plans` | 从报告创建计划（可选入口 / 补偿）；`Idempotency-Key = source_interview_id` |
+| GET | `/api/v1/learning/plans?status=active` | 列表 |
+| GET | `/api/v1/learning/plans/{id}` | 详情 |
+| PATCH | `/api/v1/learning/tasks/{id}` | 更新状态 / 截止时间（带 `version`） |
+| GET | `/api/v1/learning/today` | 今日任务 |
+| POST | `/api/v1/learning/reminders/test` | 测试通知（MVP `in_app`） |
 | POST | `/internal/v1/learning-plans/from-report` | 内部：从报告事件创建（service token） |
 | GET | `/internal/v1/learning-plans/{user_id}/next` | 内部：Agent 读取下一步建议（只读） |
+
+> **J1 起**新业务 API 统一带 `/api/v1`；现有 Python API 的 `/api/...` 不改。完整契约见内部 J1 评审稿与 [contracts/learning-api.yaml](contracts/learning-api.yaml)。
 
 错误语义：400（参数）、401/403（鉴权）、404（不存在 / 越权统一 404）、409（幂等冲突 / 状态冲突）、429（限流）、503（依赖不可用）。
 
@@ -301,10 +321,10 @@
 
 **主路径：事件驱动，不是同步调用。**
 
-1. Agent 的 `finalize_interview` 在**同一个本地事务**里写 answers + report + interviews 状态 + `outbox(interview.finalized)`；
-2. outbox relay 发 Kafka；
+1. Agent 的 `finalize_interview` 在**同一个本地事务**里写 answers + report + interviews 状态 + `agent_outbox(interview.finalized)`；
+2. Python outbox relay 发 Kafka；
 3. business-service 消费 `interview.finalized`，按 `source_interview_id` 幂等创建学习计划；
-4. 计划创建成功后再写 `outbox(notification.requested)`，由通知 worker 发送。
+4. 计划创建成功后再写 `business_outbox(notification.requested)`，由通知 worker 发送。
 
 **为什么不直接 Python 调 Java 建计划**：同步调用会把“报告收尾”和“学习计划”绑在一起；Java 延迟升高或故障会阻塞面试收尾。事件驱动让两者解耦，失败可重试、可重放。
 
@@ -312,7 +332,7 @@
 
 ### 4.5 事务与一致性
 
-- Java 本地 `@Transactional`：plan + tasks + outbox 一起提交；
+- Java 本地 `@Transactional`：plan + tasks + `business_outbox` 一起提交；
 - 通知发送与计划创建分离，最终一致；
 - 读己之写：写后读主库；缓存写后删，不更新；
 - 不做分布式事务；跨服务用 outbox + 幂等 + 重试。
@@ -392,9 +412,9 @@
 
 | Topic | Key | 分区 | 保留 | 生产者 | 消费者 | 用途 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `interview.finalized` | interview_id | 6 | 7d | agent | business / worker | 报告完成 |
-| `learning.plan.requested` | user_id | 6 | 7d | business | worker | 建计划 |
-| `notification.requested` | user_id | 6 | 7d | business | worker | 发通知 |
+| `interview.finalized` | interview_id | 6 | 7d | agent | business | 报告完成 |
+| `learning.plan.requested` | user_id | 6 | 7d | business | worker | 建计划（MVP 可选） |
+| `notification.requested` | user_id | 6 | 7d | business | notification worker | 发通知 |
 | `notification.retry` | user_id | 6 | 3d | worker | worker | 退避重试 |
 | `notification.dlq` | user_id | 3 | 30d | worker | 人工 / 工具 | 死信 |
 | `user.activity` | user_id | 12 | 3d | gateway / agent | 分析 worker | 可选 |
@@ -402,13 +422,17 @@
 - 生产：`acks=all`、`enable.idempotence=true`、`compression=zstd`、`linger.ms=5-20`。
 - HA：3 broker、RF=3、`min.insync.replicas=2`；dev 单 broker、RF=1。
 - 顺序：按 key 分区，只保证同 key 有序；不追求全局有序。
+- **J1**：MVP 可不用 `learning.plan.requested`——business 消费者直接建计划；计划生成变重、
+  需要削峰时再启用。`interview.finalized` 的 payload 与示例见内部 J1 评审稿 §5.3。
 
 ### 6.3 Outbox（不丢）
 
 **问题**：DB 提交与 Kafka 发送无法原子完成；先发后提交可能产生幻消息，先提交后发可能丢消息。
 
-**方案**：本地事务写 `outbox`，relay 轮询 `FOR UPDATE SKIP LOCKED` 批量发布，成功后标记 `published_at`。
+**方案**：本地事务写**各自的** outbox（Python `agent_outbox` / Java `business_outbox`），
+relay 轮询 `FOR UPDATE SKIP LOCKED` 批量发布，成功后标记 `published_at`。
 
+- **不共享 outbox 表**：每张表只有一个写者（见 §2.3、内部 J1 评审稿 §3.1）；
 - relay 单实例多线程或 ShedLock 选主；批量 100；失败退避；
 - 事件 `event_id` 唯一；消费者幂等；
 - 可选升级：Debezium CDC 读 binlog，减少轮询延迟（加分项，不是必需）。
@@ -424,7 +448,7 @@
 
 ### 6.5 事件流
 
-![事件流](assets/diagrams/p5-event-flow.png)
+![事件流](../assets/diagrams/p5-event-flow.png)
 
 *图：报告完成后的异步链路；面试主链路只到 commit。*
 
@@ -561,7 +585,7 @@
 - SLO 达成；
 - 面试主链路无回归（p95 退化 < 10%）；
 - HA profile 资源 < 8GB；
-- 压测报告进 `docs/P5/evidence/`。
+- 压测报告进内部证据目录（不随仓库）。
 
 ---
 
@@ -677,8 +701,8 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 
 | 阶段 | 内容 | 预估 | 出口 |
 | --- | --- | --- | --- |
-| P5-J0 | 评估、v1.0.0、基线、SLO | 3–5 天 | 本文决策 |
-| P5-J1 | 架构、数据所有权、契约 | 3–5 天 | 评审通过 |
+| P5-J0 | 评估、v1.0.0、基线、SLO | 3–5 天 | ✅ 2026-11-10：v1.0.0 + 基线证据；决策见 §12 |
+| P5-J1 | 架构、数据所有权、契约 | 3–5 天 | ⏳ 评审中：内部 J1 评审稿 |
 | P5-J2 | Java 网关 + 可观测骨架 | 1–2 周 | 鉴权 / 限流 / 熔断 / 灰度 |
 | P5-J3 | Java 业务服务 + 学习计划 | 1–2 周 | E2E + 幂等 |
 | P5-J4 | Redis 缓存 + Sentinel | 1 周 | 命中率 / 故障演练 |
@@ -698,17 +722,17 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 
 ## 12. 决策项
 
-- [ ] 接受“存量不迁、B + C 组合”？
-- [ ] C 是否只做轻量网关、**不代理 SSE / WebSocket**？
-- [ ] MQ 选 **Kafka**（推荐）还是 RabbitMQ？
-- [ ] HA 做到哪一档：单实例 / 多实例 / 多实例 + Sentinel + PG 主从 + 3 broker？
-- [ ] 是否引入 MinIO / 对象存储（替换本地 uploads）？
-- [ ] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？
-- [ ] 压测目标：500 RPS / 50 并发会话，是否够？
-- [ ] 时间预算：MVP（5–7 周）还是 Full（8–12 周）？
-- [ ] 是否接受“单机多实例、fake LLM、非生产规模”的诚实边界？
-- [ ] 分支 `exp/microservices` + `v1.0.0` Release 先行？
-- [ ] 学习计划域是否就是最终选定的 Java 新域？（备选：题库运营后台 / 通知中心）
+- [x] 接受“存量不迁、B + C 组合”？——2026-11-10 拍板。
+- [x] C 是否只做轻量网关、**不代理 SSE / WebSocket**？——是，按默认推进。
+- [x] MQ 选 **Kafka**（推荐）还是 RabbitMQ？——Kafka；J5 前可改，不引入第二个 MQ。
+- [x] HA 做到哪一档：单实例 / 多实例 / 多实例 + Sentinel + PG 主从 + 3 broker？——MVP：单机多实例 + 一次故障演练；Sentinel / PG 主从留 Full。
+- [ ] 是否引入 MinIO / 对象存储（替换本地 uploads）？——留 J6。
+- [ ] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？——留 J8。
+- [x] 压测目标：500 RPS / 50 并发会话，是否够？——作为 J7 目标；J0 基线不据此宣称达成。
+- [x] 时间预算：MVP（5–7 周）还是 Full（8–12 周）？——MVP 优先。
+- [x] 是否接受“单机多实例、fake LLM、非生产规模”的诚实边界？——接受。
+- [x] 分支 `exp/microservices` + `v1.0.0` Release 先行？——已执行：v1.0.0 已发布；`exp/microservices` 已建。
+- [ ] 学习计划域是否就是最终选定的 Java 新域？（备选：题库运营后台 / 通知中心）——留 J3。
 
 ---
 

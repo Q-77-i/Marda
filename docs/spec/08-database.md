@@ -1,11 +1,11 @@
-> 本文是 SPEC 的 §8 正文；全局索引见 [../SPEC.md](../SPEC.md)。章节号冻结，不因拆分改变。
+> 本文是 SPEC 的 §8 正文；全局索引见 [SPEC.md](SPEC.md)。章节号冻结，不因拆分改变。
 
 ## 8. 数据库（题库 SQLite；业务库/检查点 PostgreSQL —— P4 已升级）
 
 > **口径修订（P4 生产化，2026-10）**：本节标题原为「SQLite；PG 迁移已取消」。
 > P4 已把**业务库**（users/interviews/answers/reports/resumes）与 **checkpointer**
 > 迁到 PostgreSQL（两独立库），协调层用 Redis；**题库（questions/question_sources）仍在 SQLite**
-> （离线构建、运行时只读的资产，不迁——见 [docs/P4-生产化.md](../P4-生产化.md)）。
+> （离线构建、运行时只读的资产，不迁——见 [docs/ops/P4-生产化.md](../ops/P4-生产化.md)）。
 > 下面的 DDL 是 **SQLite 形态**（题库部分）——**业务表在 PG 形态下有两处差异**：
 > `answers.id` 是 `BIGSERIAL`（不是 `INTEGER PK AUTOINCREMENT`）、
 > 占位符是 `%s`（不是 `?`）。业务表的语义与字段口径不变。
