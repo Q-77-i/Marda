@@ -229,6 +229,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LearningPlan'
+        '204':
+          description: 跳过（空短板 / 行为面），已记录审计；重复事件同样 204
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -294,7 +296,9 @@ components:
       name: Idempotency-Key
       in: header
       required: true
-      description: 创建计划时使用 `source_interview_id`；同一 key + 同一请求体幂等。
+      description: |
+        创建计划时必须等于 `source_interview_id`（服务端校验；不相等返回 400）。
+        同一 key + 同一请求体幂等（200 返回已有计划），不同请求体返回 409。
       schema:
         type: string
         minLength: 1
@@ -385,7 +389,14 @@ components:
       properties:
         code:
           type: string
-          examples: [NOT_FOUND, VERSION_CONFLICT, RATE_LIMITED]
+          examples:
+            - NOT_FOUND
+            - VERSION_CONFLICT
+            - IDEMPOTENCY_CONFLICT
+            - STATE_CONFLICT
+            - NO_WEAK_DOMAINS
+            - UNSUPPORTED_INTERVIEW_TYPE
+            - RATE_LIMITED
         message:
           type: string
         request_id:
@@ -456,7 +467,10 @@ components:
     CreatePlanRequest:
       type: object
       additionalProperties: false
-      required: [source_interview_id]
+      required: [source_interview_id, report_summary]
+      description: |
+        浏览器从报告 payload 映射 `report_summary`（短板域 + 分数 + 建议）；
+        Java 不回调 Python，J5 的事件路径复用同一应用服务。
       properties:
         source_interview_id:
           type: string
@@ -464,6 +478,16 @@ components:
         goal:
           type: string
           maxLength: 200
+        position:
+          type: string
+          maxLength: 64
+        interview_type:
+          type: string
+          enum: [tech, behavioral]
+          default: tech
+          description: 行为面没有可学习的技术域；服务端返回 422 UNSUPPORTED_INTERVIEW_TYPE。
+        report_summary:
+          $ref: './interview-finalized.schema.json#/properties/report_summary'
     UpdateTaskRequest:
       type: object
       additionalProperties: false
@@ -475,6 +499,7 @@ components:
         due_at:
           type: [string, "null"]
           format: date-time
+          description: 显式传 null 清空截止日；省略该字段表示保持不变。终态任务不可修改。
         version:
           type: integer
           minimum: 1

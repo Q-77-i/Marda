@@ -10,6 +10,7 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { PageHeader } from "@/components/page-header";
+import { PlanPanel } from "@/components/plan-panel";
 import { RecommendGroups } from "@/components/recommend-groups";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -101,6 +102,14 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
     };
   }, [current]);
 
+  useEffect(() => {
+    if (!groupsReady || typeof window === "undefined") return;
+    if (window.location.hash !== "#recommendations") return;
+    document
+      .getElementById("recommendations")
+      ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [groupsReady]);
+
   const overall =
     report && Object.keys(report.scores).length > 0
       ? (report.overall ??
@@ -127,6 +136,7 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
           </Link>
         }
       />
+      <PlanPanel sourceInterviewId={current} />
       {content}
     </>
   );
@@ -342,7 +352,7 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
         </Card>
       </div>
 
-      <Card className="min-w-0">
+      <Card id="recommendations" className="min-w-0 scroll-mt-24">
         <CardHeader>
           <div className="min-w-0">
             <CardTitle>针对性练习</CardTitle>
