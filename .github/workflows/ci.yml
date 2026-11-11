@@ -102,6 +102,24 @@ jobs:
         working-directory: services/gateway
         run: mvn -B verify
 
+  java-business:
+    name: Java 业务服务（Maven + Testcontainers PostgreSQL）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # 对齐 services/business/pom.xml 的 Maven enforcer
+          cache: maven
+          cache-dependency-path: services/business/pom.xml
+      # Testcontainers 起 postgres:16-alpine；Flyway / ON CONFLICT / 版本条件更新 /
+      # 事务回滚必须真 PG 才验得到。与本地同一条测试路径。
+      - name: mvn verify
+        working-directory: services/business
+        run: mvn -B verify
+
   p4-integration:
     name: P4 集成（PostgreSQL + Redis）
     runs-on: ubuntu-latest

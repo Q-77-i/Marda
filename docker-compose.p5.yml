@@ -1,0 +1,64 @@
+# P5 叠加：默认 docker-compose.yml 保持纯 Python 可演示；本文件只新增 Java 网关 + 业务服务，
+# 并把 nginx 切到 P5 路由（/api/v1/learning/ → gateway → business）。
+#
+# 用法：
+#   .env 里要有 JWT_SECRET（与 Python 共用）和 SERVICE_TOKEN（gateway → business）
+#   docker compose -f docker-compose.yml -f docker-compose.p5.yml up -d --build
+#
+# 边界：
+# - business / gateway 不发布宿主端口，只在内网；
+# - /internal/v1/** 不经过 nginx，只允许内网调用；
+# - 默认 `docker compose up` 不加载本文件，仍然是纯 Python 形态。
+
+services:
+  business:
+    build:
+      context: ./services/business
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  gateway:
+    build:
+      context: ./services/gateway
+    restart: unless-stopped
+    environment:
+      BUSINESS_URL: http://business:8081
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      # P5-J3 不做灰度自动回切；显式关掉，避免 percent=0 的过滤器参与请求判断。
+      GATEWAY_CANARY_ENABLED: "false"
+    depends_on:
+      redis:
+        condition: service_healthy
+      business:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  nginx:
+    volumes:
+      - ./docker/nginx.p5.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - api
+      - web
+      - gateway

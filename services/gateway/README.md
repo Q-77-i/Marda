@@ -58,10 +58,23 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn -B 
 - 限流用例用 Testcontainers 起 `redis:7-alpine`（本机与 CI 同一条路径，需要 Docker）。
 - CI：`.github/workflows/ci.yml` 的 `java-gateway` job 跑 `mvn -B verify`。
 
+## P5 叠加（J3）
+
+```bash
+# .env 需要 JWT_SECRET（与 Python 共用）和 SERVICE_TOKEN（gateway → business）
+docker compose -f docker-compose.yml -f docker-compose.p5.yml up -d --build
+```
+
+- `business` / `gateway` 只在 compose 内部网络，不发布宿主端口；对外仍是 nginx `8080`。
+- `/api/v1/learning/**` → nginx → gateway → business；面试 SSE/WS 仍 `/api/` → Python。
+- 默认 `docker compose up` 不加载叠加文件，仍是纯 Python 可演示形态。
+- 本地 dev 不跑 compose 时：gateway `8080`、business `8081`，`pnpm dev` 的
+  `/api/v1/learning/**` rewrite 指向 gateway（`GATEWAY_ORIGIN`）。
+
 ## 还没做（后续阶段）
 
-- 幂等重试（GET 重试 / POST `Idempotency-Key`）：随 J3 业务 API 一起做；
+- 网关 GET 重试 / 退避：J6 / J7（业务侧 `Idempotency-Key` 已在 J3 完成）；
 - 优雅下线（`server.shutdown: graceful` + 摘流）：J6 多实例 / HA；
 - OpenAPI schema diff、网关 p95 < 5ms @ 500 RPS、杀实例故障演练：J7 / J9；
 - 灰度异常自动回切：J9，需要错误率指标闭环；
-- 构建镜像与 compose 叠加：J3/J6，默认 `docker-compose.yml` 保持纯 Python。
+- 镜像与 P5 compose 叠加：J3 已完成（见上）；默认 `docker-compose.yml` 仍纯 Python。
