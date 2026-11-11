@@ -90,19 +90,19 @@ export function planStatusLabel(status: PlanStatus): string {
 }
 
 /**
- * 任务「查看资料」的落点：计划来自哪场报告，就回到哪场的推荐组。
+ * 任务「查看资料」的落点：计划来自哪场报告、任务属于哪个域，就定位到哪一场的哪个推荐组。
  *
- * 已在当前场次时只改 hash（不重载）；不同场次带上 `interview` 让学习页切换来源。
+ * 统一带 `interview` + `domain` + `#domain-<domain>`：即使来源场次已是当前选中场次，
+ * 也走一次带参数的导航——这样推荐组能按域高亮，而不是只滚到整块推荐区。
  * RAG 检索仍由 Python 的 `/recommendations` 负责，Java 只存计划指针。
  */
 export function recommendationHref(
   sourceInterviewId: string,
-  selectedInterviewId: string | null,
+  domain: string,
 ): string {
-  if (selectedInterviewId === sourceInterviewId) {
-    return "#recommendations";
-  }
-  return `/learn?interview=${encodeURIComponent(sourceInterviewId)}#recommendations`;
+  const interview = encodeURIComponent(sourceInterviewId);
+  const encodedDomain = encodeURIComponent(domain);
+  return `/learn?interview=${interview}&domain=${encodedDomain}#domain-${encodedDomain}`;
 }
 
 /**

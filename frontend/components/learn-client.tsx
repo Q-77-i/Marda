@@ -47,7 +47,13 @@ import { cn } from "@/lib/utils";
  * 默认场次优先取 URL 带过来的（从报告页「查看全部推荐」跳进来，承接来源），
  * 否则最近一场；两处判定都在 lib/learn.ts（纯函数，vitest 覆盖）。
  */
-export function LearnClient({ requestedInterviewId }: { requestedInterviewId: string | null }) {
+export function LearnClient({
+  requestedInterviewId,
+  requestedDomain,
+}: {
+  requestedInterviewId: string | null;
+  requestedDomain: string | null;
+}) {
   const [rows, setRows] = useState<InterviewRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -104,9 +110,17 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
 
   useEffect(() => {
     if (!groupsReady || typeof window === "undefined") return;
-    if (window.location.hash !== "#recommendations") return;
+    const hash = window.location.hash;
+    if (!hash) return;
+    const target =
+      hash === "#recommendations"
+        ? "recommendations"
+        : hash.startsWith("#domain-")
+          ? hash.slice(1)
+          : null;
+    if (!target) return;
     document
-      .getElementById("recommendations")
+      .getElementById(target)
       ?.scrollIntoView({ behavior: "smooth", block: "start" });
   }, [groupsReady]);
 
@@ -366,6 +380,7 @@ export function LearnClient({ requestedInterviewId }: { requestedInterviewId: st
           {current ? (
             <RecommendGroups
               interviewId={current}
+              focusDomain={requestedDomain}
               onGroups={(next) => {
                 setGroups(next);
                 setGroupsReady(true);

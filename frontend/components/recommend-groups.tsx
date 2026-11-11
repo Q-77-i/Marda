@@ -24,11 +24,14 @@ import { cn } from "@/lib/utils";
 export function RecommendGroups({
   interviewId,
   showAdvice = true,
+  focusDomain = null,
   onGroups,
 }: {
   interviewId: string;
   /** 报告页已有「学习建议」卡（同一批文案），传 false 避免同页复述 */
   showAdvice?: boolean;
+  /** 学习计划任务跳转时高亮并滚动到该域；报告页不传 */
+  focusDomain?: string | null;
   /** 学习页用第一组生成左侧建议卡；报告页不传 */
   onGroups?: (groups: RecommendationGroup[]) => void;
 }) {
@@ -90,7 +93,15 @@ export function RecommendGroups({
       {groups.map((group) => {
         const notice = groupNotice(group.status);
         return (
-          <section key={group.domain} className="flex flex-col gap-3">
+          <section
+            key={group.domain}
+            id={`domain-${group.domain}`}
+            className={cn(
+              "scroll-mt-24 flex flex-col gap-3 rounded-xl transition-colors",
+              focusDomain === group.domain &&
+                "bg-primary/[0.03] p-3 ring-1 ring-primary/20",
+            )}
+          >
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <Badge variant="warning">{domainLabel(group.domain)}</Badge>

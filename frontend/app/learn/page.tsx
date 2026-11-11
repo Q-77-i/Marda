@@ -9,13 +9,16 @@ import { PageShell } from "@/components/page-shell";
 export default async function LearnPage({
   searchParams,
 }: {
-  searchParams: Promise<{ interview?: string }>;
+  searchParams: Promise<{ interview?: string; domain?: string }>;
 }) {
-  const { interview } = await searchParams;
+  const { interview, domain } = await searchParams;
   return (
     <AuthGuard>
       <PageShell>
-        <LearnClient requestedInterviewId={interview ?? null} />
+        <LearnClient
+          requestedInterviewId={interview ?? null}
+          requestedDomain={domain ?? null}
+        />
       </PageShell>
     </AuthGuard>
   );

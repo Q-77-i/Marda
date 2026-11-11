@@ -139,16 +139,12 @@ describe("task status helpers", () => {
 });
 
 describe("recommendationHref", () => {
-  it("uses only the hash when the plan source is already selected", () => {
-    expect(recommendationHref("iv-1", "iv-1")).toBe("#recommendations");
-  });
-
-  it("navigates with the plan source when another interview is selected", () => {
-    expect(recommendationHref("iv-1", "iv-2")).toBe(
-      "/learn?interview=iv-1#recommendations",
+  it("points at the specific domain group of the plan source interview", () => {
+    expect(recommendationHref("iv-1", "memory")).toBe(
+      "/learn?interview=iv-1&domain=memory#domain-memory",
     );
-    expect(recommendationHref("iv-1", null)).toBe(
-      "/learn?interview=iv-1#recommendations",
+    expect(recommendationHref("iv-1", "tool-use")).toBe(
+      "/learn?interview=iv-1&domain=tool-use#domain-tool-use",
     );
   });
 });

@@ -143,7 +143,6 @@ export function PlanPanel({ sourceInterviewId }: { sourceInterviewId: string | n
             <PlanCard
               key={plan.id}
               plan={plan}
-              selectedInterviewId={sourceInterviewId}
               busyTaskId={busyTaskId}
               onAction={onTaskAction}
             />
@@ -192,7 +191,7 @@ export function PlanPanel({ sourceInterviewId }: { sourceInterviewId: string | n
                         plan
                           ? recommendationHref(
                               plan.source_interview_id,
-                              sourceInterviewId,
+                              task.domain,
                             )
                           : null
                       }
@@ -211,17 +210,14 @@ export function PlanPanel({ sourceInterviewId }: { sourceInterviewId: string | n
 
 function PlanCard({
   plan,
-  selectedInterviewId,
   busyTaskId,
   onAction,
 }: {
   plan: LearningPlan;
-  selectedInterviewId: string | null;
   busyTaskId: string | null;
   onAction: (task: LearningTask, status: TaskStatus) => void;
 }) {
   const progress = planProgress(plan);
-  const href = recommendationHref(plan.source_interview_id, selectedInterviewId);
   return (
     <Card>
       <CardHeader>
@@ -256,7 +252,10 @@ function PlanCard({
               key={task.id}
               task={task}
               busy={busyTaskId === task.id}
-              recommendationHref={href}
+              recommendationHref={recommendationHref(
+                plan.source_interview_id,
+                task.domain,
+              )}
               onAction={onAction}
             />
           ))}
