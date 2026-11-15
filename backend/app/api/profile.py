@@ -6,7 +6,7 @@ user_id 过滤承担，因此没有 404/越权面（对照面试各端点的 own
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
 from app.api.auth import get_current_user
 from app.service import Service
@@ -15,12 +15,18 @@ router = APIRouter(prefix="/api/profile", tags=["profile"], dependencies=[Depend
 
 
 @router.get("")
-async def get_profile(request: Request, user: dict = Depends(get_current_user)):
+async def get_profile(
+    request: Request, response: Response, user: dict = Depends(get_current_user)
+):
     """多场得分曲线与短板变化（FR-19）。
 
     数据源 = 该用户已落库的报告 payload：不重算分数、不落库、零 LLM 调用；
     没有场次时返回零态结构（不是 404）——「还没有数据」是正常状态，前端据 session_count
     渲染空态 + 引导，而不是当成错误。
+
+    `X-Cache`（P5-J4）：HIT / MISS / BYPASS，仅用于证据与调试，不是前端契约。
     """
     service: Service = request.app.state.service
-    return await service.get_profile(user["id"])
+    data, outcome = await service.get_profile_cached(user["id"])
+    response.headers["X-Cache"] = outcome.value
+    return data

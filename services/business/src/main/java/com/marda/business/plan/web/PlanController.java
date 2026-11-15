@@ -63,10 +63,13 @@ public class PlanController {
     }
 
     @GetMapping("/plans/{planId}")
-    public LearningPlanResponse get(
+    public ResponseEntity<LearningPlanResponse> get(
             @RequestHeader("X-User-Id") String userId,
             @PathVariable UUID planId) {
-        return LearningPlanResponse.from(plans.get(userId, planId));
+        var result = plans.getCached(userId, planId);
+        return ResponseEntity.ok()
+                .header("X-Cache", result.outcome().name())
+                .body(LearningPlanResponse.from(result.value()));
     }
 
     @PatchMapping("/tasks/{taskId}")
@@ -79,8 +82,11 @@ public class PlanController {
     }
 
     @GetMapping("/today")
-    public TodayResponse today(@RequestHeader("X-User-Id") String userId) {
-        return TodayResponse.from(plans.today(userId));
+    public ResponseEntity<TodayResponse> today(@RequestHeader("X-User-Id") String userId) {
+        var result = plans.todayCached(userId);
+        return ResponseEntity.ok()
+                .header("X-Cache", result.outcome().name())
+                .body(TodayResponse.from(result.value()));
     }
 
     private static PlanStatus planStatus(String value) {

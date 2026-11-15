@@ -21,6 +21,12 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
       BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      # P5-J4 缓存：只注入连接信息，**不写 depends_on: redis**——
+      # 缓存是可选依赖，Redis 挂时 business 仍要能启动并从 DB 回源。
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DB: "1"
+      BUSINESS_CACHE_ENABLED: "true"
     depends_on:
       postgres:
         condition: service_healthy

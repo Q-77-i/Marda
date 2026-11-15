@@ -103,7 +103,7 @@ jobs:
         run: mvn -B verify
 
   java-business:
-    name: Java 业务服务（Maven + Testcontainers PostgreSQL）
+    name: Java 业务服务（Maven + Testcontainers PostgreSQL/Redis）
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -114,8 +114,8 @@ jobs:
           java-version: "21" # 对齐 services/business/pom.xml 的 Maven enforcer
           cache: maven
           cache-dependency-path: services/business/pom.xml
-      # Testcontainers 起 postgres:16-alpine；Flyway / ON CONFLICT / 版本条件更新 /
-      # 事务回滚必须真 PG 才验得到。与本地同一条测试路径。
+      # Testcontainers 起 postgres:16-alpine + redis:7-alpine；Flyway / ON CONFLICT /
+      # 版本条件更新 / 事务回滚 / 缓存命中与写后失效必须真 PG + 真 Redis 才验得到。
       - name: mvn verify
         working-directory: services/business
         run: mvn -B verify

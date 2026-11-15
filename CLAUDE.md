@@ -106,6 +106,15 @@
 14. **宿主机 pg_dump 版本高于 PG server 时，备份在容器里 restore 不了**：PG18 的 `pg_dump` 生成 archive 1.16，PG16 的 `pg_restore` 报 `unsupported version (1.16)`；本机 compose 用 `PG_DUMP_MODE=docker`（容器内 pg_dump），恢复也用容器内 pg_restore
 15. **TTS 票据必须跨 worker 共享**：`POST /api/tts/ticket` 签发票据、`GET /api/tts/stream/{ticket}` 读取；票据放模块级 dict 时，2 worker 下 A 签发、B 收到 GET 就 404（实测同一票据 404 → 200，重试落到 A 才成功）。票据走 `Coordinator`（Redis 模式共享、memory 模式进程内），60s 过期；不要退回进程内 dict
 
+## P5-J4 缓存坑位（写代码前必读）
+
+1. **缓存 fail open，锁 fail closed**：缓存 Redis 异常一律回源 DB（`X-Cache: BYPASS`）；会话锁仍 503。别把两者统一处理。
+2. **缓存与锁共用 Redis，不设 LRU**：`allkeys-lru` / `volatile-lru` 可能淘汰会话锁；J4 保持 noeviction，内存压力留 J6 拆独立缓存实例。
+3. **业务服务不把 Redis 放进 readiness / compose 启动依赖**：缓存挂时 business 仍要能启动并回源；`management.health.redis.enabled=false`。
+4. **写后删要在提交之后**：Java 用 `afterCommit`，Python 在 finalize / retry / delete 后删；TTL 是最终边界。
+5. **`X-Cache` 只是证据 / 调试**：`HIT | MISS | BYPASS`，不是前端契约；日志不打印完整 user_id。
+6. **J4 不做 Sentinel**：留 J6；Sentinel 切换可能丢锁（异步复制），届时单独评估。
+
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)

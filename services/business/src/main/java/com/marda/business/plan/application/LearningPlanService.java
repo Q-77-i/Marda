@@ -1,5 +1,9 @@
 package com.marda.business.plan.application;
 
+import com.marda.business.cache.BusinessCache;
+import com.marda.business.cache.BusinessCacheProperties;
+import com.marda.business.cache.CacheKeys;
+import com.marda.business.cache.CacheResult;
 import com.marda.business.common.BadRequestException;
 import com.marda.business.plan.domain.IdempotencyHasher;
 import com.marda.business.plan.domain.InvalidPlanInputException;
@@ -18,6 +22,8 @@ import com.marda.business.plan.persistence.LearningPlanSkipRepository;
 import com.marda.business.plan.persistence.LearningTaskRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Clock;
 import java.time.Instant;
@@ -41,6 +47,8 @@ public class LearningPlanService {
     private final IdempotencyHasher hasher;
     private final Clock clock;
     private final ZoneId zone;
+    private final BusinessCache cache;
+    private final BusinessCacheProperties cacheProperties;
 
     public LearningPlanService(
             LearningPlanRepository plans,
@@ -49,7 +57,9 @@ public class LearningPlanService {
             PlanFactory factory,
             IdempotencyHasher hasher,
             Clock clock,
-            ZoneId zone) {
+            ZoneId zone,
+            BusinessCache cache,
+            BusinessCacheProperties cacheProperties) {
         this.plans = plans;
         this.tasks = tasks;
         this.skips = skips;
@@ -57,6 +67,8 @@ public class LearningPlanService {
         this.hasher = hasher;
         this.clock = clock;
         this.zone = zone;
+        this.cache = cache;
+        this.cacheProperties = cacheProperties;
     }
 
     /**
@@ -130,6 +142,9 @@ public class LearningPlanService {
                         now))
                 .toList();
         tasks.insertAll(taskRows);
+        evictAfterCommit(
+                CacheKeys.today(input.userId(), todayDate()),
+                CacheKeys.plan(input.userId(), plan.id()));
         return CreatePlanResult.created(new PlanView(plan, taskRows));
     }
 
@@ -150,6 +165,23 @@ public class LearningPlanService {
 
     @Transactional(readOnly = true)
     public PlanView get(String userId, UUID planId) {
+        return getCached(userId, planId).value();
+    }
+
+    /** 详情读缓存：键含 user（防越权），写任务后失效。 */
+    @Transactional(readOnly = true)
+    public CacheResult<PlanView> getCached(String userId, UUID planId) {
+        return cache.getOrLoad(
+                "learning.plan",
+                CacheKeys.plan(userId, planId),
+                PlanView.class,
+                () -> loadPlan(userId, planId),
+                cacheProperties.planTtl(),
+                cacheProperties.nullTtl(),
+                false);
+    }
+
+    private PlanView loadPlan(String userId, UUID planId) {
         LearningPlan plan = plans.findByIdAndUserId(planId, userId)
                 .orElseThrow(() -> new PlanNotFoundException("学习计划不存在"));
         return new PlanView(plan, tasks.findByPlanId(planId));
@@ -195,14 +227,55 @@ public class LearningPlanService {
         if (targetStatus.terminal()) {
             plans.completePlanIfAllTasksTerminal(task.planId(), now);
         }
+        evictAfterCommit(
+                CacheKeys.today(userId, todayDate()),
+                CacheKeys.plan(userId, task.planId()));
         return saved;
     }
 
     @Transactional(readOnly = true)
     public TodayView today(String userId) {
-        LocalDate date = LocalDate.now(clock.withZone(zone));
+        return todayCached(userId).value();
+    }
+
+    /** 今日任务读缓存：日期进 key（跨午夜不会读到昨天的列表），写任务后失效。 */
+    @Transactional(readOnly = true)
+    public CacheResult<TodayView> todayCached(String userId) {
+        LocalDate date = todayDate();
         Instant endOfToday = date.plusDays(1).atStartOfDay(zone).toInstant();
-        return new TodayView(date, tasks.findTodayTasks(userId, endOfToday));
+        return cache.getOrLoad(
+                "learning.today",
+                CacheKeys.today(userId, date),
+                TodayView.class,
+                () -> new TodayView(date, tasks.findTodayTasks(userId, endOfToday)),
+                cacheProperties.todayTtl(),
+                cacheProperties.nullTtl(),
+                false);
+    }
+
+    private LocalDate todayDate() {
+        return LocalDate.now(clock.withZone(zone));
+    }
+
+    /**
+     * 写事务提交后再删缓存：提交前删会被并发读立刻用旧值回填。
+     * 没有事务上下文（单测 / 直调）时立即删。
+     */
+    private void evictAfterCommit(String... keys) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            for (String key : keys) {
+                cache.evict(key);
+            }
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                for (String key : keys) {
+                    cache.evict(key);
+                }
+            }
+        });
     }
 
     @Transactional(readOnly = true)

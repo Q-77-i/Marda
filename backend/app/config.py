@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/ops/P4-生产化.md §4.3）
     checkpoint_retention: int = 20
 
+    # ===== P5-J4 分布式缓存 =====
+    # 缓存是加速不是正确性：后端不可用时回源 DB；默认 memory（本地/测试），
+    # compose 用 redis（多 worker 共享）。逻辑库与协调层分开（默认 /1 vs /0）。
+    cache_enabled: bool = True
+    cache_backend: str = "memory"
+    cache_redis_url: str = "redis://localhost:6379/1"
+    cache_redis_timeout_s: float = 0.2
+    cache_key_prefix: str = "marda:cache:"
+
     # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）
     coordination_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"

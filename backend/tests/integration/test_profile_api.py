@@ -16,8 +16,8 @@ TURNS = ["我是应届生，做过 RAG 项目", "第一题回答……", "第一
          "第二题回答……", "第二题深挖补充……", "请问团队技术栈？", "晋升路径？"]
 
 
-async def _finish(client, question_count: int = 2) -> str:
-    """跑完一场（含报告落库），返回 interview_id。"""
+async def _create(client, question_count: int = 2) -> str:
+    """开场并返回 interview_id（不答题）。"""
     async with client.stream(
         "POST", "/api/interviews",
         json={"position": "Agent/AI 工程师", "question_count": question_count},
@@ -29,6 +29,10 @@ async def _finish(client, question_count: int = 2) -> str:
             if line.startswith("data: ") and not interview_id:
                 interview_id = json.loads(line[len("data: "):])["interview_id"]
     assert interview_id
+    return interview_id
+
+
+async def _answer(client, interview_id: str) -> None:
     for turn in TURNS:
         async with client.stream(
             "POST", f"/api/interviews/{interview_id}/messages", json={"content": turn},
@@ -36,6 +40,12 @@ async def _finish(client, question_count: int = 2) -> str:
             assert r.status_code == 200
             async for _ in r.aiter_lines():
                 pass
+
+
+async def _finish(client, question_count: int = 2) -> str:
+    """跑完一场（含报告落库），返回 interview_id。"""
+    interview_id = await _create(client, question_count)
+    await _answer(client, interview_id)
     return interview_id
 
 
@@ -142,3 +152,79 @@ async def test_只看得到自己的场次(login_as):
     bob_data = (await bob.get("/api/profile")).json()
     assert bob_data["sessions"] == []
     assert bob_data["summary"]["session_count"] == 0
+
+
+# ---------- P5-J4 缓存 ----------
+
+
+async def test_档案第二次读取命中缓存(client):
+    first = await client.get("/api/profile")
+    assert first.status_code == 200
+    assert first.headers["x-cache"] == "MISS"
+
+    second = await client.get("/api/profile")
+    assert second.headers["x-cache"] == "HIT"
+    assert second.json() == first.json()
+
+
+async def test_新场次结束后档案缓存失效(client):
+    """finalize 必须删档案缓存：否则新报告在 TTL 内不可见。"""
+    await _finish(client)
+    first = await client.get("/api/profile")
+    assert first.headers["x-cache"] == "MISS"
+    assert first.json()["summary"]["session_count"] == 1
+
+    await _finish(client)
+    second = await client.get("/api/profile")
+    assert second.headers["x-cache"] == "MISS"
+    assert second.json()["summary"]["session_count"] == 2
+
+
+async def test_删除场次后档案缓存失效(client):
+    interview_id = await _finish(client)
+    assert (await client.get("/api/profile")).json()["summary"]["session_count"] == 1
+
+    response = await client.delete(f"/api/interviews/{interview_id}")
+    assert response.status_code == 204
+
+    after = await client.get("/api/profile")
+    assert after.headers["x-cache"] == "MISS"
+    assert after.json()["summary"]["session_count"] == 0
+
+
+async def test_报告第二次读取命中缓存(client):
+    interview_id = await _finish(client)
+    path = f"/api/interviews/{interview_id}/report"
+
+    first = await client.get(path)
+    assert first.status_code == 200
+    assert first.headers["x-cache"] == "MISS"
+
+    second = await client.get(path)
+    assert second.status_code == 200
+    assert second.headers["x-cache"] == "HIT"
+    assert second.json() == first.json()
+
+
+async def test_报告缓存不跨用户(login_as):
+    alice = await login_as("alice")
+    bob = await login_as("bob")
+    interview_id = await _finish(alice)
+
+    assert (await alice.get(f"/api/interviews/{interview_id}/report")).status_code == 200
+    # Bob 先过归属校验（404），拿不到 Alice 的缓存值
+    assert (await bob.get(f"/api/interviews/{interview_id}/report")).status_code == 404
+
+
+async def test_报告空值缓存不会挡住结束后的报告(client):
+    """空值缓存是防穿透，不是权威：finalize 必须删掉它。"""
+    interview_id = await _create(client)
+    path = f"/api/interviews/{interview_id}/report"
+
+    assert (await client.get(path)).status_code == 404  # 未结束 → 缓存空值
+    assert (await client.get(path)).status_code == 404  # 第二次来自空值缓存
+
+    await _answer(client, interview_id)
+    response = await client.get(path)
+    assert response.status_code == 200
+    assert response.headers["x-cache"] == "MISS", "finalize 后必须重新读 DB，不能吃旧空值"

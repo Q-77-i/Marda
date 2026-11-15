@@ -239,15 +239,20 @@ async def get_interview(
 
 @router.get("/{interview_id}/report")
 async def get_interview_report(
-    interview_id: str, request: Request, user: dict = Depends(get_current_user)
+    interview_id: str,
+    request: Request,
+    response: Response,
+    user: dict = Depends(get_current_user),
 ):
     service: Service = request.app.state.service
     try:
-        row = await service.get_report(interview_id, user["id"])
+        row, outcome = await service.get_report_cached(interview_id, user["id"])
     except InterviewNotFoundError as exc:  # 不存在与越权同为 404（不泄露存在性）
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束") from exc
     if row is None:
         raise HTTPException(status_code=404, detail="报告不存在或面试未结束")
+    # P5-J4：仅证据/调试用；归属校验仍在缓存之前，别的用户拿不到这个值。
+    response.headers["X-Cache"] = outcome.value
     return {"interview_id": interview_id, "report": row["payload"], "created_at": row["created_at"]}
 
 

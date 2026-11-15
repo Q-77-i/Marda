@@ -19,7 +19,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from app import coordination, db, llm, observability
+from app import cache, coordination, db, llm, observability
 from app.config import Settings
 from app.pg_retry import retry_on_conflict
 from app.domain import INTERVIEW_TECH
@@ -33,6 +33,11 @@ from app.graph.state import InterviewState
 from app.tools import images, profile
 
 logger = logging.getLogger(__name__)
+
+# P5-J4 缓存 TTL：档案 5m（报告变化时主动删）；报告不可变 1h；空报告 30s 防穿透。
+PROFILE_CACHE_TTL_S = 300
+REPORT_CACHE_TTL_S = 3600
+REPORT_NULL_TTL_S = 30
 
 
 class InterviewNotFoundError(Exception):
@@ -210,21 +215,28 @@ def _answers_row(record: Any) -> dict:
 class Service:
     """单场服务：持有一个编译图 + saver 连接，业务库走同步 db（to_thread）。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, cache_client: cache.Cache | None = None) -> None:
         self._settings = settings
         self._graph = None
         self._conn: aiosqlite.Connection | None = None
         self._close_checkpointer: Callable[[], Awaitable[None]] | None = None
         self._coordinator: coordination.Coordinator | None = None
+        self._cache: cache.Cache | None = cache_client
 
     async def start(self) -> None:
-        """lifespan 启动：业务库 schema + checkpointer 连接 + 编译图 + 协调器。"""
+        """lifespan 启动：业务库 schema + checkpointer 连接 + 编译图 + 协调器 + 缓存。"""
         await self._ensure_schema_with_retry()
         handle = await create_checkpointer(self._settings)
         self._conn = None  # SQLite 连接已由 checkpointer 句柄持有
         self._close_checkpointer = handle.close
         self._graph = build_graph(checkpointer=handle.saver)
         self._coordinator = coordination.get_coordinator(self._settings)
+        if self._cache is None:
+            try:
+                self._cache = cache.create_cache(self._settings)
+            except Exception as exc:  # noqa: BLE001 —— 缓存是可选依赖，配置坏了也不能拖垮启动
+                logger.warning("缓存初始化失败（本次禁用缓存）：%s", exc)
+                self._cache = cache.NoopCache()
         await self._apply_retention(handle)
 
     async def _ensure_schema_with_retry(self, attempts: int = 5) -> None:
@@ -280,6 +292,9 @@ class Service:
         if self._coordinator is not None:
             await self._coordinator.close()
             coordination.reset_coordinator()
+        if self._cache is not None:
+            await self._cache.close()
+            self._cache = None
         observability.flush()  # 冲刷 Langfuse 缓冲（未配置时为空操作）
 
     @property
@@ -288,6 +303,13 @@ class Service:
         if self._coordinator is None:
             raise RuntimeError("service 未启动（lifespan）")
         return self._coordinator
+
+    @property
+    def cache(self) -> cache.Cache:
+        """缓存（P5-J4）：不可用时自行回源，不抛给调用方。"""
+        if self._cache is None:
+            raise RuntimeError("service 未启动（lifespan）")
+        return self._cache
 
     # ---------- 会话锁（P4-E4）----------
 
@@ -490,12 +512,24 @@ class Service:
                     records,
                     report,
                 )
+                await self._evict_user_caches(values.get("user_id", ""), interview_id)
                 return
             except Exception as exc:  # noqa: BLE001 —— 落库失败要兜住，别把流打断
                 last_error = exc
                 if attempt < 2:
                     await asyncio.sleep(0.2 * (attempt + 1))
         raise PersistFailedError(f"落库失败（重试 3 次仍失败）：{last_error}")
+
+    async def _evict_user_caches(self, user_id: str, interview_id: str | None = None) -> None:
+        """写/删成功后失效缓存；缓存故障只记日志，TTL 是最终边界。"""
+        if not user_id:
+            return
+        try:
+            await self.cache.delete(f"profile:{user_id}")
+            if interview_id:
+                await self.cache.delete(f"report:{user_id}:{interview_id}")
+        except Exception as exc:  # noqa: BLE001 —— 缓存失效失败不该影响写路径
+            logger.warning("缓存失效失败（等 TTL 过期）：%s", exc)
 
     async def retry_persist(self, interview_id: str, user_id: str) -> dict:
         """**重试落库**：修「图 finished、业务库没写」的半成品场次。
@@ -559,6 +593,7 @@ class Service:
             await asyncio.to_thread(
                 db.delete_interview, self._settings.business_db, interview_id
             )
+            await self._evict_user_caches(user_id, interview_id)
             await asyncio.to_thread(
                 images.remove_interview_images, self._settings.upload_dir, interview_id
             )
@@ -599,8 +634,32 @@ class Service:
         }
 
     async def get_report(self, interview_id: str, user_id: str) -> dict | None:
+        row, _ = await self.get_report_cached(interview_id, user_id)
+        return row
+
+    async def get_report_cached(
+        self, interview_id: str, user_id: str
+    ) -> tuple[dict | None, cache.CacheOutcome]:
+        """报告读缓存：归属校验永远先走 DB（安全语义不变），命中只省报告行读取。
+
+        `cache_null=True`：未结束/报告缺失的 404 也短缓存 30s，防穿透；
+        finalize 成功后会删这个 key，所以新报告不会被空值挡住。
+        """
         await self._require_owner(interview_id, user_id)
-        return await asyncio.to_thread(db.get_report, self._settings.business_db, interview_id)
+
+        async def load() -> dict | None:
+            return await asyncio.to_thread(
+                db.get_report, self._settings.business_db, interview_id
+            )
+
+        lookup = await self.cache.get_or_load(
+            f"report:{user_id}:{interview_id}",
+            load,
+            ttl_s=REPORT_CACHE_TTL_S,
+            null_ttl_s=REPORT_NULL_TTL_S,
+            cache_null=True,
+        )
+        return lookup.value, lookup.outcome
 
     async def _node_timeline(self, interview_id: str) -> list[dict]:
         """节点时间线（P2-M12 / SPEC §4.7）：checkpoint 历史零写入派生。
@@ -647,16 +706,33 @@ class Service:
         }
 
     async def get_profile(self, user_id: str) -> dict:
+        data, _ = await self.get_profile_cached(user_id)
+        return data
+
+    async def get_profile_cached(
+        self, user_id: str
+    ) -> tuple[dict, cache.CacheOutcome]:
         """能力档案（FR-19）：该用户全部已落库报告 → 曲线与短板变化。
 
-        只读、无场次参数——隔离由 user_id 过滤承担，故不存在 404/越权面；
-        数据源是报告 payload 本身（同学习推荐口径），题库/评分口径变更零回归。
+        缓存键按 user 隔离；finalize / retry / delete 成功后主动删，
+        TTL 5m 兜底。数据源与报告页同一份 payload（口径单一来源）。
         """
-        rows = await asyncio.to_thread(db.list_reports, self._settings.business_db, user_id=user_id)
-        no_report = await asyncio.to_thread(  # 已完成但报告缺失的场次（P2-M3）：只在档案里作说明
-            db.count_finished_without_report, self._settings.business_db, user_id=user_id
+
+        async def load() -> dict:
+            rows = await asyncio.to_thread(
+                db.list_reports, self._settings.business_db, user_id=user_id
+            )
+            no_report = await asyncio.to_thread(  # 已完成但报告缺失的场次（P2-M3）
+                db.count_finished_without_report, self._settings.business_db, user_id=user_id
+            )
+            return profile.build_profile(rows, no_report=no_report)
+
+        lookup = await self.cache.get_or_load(
+            f"profile:{user_id}", load, ttl_s=PROFILE_CACHE_TTL_S
         )
-        return profile.build_profile(rows, no_report=no_report)
+        # build_profile 永远返回 dict；缓存里的 null 值不属于这个 key。
+        assert lookup.value is not None
+        return lookup.value, lookup.outcome
 
     async def list_interviews(
         self,

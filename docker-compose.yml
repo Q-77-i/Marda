@@ -99,6 +99,9 @@ services:
       CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@postgres:5432/marda_checkpoints
       COORDINATION_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
+      # ===== P5-J4 缓存：与协调层分逻辑库，可丢 =====
+      CACHE_BACKEND: redis
+      CACHE_REDIS_URL: redis://redis:6379/1
     # **绝对路径**：镜像里 uvicorn 在 /app/.venv/bin（UV_PROJECT_ENVIRONMENT），
     # 不在 PATH 里——写裸 "uvicorn" 会报 "executable file not found in $PATH"。
     # `--loop`：Windows 上 uvicorn 默认用 ProactorEventLoop，而 psycopg 的**异步**模式

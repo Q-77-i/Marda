@@ -26,6 +26,8 @@ mvn spring-boot:run
 - 默认端口 `8081`；`/actuator/health`、`/actuator/health/readiness` 公开。
 - 其余端点要求 `X-Service-Token`；`/api/v1/**` 还要求 `X-User-Id`。
 - 本服务**不直接接受用户 JWT**：浏览器 JWT 只到 gateway，gateway 注入用户头。
+- 缓存默认关闭；本地要验缓存时先起 Redis，再加
+  `BUSINESS_CACHE_ENABLED=true REDIS_HOST=127.0.0.1 REDIS_PORT=6379 REDIS_DB=1`。
 
 ### compose 叠加
 
@@ -71,13 +73,28 @@ docker compose -f docker-compose.yml -f docker-compose.p5.yml up -d --build
 | 通知 | J3 只写 `pending` 行 | 投递 / 重试 / DLQ 是 J5 的 worker |
 | 虚拟线程 | `spring.threads.virtual.enabled=true` | 阻塞 JDBC 不占平台线程；DB 并发仍受 Hikari 限制 |
 
+## 缓存（P5-J4）
+
+| Key | TTL | 失效 |
+| --- | --- | --- |
+| `learning:today:{user}:{date}` | 1m | 建计划 / 更新任务事务提交后删 |
+| `learning:plan:{user}:{id}` | 5m | 更新任务事务提交后删 |
+
+- **cache-aside**：读 miss → 查 DB → 回填；TTL ±10% 抖动，防集中过期。
+- **单飞**：Redis `SET NX PX` + 双检；等锁 200ms，等不到回源但不回填。
+- **失败语义**：Redis 异常一律回源 DB（`X-Cache: BYPASS`），不抛给业务；readiness 不依赖 Redis。
+- **不设 LRU**：同一 Redis 存 Python 的会话锁；淘汰锁会破坏正确性。内存压力留 J6 拆独立实例。
+- `X-Cache: HIT | MISS | BYPASS` 仅用于证据 / 调试，不是前端契约；
+  Micrometer `cache.requests{cache,result}` 可从 `/actuator/metrics` 读。
+
 ## 测试
 
 ```bash
 JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home mvn -B verify
 ```
 
-- 40 个用例：领域 17（计划工厂 / 状态机 / 幂等哈希）、Schema 1、API 21、事务回滚 1。
+- 46 个用例：领域 17（计划工厂 / 状态机 / 幂等哈希）、Schema 1、API 21、事务回滚 1、
+  缓存 6（命中 / 写后失效 / 用户隔离 / 故障回源 / 禁用回源 / 跨实例共享）。
 - API / 事务用例用 Testcontainers `postgres:16-alpine` + Flyway；与 CI 同一路径。
 - 覆盖：建计划、幂等重放/冲突、并发只建一个、PATCH 版本/状态/due_at、越权 404、
   今日/next、内部 201/200/204、提醒写入、虚拟线程机械断言。

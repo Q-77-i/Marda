@@ -2,6 +2,7 @@
 
 > 2026-11-09 · 评估稿，供决策；不含题库原文、密钥、个人数据。
 > 2026-11-10 · J0 基线已完成；J1 已评审通过（内部记录，不随仓库）。
+> 2026-11-15 · J4 分布式缓存实现：5 个热 key + 故障回源；Sentinel 留 J6。
 > 前置：P4 生产化（多 worker + PostgreSQL + Redis）已完成；P5 不以“重写”为目标。
 >
 > **业务动机**：P5 不是“把 Python 换成 Java”，而是把产品闭环从“面试诊断”延伸到“学习执行”——
@@ -355,44 +356,66 @@
 
 | Key | 数据 | TTL | 失效 | 目标命中率 |
 | --- | --- | --- | --- | --- |
-| `bank:facets` | 题库分面 / 容量 | 10m + 抖动 | 题库重建时删 | > 95% |
-| `bank:question:{id}` | 题目详情 | 10m | 编辑 / 归档时删 | > 90% |
-| `report:summary:{id}` | 报告摘要 | 1h | 不可变，不删 | > 90% |
-| `profile:{user_id}` | 能力档案聚合 | 5m | `interview.finalized` 事件删 | > 85% |
-| `learning:today:{user_id}` | 今日任务 | 1m | 任务更新时删 | > 80% |
-| `user:{id}` | 用户偏好 | 5m | 更新时删 | > 90% |
-| `gateway:rl:{user}:{window}` | 限流计数 | 60s | 自然过期 | — |
+| `bank:facets` | 题库分面 | 10m + 抖动 | 题库重建手动删 | > 95% |
+| `profile:{user_id}` | 能力档案聚合 | 5m | finalize / retry / delete 后删 | > 85% |
+| `report:{user_id}:{id}` | 报告 payload | 1h；空值 30s | finalize / retry / delete 后删 | > 90% |
+| `learning:today:{user_id}:{date}` | 今日任务 | 1m | 任务写事务提交后删 | > 80% |
+| `learning:plan:{user_id}:{id}` | 计划详情 | 5m | 任务更新后删 | > 85% |
+
+**J4 实际裁剪**：`bank:capacity`、题库浏览 / 搜索、`bank:question:{id}`、计划列表、
+`learning:next`、`user:{id}` 不进 J4——前两者 key 基数 / 失效面大，第三个没有公开详情端点，
+后三个当前无真实消费方或依赖 J5；`gateway:rl` 在 J2 已完成。缓存键带 `user_id`，
+避免跨用户命中；报告空值缓存是防穿透，finalize 会主动删，不会挡住新报告。
 
 ### 5.2 模式
 
-- **Cache-aside**：读 → miss → 查 DB → 回填（TTL + 随机抖动）。
-- **穿透**：空值缓存（短 TTL）+ 题目 id 布隆过滤器（可选）。
-- **击穿**：热点 key 用 Redis `SETNX` 单飞重建；本地 Caffeine 做二级缓存。
-- **雪崩**：TTL 抖动、分批预热、Redis 故障时熔断回源、DB 限流。
-- **一致性**：写 DB 后删缓存；关键读用“延迟双删”；档案 / 今日任务用事件失效。
-- **热点**：本地缓存 + Redis 两级；计数类 key 可拆分（可选）。
-- **序列化**：JSON（简单）或 Protobuf（省带宽）；缓存值带版本号，升级不炸。
+- **Cache-aside**：读 → miss → 查 DB → 回填（TTL ±10% 抖动）。
+- **穿透**：报告空值短缓存 30s；题目 id 没有公开详情端点，J4 不引入布隆过滤器。
+- **击穿**：Redis `SET NX PX` 单飞 + 双检；等锁 200ms，等不到回源但不回填。
+- **雪崩**：TTL 抖动；Redis 重启后靠单飞 + DB 池兜底，不做全量预热。
+- **一致性**：写 DB 成功后删缓存（Java `afterCommit`；Python finalize / retry / delete 后删）；
+  TTL 是最终边界，不做分布式事务。
+- **热点**：J4 不做本地二级缓存（Caffeine）——当前流量不支撑，J7 压测后再评估。
+- **序列化**：JSON 版本信封 `{"v":1,"data":...}` / `{"v":1,"null":true}`；
+  版本不匹配按未命中处理，升级不炸旧缓存。
+- **Key 与库**：`marda:cache:` 前缀；缓存走 Redis 逻辑库 1，协调层留库 0。
 
 ### 5.3 高可用
 
-- Redis Sentinel：1 主 2 从 3 哨兵；Spring Data Redis Sentinel 配置；Lettuce 自动重连。
+- **J4 单节点 Redis + 停 Redis 降级演练**；Sentinel 与 Redis 主从留 J6（与 §12 的 MVP 决策一致）。
+  为什么不在 J4 上 Sentinel：切换可能丢会话锁（异步复制），而锁是正确性；J4 先证明缓存可丢、业务可回源。
+- **不设 LRU**：同一 Redis 存会话锁；`allkeys-lru` / `volatile-lru` 都可能淘汰锁。
+  J4 保持默认 noeviction，内存压力留 J6 拆独立缓存实例。
 - 缓存可丢：Redis 不是正确性来源；锁 fail closed、限流 fail open、LLM 槽回退进程内（沿用 P4 语义）。
+- 业务服务**不把 Redis 放进 readiness / compose 启动依赖**：缓存挂时仍能启动并回源。
 - 为什么不用 Redis Cluster：数据量小、单机内存足够；Cluster 的运维复杂度 > 收益。数据量 / 吞吐上来再评估。
 
 ### 5.4 指标与告警
 
-命中率、Redis QPS、p99、eviction、内存、热 key、单飞锁等待、回源次数。
+- 命中率：响应头 `X-Cache: HIT | MISS | BYPASS`（证据 / 调试，不是前端契约）。
+- Java：Micrometer `cache.requests{cache,result}`，`/actuator/metrics` 可读；Prometheus / Grafana 留 J8。
+- Python：负载脚本统计 `X-Cache`；失败日志只留 key 前缀 + 尾段哈希，不打印 user_id。
+- 关注：命中率、回源次数、停 Redis 后的 5xx 与 p95。
 
-告警：命中率 < 80%、Redis down、eviction 速率异常、单飞锁等待 > 1s。
+告警（J8 接）：命中率 < 80%、Redis down、eviction 速率异常、单飞锁等待 > 1s。
+
+> J4 测试证据（2026-11-15）：pytest 1002 passed；真 Redis 9 passed；
+> `mvn -B verify` 46 passed（含 Testcontainers PG + Redis：命中、写后失效、用户隔离、故障回源）。
+> 本地冒烟（真 PG / Redis）：facets / profile / report / today 均 `MISS → HIT`；
+> PATCH / 删除后回到 `MISS`；停 Redis 后 200 + `BYPASS`，readiness / healthz 仍 UP；重启后 `MISS → HIT`。
+> 负载（cache on，c=20，3×3000）：5 个端点命中率 100%，p95 63–82ms——
+> 单机、api-direct，非生产容量，严格 before/after 留 J7。
 
 ### 5.5 失败语义
 
 | 故障 | 行为 |
 | --- | --- |
-| Redis 挂 | 缓存回源 DB（延迟升高）；限流 fail open；会话锁 fail closed（503）；LLM 槽回退进程内 |
-| Sentinel 切换 | 客户端重连；短暂 5xx；重试幂等 GET |
-| 缓存击穿 | 单飞锁 + 本地缓存；DB 限流保护 |
-| 缓存雪崩 | TTL 抖动 + 预热 + 熔断 |
+| Redis 挂 | 缓存回源 DB（延迟升高）；限流 fail open；会话锁 fail closed（503）；LLM 槽回退进程内；business readiness 仍 UP |
+| Redis 恢复 | 缓存冷启动；单飞保护回源；不做全量预热 |
+| 缓存击穿 | 单飞锁 + 双检；DB 池兜底 |
+| 缓存雪崩 | TTL 抖动 + 单飞；不集中过期 |
+| 写后读 | afterCommit 删 key；TTL 兜底 |
+| Sentinel 切换 | J4 不做；J6 演练，届时单独评估锁的影响 |
 
 ---
 
@@ -707,7 +730,7 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 | P5-J1 | 架构、数据所有权、契约 | 3–5 天 | ✅ 2026-11-10：内部评审通过；公开契约见 contracts/ |
 | P5-J2 | Java 网关 + 可观测骨架 | 1–2 周 | 🚧 2026-11-10 第二片：鉴权 + Redis 令牌桶限流 + Resilience4j 熔断/超时/舱壁 + 灰度 + CI Java job；重试 / 优雅下线 / 压测 / 故障演练待续 |
 | P5-J3 | Java 业务服务 + 学习计划 | 1–2 周 | E2E + 幂等 |
-| P5-J4 | Redis 缓存 + Sentinel | 1 周 | 命中率 / 故障演练 |
+| P5-J4 | Redis 缓存 + 故障回源（Sentinel 留 J6） | 1 周 | ✅ 2026-11-15：5 个热 key；X-Cache 命中 / 写后失效 / 停 Redis 回源；pytest 1002 · mvn 45 |
 | P5-J5 | Kafka + outbox + worker | 1–2 周 | 零丢失 / 幂等 / DLQ |
 | P5-J6 | 多实例 + HA + 故障演练 | 1–2 周 | 演练全过 |
 | P5-J7 | 压测 + 调优 | 1–2 周 | SLO 达成 |
@@ -728,6 +751,7 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 - [x] C 是否只做轻量网关、**不代理 SSE / WebSocket**？——是，按默认推进。
 - [x] MQ 选 **Kafka**（推荐）还是 RabbitMQ？——Kafka；J5 前可改，不引入第二个 MQ。
 - [x] HA 做到哪一档：单实例 / 多实例 / 多实例 + Sentinel + PG 主从 + 3 broker？——MVP：单机多实例 + 一次故障演练；Sentinel / PG 主从留 Full。
+- [x] J4 是否上 Sentinel？——不上，留 J6；J4 做“停 Redis → 回源”演练，并保持缓存与锁的失败语义分离。
 - [ ] 是否引入 MinIO / 对象存储（替换本地 uploads）？——留 J6。
 - [ ] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？——留 J8。
 - [x] 压测目标：500 RPS / 50 并发会话，是否够？——作为 J7 目标；J0 基线不据此宣称达成。

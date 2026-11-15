@@ -18,6 +18,15 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # 缓存与协调层分库：/1 只放可丢缓存，/0 留给 Python 的锁 / 限流。
+      database: ${REDIS_DB:1}
+      # 缓存是保护不是正确性：命令/连接都设硬超时，Redis 挂时尽快回源。
+      timeout: ${REDIS_TIMEOUT:200ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:200ms}
   jackson:
     property-naming-strategy: SNAKE_CASE
     # 契约里的可选字段允许缺省；不全局裁 null，避免 required-but-null（如 plan_id）被省略。
@@ -27,7 +36,8 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        # 缓存命中率走 Micrometer 的 cache.requests 计数器；Prometheus 抓取留 J8。
+        include: health,info,metrics
   endpoint:
     health:
       probes:
@@ -36,7 +46,22 @@ management:
     # DB 是业务服务的正确性依赖：DB 不可用时 readiness 应为 DOWN。
     db:
       enabled: true
+    # Redis 只做缓存，不是正确性依赖。默认健康指标会在 Redis 挂时把服务标成
+    # DOWN，等于让编排层摘掉整个业务 API——与「缓存故障回源」语义相反。
+    redis:
+      enabled: false
 
 business:
   service-token: ${SERVICE_TOKEN:}
   timezone: ${BUSINESS_TIMEZONE:Asia/Shanghai}
+  cache:
+    # 默认关闭；compose 里通过 BUSINESS_CACHE_ENABLED=true 打开。
+    enabled: ${BUSINESS_CACHE_ENABLED:false}
+    key-prefix: ${BUSINESS_CACHE_PREFIX:marda:cache:}
+    today-ttl: ${BUSINESS_CACHE_TODAY_TTL:60s}
+    plan-ttl: ${BUSINESS_CACHE_PLAN_TTL:5m}
+    null-ttl: ${BUSINESS_CACHE_NULL_TTL:30s}
+    jitter: ${BUSINESS_CACHE_JITTER:0.1}
+    lock-ttl: ${BUSINESS_CACHE_LOCK_TTL:3s}
+    lock-wait: ${BUSINESS_CACHE_LOCK_WAIT:200ms}
+    lock-poll: ${BUSINESS_CACHE_LOCK_POLL:50ms}
