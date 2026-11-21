@@ -3,7 +3,7 @@ package com.marda.business.notification.domain;
 import java.time.Instant;
 import java.util.UUID;
 
-/** 已落库的通知。J3 只写 pending；重试字段为 J5 预留。 */
+/** 已落库的通知。J3 只写 pending；J5 起由 notification worker 投递并写 sent_at。 */
 public record Notification(
         UUID id,
         String userId,
@@ -14,5 +14,6 @@ public record Notification(
         int retryCount,
         Instant nextRetryAt,
         String idempotencyKey,
-        Instant createdAt) {
+        Instant createdAt,
+        Instant sentAt) {
 }

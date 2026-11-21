@@ -113,7 +113,7 @@ class PlanApiIntegrationTest {
 
     @BeforeEach
     void clean() {
-        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip CASCADE")
+        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip, business_outbox, processed_event CASCADE")
                 .update();
     }
 
@@ -151,6 +151,15 @@ class PlanApiIntegrationTest {
                 .isEqualTo("2026-11-11T15:59:59Z");
         assertThat(body.get("tasks").get(1).get("domain").asText()).isEqualTo("memory");
         assertThat(body.get("tasks").get(1).get("priority").asInt()).isEqualTo(2);
+        // P5-J5：计划 + 通知 + outbox 同一事务
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM notification
+                WHERE user_id = 'u1' AND template = 'plan_created' AND status = 'pending'
+                """).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM business_outbox
+                WHERE event_type = 'notification.requested' AND published_at IS NULL
+                """).query(Long.class).single()).isEqualTo(1);
     }
 
     @Test
@@ -176,6 +185,11 @@ class PlanApiIntegrationTest {
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(second.getBody().get("id").asText())
                 .isEqualTo(first.getBody().get("id").asText());
+        // 幂等重放不重复发通知 / 事件
+        assertThat(jdbc.sql("SELECT count(*) FROM notification").query(Long.class).single())
+                .isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM business_outbox").query(Long.class).single())
+                .isEqualTo(1);
     }
 
     @Test
@@ -380,6 +394,8 @@ class PlanApiIntegrationTest {
                 SELECT count(*) FROM learning_plan_skip
                 WHERE source_interview_id = 'iv-empty' AND reason = 'NO_WEAK_DOMAINS'
                 """).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM business_outbox").query(Long.class).single())
+                .isZero();
     }
 
     @Test
@@ -403,6 +419,8 @@ class PlanApiIntegrationTest {
                 WHERE source_interview_id = 'iv-behavioral'
                   AND reason = 'UNSUPPORTED_INTERVIEW_TYPE'
                 """).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM business_outbox").query(Long.class).single())
+                .isZero();
     }
 
     @Test
@@ -431,6 +449,11 @@ class PlanApiIntegrationTest {
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(second.getBody().get("id").asText())
                 .isEqualTo(first.getBody().get("id").asText());
+        // 事件重放同样不重复通知 / 事件
+        assertThat(jdbc.sql("SELECT count(*) FROM notification").query(Long.class).single())
+                .isEqualTo(1);
+        assertThat(jdbc.sql("SELECT count(*) FROM business_outbox").query(Long.class).single())
+                .isEqualTo(1);
     }
 
     @Test
@@ -490,6 +513,10 @@ class PlanApiIntegrationTest {
         assertThat(jdbc.sql("""
                 SELECT count(*) FROM notification
                 WHERE user_id = 'u1' AND status = 'pending' AND channel = 'in_app'
+                """).query(Long.class).single()).isEqualTo(1);
+        assertThat(jdbc.sql("""
+                SELECT count(*) FROM business_outbox
+                WHERE event_type = 'notification.requested'
                 """).query(Long.class).single()).isEqualTo(1);
     }
 

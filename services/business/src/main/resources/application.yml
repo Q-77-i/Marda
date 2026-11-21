@@ -8,6 +8,15 @@ spring:
     virtual:
       # J3 的 Spring MVC 用虚拟线程跑阻塞 JDBC；Hikari 池仍是 DB 并发上限。
       enabled: true
+  kafka:
+    # 只有 worker 角色会真正建生产者 / 消费者；web 角色留着地址也不连接。
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 10
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:55432/marda_business}
     username: ${DB_USER:marda}
@@ -54,6 +63,24 @@ management:
 business:
   service-token: ${SERVICE_TOKEN:}
   timezone: ${BUSINESS_TIMEZONE:Asia/Shanghai}
+  # P5-J5：worker 角色（消费者 / relay）默认关闭；compose 的 worker 容器打开。
+  worker:
+    enabled: ${BUSINESS_WORKER_ENABLED:false}
+  kafka:
+    plan-consumer-group: ${BUSINESS_PLAN_CONSUMER_GROUP:business-plan}
+    notification-consumer-group: ${BUSINESS_NOTIFICATION_CONSUMER_GROUP:notification-delivery}
+    retry-delay-ms: ${BUSINESS_KAFKA_RETRY_DELAY_MS:1000}
+    partitions: ${BUSINESS_KAFKA_PARTITIONS:1}
+    replication-factor: ${BUSINESS_KAFKA_REPLICATION_FACTOR:1}
+  outbox:
+    topic: ${BUSINESS_OUTBOX_TOPIC:notification.requested}
+    batch-size: ${BUSINESS_OUTBOX_BATCH_SIZE:100}
+    lease-seconds: ${BUSINESS_OUTBOX_LEASE_SECONDS:60}
+    poll-interval-ms: ${BUSINESS_OUTBOX_POLL_INTERVAL_MS:1000}
+    base-backoff-seconds: ${BUSINESS_OUTBOX_BASE_BACKOFF_SECONDS:1}
+    max-backoff-seconds: ${BUSINESS_OUTBOX_MAX_BACKOFF_SECONDS:60}
+    retention-days: ${BUSINESS_OUTBOX_RETENTION_DAYS:30}
+    publish-timeout-seconds: ${BUSINESS_OUTBOX_PUBLISH_TIMEOUT_SECONDS:10}
   cache:
     # 默认关闭；compose 里通过 BUSINESS_CACHE_ENABLED=true 打开。
     enabled: ${BUSINESS_CACHE_ENABLED:false}

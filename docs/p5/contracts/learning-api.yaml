@@ -171,6 +171,44 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '503':
           $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/learning/notifications:
+    get:
+      tags: [learning]
+      summary: 当前用户的通知（默认只返回已送达）
+      description: P5-J5 的 in_app 通知读接口；用户隔离由网关注入的 X-User-Id 保证。
+      operationId: listNotifications
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: 默认 sent（对用户可见）；pending / failed / dead 供排障。
+          schema:
+            type: string
+            enum: [pending, sent, failed, dead]
+            default: sent
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 50
+            default: 20
+      responses:
+        '200':
+          description: 通知列表（无通知时为空数组）
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /api/v1/learning/reminders/test:
     post:
       tags: [learning]
@@ -548,6 +586,37 @@ components:
         status:
           type: string
           enum: [pending, sent]
+    NotificationList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+    Notification:
+      type: object
+      additionalProperties: false
+      required: [id, template, payload, status, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        template:
+          type: string
+        payload:
+          type: object
+          description: 通知内容（plan_id / goal / task_count 等），不含题库原文。
+        status:
+          type: string
+          enum: [pending, sent, failed, dead]
+        created_at:
+          type: string
+          format: date-time
+        sent_at:
+          type: [string, "null"]
+          format: date-time
     NextPlanResponse:
       type: object
       additionalProperties: false

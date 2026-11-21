@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * 数据库契约测试：Flyway 在空 PG 上建出四张表，并守住唯一键 / 检查约束。
+ * 数据库契约测试：Flyway 在空 PG 上建出业务表与 outbox 表，并守住唯一键 / 检查约束。
  *
  * <p>这是 schema 的公开行为，不测实现细节；后续 API 用例仍走更高接缝。
  */
@@ -36,7 +36,7 @@ class SchemaIntegrationTest {
                     .withPassword("marda");
 
     @Test
-    void migrations_create_four_tables_and_guard_constraints() throws Exception {
+    void migrations_create_learning_and_outbox_tables_and_guard_constraints() throws Exception {
         Flyway.configure()
                 .dataSource(POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())
                 .locations("classpath:db/migration")
@@ -46,7 +46,10 @@ class SchemaIntegrationTest {
         try (Connection connection = DriverManager.getConnection(
                 POSTGRES.getJdbcUrl(), POSTGRES.getUsername(), POSTGRES.getPassword())) {
             assertThat(tableNames(connection)).contains(
-                    "learning_plan", "learning_task", "notification", "learning_plan_skip");
+                    "learning_plan", "learning_task", "notification", "learning_plan_skip",
+                    "business_outbox", "processed_event");
+            // P5-J5：通知送达时间列由 V2 补上（老库 expand，不重建表）。
+            assertThat(columnNames(connection, "notification")).contains("sent_at");
 
             UUID planId = UUID.randomUUID();
             insertPlan(connection, planId, "iv-1");
@@ -72,6 +75,21 @@ class SchemaIntegrationTest {
              ResultSet resultSet = statement.executeQuery()) {
             while (resultSet.next()) {
                 names.add(resultSet.getString(1));
+            }
+        }
+        return names;
+    }
+
+    private static Set<String> columnNames(Connection connection, String table) throws SQLException {
+        Set<String> names = new HashSet<>();
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT column_name FROM information_schema.columns"
+                        + " WHERE table_schema = 'public' AND table_name = ?")) {
+            statement.setString(1, table);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    names.add(resultSet.getString(1));
+                }
             }
         }
         return names;

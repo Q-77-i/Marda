@@ -115,6 +115,21 @@
 5. **`X-Cache` 只是证据 / 调试**：`HIT | MISS | BYPASS`，不是前端契约；日志不打印完整 user_id。
 6. **J4 不做 Sentinel**：留 J6；Sentinel 切换可能丢锁（异步复制），届时单独评估。
 
+## P5-J5 消息队列坑位（写代码前必读）
+
+1. **outbox 必须和 finalize 同事务**：写在事务外，崩溃就丢事件；`agent_outbox` 用场次确定性 `uuid5` + 唯一键，`retry_persist` / 重复 finalize 不会造第二条。
+2. **Kafka 不进请求路径**：api 只写本地 outbox；relay 独立进程。Kafka 挂时 `/healthz` 仍是 200，outbox 积压，broker 恢复后补发。
+3. **relay 调 `get_store` 必须把 min/max/timeout 三个参数给全**：漏一个就会去实例化 `Settings`，而 relay 镜像没有（也不该有）LLM 密钥 → 启动即 `ValidationError`。
+4. **消费幂等要和业务写入同事务**：`processed_event` 先插再建计划，业务异常一起回滚；分开写会在崩溃窗口重复。
+5. **毒消息不重试**：解析 / 校验抛 `NonRetryableEventException`，`@RetryableTopic(exclude=...)` 直送 DLT；否则在 retry topic 空转 5 次。
+6. **行为面的 weaknesses 是维度名（带下划线）**，不符合事件 schema 的 `^[a-z][a-z0-9-]*$`：行为面发空 `weak_domains` 让消费者记审计；整场未评分**不发**事件（缺数据 ≠ 0 分）。
+7. **Spring 的 retry topic 是每档一个**：`<event>.retry-1000/2000/4000/8000`；`SINGLE_TOPIC` 只在同间隔时合并。别在 `NewTopic` 里再预建一个 `.retry` 假 topic。
+8. **web 角色不能起消费者**：`business.worker.enabled` 条件装配；否则 web 实例也进消费组，故障演练与容量口径失真。
+9. **notification 行由生产方写、worker 只投递**：Kafka 挂时行仍在（pending）；worker 标 sent；失败在 `REQUIRES_NEW` 事务里记 failed，别被 deliver 的事务回滚掉。
+10. **PG 的 JSONB `::text` 带空格**：outbox payload 断言要解析 JSON，不能做子串匹配。
+11. **SQLite 不支持 `SKIP LOCKED`**：relay 只跑 PG；SQLite 形态只写 outbox 表，不跑 relay。
+12. **dev RF=1 是持久性边界**：outbox 保证「DB 提交的事件不丢」，已发布消息在单 broker 上不承诺磁盘冗余；HA 到 J6。
+
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)

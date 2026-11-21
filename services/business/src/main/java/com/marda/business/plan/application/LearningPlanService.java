@@ -5,6 +5,12 @@ import com.marda.business.cache.BusinessCacheProperties;
 import com.marda.business.cache.CacheKeys;
 import com.marda.business.cache.CacheResult;
 import com.marda.business.common.BadRequestException;
+import com.marda.business.notification.domain.Notification;
+import com.marda.business.notification.domain.NotificationChannel;
+import com.marda.business.notification.domain.NotificationStatus;
+import com.marda.business.notification.persistence.NotificationRepository;
+import com.marda.business.outbox.BusinessOutboxRepository;
+import com.marda.business.outbox.OutboxEventFactory;
 import com.marda.business.plan.domain.IdempotencyHasher;
 import com.marda.business.plan.domain.InvalidPlanInputException;
 import com.marda.business.plan.domain.LearningPlan;
@@ -20,6 +26,8 @@ import com.marda.business.plan.domain.TaskStatus;
 import com.marda.business.plan.persistence.LearningPlanRepository;
 import com.marda.business.plan.persistence.LearningPlanSkipRepository;
 import com.marda.business.plan.persistence.LearningTaskRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -49,6 +57,10 @@ public class LearningPlanService {
     private final ZoneId zone;
     private final BusinessCache cache;
     private final BusinessCacheProperties cacheProperties;
+    private final NotificationRepository notifications;
+    private final BusinessOutboxRepository outbox;
+    private final OutboxEventFactory outboxEvents;
+    private final ObjectMapper objectMapper;
 
     public LearningPlanService(
             LearningPlanRepository plans,
@@ -59,7 +71,11 @@ public class LearningPlanService {
             Clock clock,
             ZoneId zone,
             BusinessCache cache,
-            BusinessCacheProperties cacheProperties) {
+            BusinessCacheProperties cacheProperties,
+            NotificationRepository notifications,
+            BusinessOutboxRepository outbox,
+            OutboxEventFactory outboxEvents,
+            ObjectMapper objectMapper) {
         this.plans = plans;
         this.tasks = tasks;
         this.skips = skips;
@@ -69,6 +85,10 @@ public class LearningPlanService {
         this.zone = zone;
         this.cache = cache;
         this.cacheProperties = cacheProperties;
+        this.notifications = notifications;
+        this.outbox = outbox;
+        this.outboxEvents = outboxEvents;
+        this.objectMapper = objectMapper;
     }
 
     /**
@@ -142,10 +162,46 @@ public class LearningPlanService {
                         now))
                 .toList();
         tasks.insertAll(taskRows);
+        // P5-J5：计划创建 → 通知行 + business_outbox(notification.requested)，同一本地事务。
+        // 只有 CREATED 才发；幂等重放（EXISTING）不重复通知。
+        Notification notification = planCreatedNotification(input.userId(), plan, taskRows.size(), now);
+        notifications.insert(notification);
+        outbox.insert(
+                outboxEvents.notificationRequested(notification),
+                "learning_plan",
+                plan.id().toString(),
+                input.userId(),
+                now);
         evictAfterCommit(
                 CacheKeys.today(input.userId(), todayDate()),
                 CacheKeys.plan(input.userId(), plan.id()));
         return CreatePlanResult.created(new PlanView(plan, taskRows));
+    }
+
+    private Notification planCreatedNotification(
+            String userId, LearningPlan plan, int taskCount, Instant now) {
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(Map.of(
+                    "plan_id", plan.id().toString(),
+                    "goal", plan.goal(),
+                    "task_count", taskCount));
+        } catch (JsonProcessingException exception) {
+            throw new IllegalStateException("通知内容序列化失败", exception);
+        }
+        UUID notificationId = UUID.randomUUID();
+        return new Notification(
+                notificationId,
+                userId,
+                NotificationChannel.IN_APP,
+                "plan_created",
+                payload,
+                NotificationStatus.PENDING,
+                0,
+                null,
+                "plan_created:" + plan.id(),
+                now,
+                null);
     }
 
     @Transactional(readOnly = true)

@@ -69,7 +69,7 @@ class PlanTransactionTest {
 
     @BeforeEach
     void clean() {
-        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip CASCADE")
+        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip, business_outbox, processed_event CASCADE")
                 .update();
     }
 
@@ -87,6 +87,11 @@ class PlanTransactionTest {
         assertThat(jdbc.sql("SELECT count(*) FROM learning_plan").query(Long.class).single())
                 .isZero();
         assertThat(jdbc.sql("SELECT count(*) FROM learning_task").query(Long.class).single())
+                .isZero();
+        // P5-J5：通知行与 outbox 也必须一起回滚——不能出现「计划没建、通知事件发了」。
+        assertThat(jdbc.sql("SELECT count(*) FROM notification").query(Long.class).single())
+                .isZero();
+        assertThat(jdbc.sql("SELECT count(*) FROM business_outbox").query(Long.class).single())
                 .isZero();
     }
 

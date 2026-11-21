@@ -11,6 +11,99 @@
 # - 默认 `docker compose up` 不加载本文件，仍然是纯 Python 形态。
 
 services:
+  # P5-J5 事件总线：dev 单 broker / KRaft；HA 的 3 broker + RF=3 留 J6。
+  # 两套 listener：容器内走 kafka:9092，宿主机跑 pytest / 工具走 127.0.0.1:9094。
+  kafka:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://127.0.0.1:9094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      # dev 单机：512MB 堆，别把本机内存吃穿
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+    volumes:
+      - ./docker/volumes/kafka:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:9094:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  # P5-J5：Python api 在 finalize 同事务写 agent_outbox；Kafka 由 relay 独立发布。
+  api:
+    environment:
+      OUTBOX_ENABLED: "true"
+
+  # P5-J5：Python outbox relay（独立进程；Kafka 不在面试请求路径）。
+  relay:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    command: ["/app/.venv/bin/python", "-m", "app.outbox.relay"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@postgres:5432/${POSTGRES_DB:-marda}
+      KAFKA_BOOTSTRAP: kafka:9092
+      KAFKA_TOPIC: interview.finalized
+      OUTBOX_BATCH_SIZE: "100"
+      OUTBOX_POLL_INTERVAL_S: "1"
+      OUTBOX_LEASE_S: "60"
+      OUTBOX_BACKOFF_BASE_S: "1"
+      OUTBOX_BACKOFF_MAX_S: "60"
+      OUTBOX_RETENTION_DAYS: "30"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  # P5-J5：business worker 角色（同镜像）：outbox relay + interview.finalized / notification.requested 消费者。
+  # 不发布宿主端口；web 角色（business）继续只接业务 API。
+  worker:
+    build:
+      context: ./services/business
+    restart: unless-stopped
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      BUSINESS_WORKER_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      SERVER_PORT: "8082"
+      BUSINESS_KAFKA_RETRY_DELAY_MS: "1000"
+      BUSINESS_KAFKA_PARTITIONS: "1"
+      BUSINESS_KAFKA_REPLICATION_FACTOR: "1"
+      BUSINESS_OUTBOX_POLL_INTERVAL_MS: "1000"
+      # 缓存不是 worker 的正确性依赖；Redis 挂时仍能消费。
+      BUSINESS_CACHE_ENABLED: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8082/actuator/health/readiness"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
   business:
     build:
       context: ./services/business

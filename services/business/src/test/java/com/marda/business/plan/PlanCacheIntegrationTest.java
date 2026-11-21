@@ -90,7 +90,7 @@ class PlanCacheIntegrationTest {
 
     @BeforeEach
     void clean() {
-        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip CASCADE")
+        jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip, business_outbox, processed_event CASCADE")
                 .update();
     }
 

@@ -3,6 +3,7 @@
 > 2026-11-09 · 评估稿，供决策；不含题库原文、密钥、个人数据。
 > 2026-11-10 · J0 基线已完成；J1 已评审通过（内部记录，不随仓库）。
 > 2026-11-15 · J4 分布式缓存实现：5 个热 key + 故障回源；Sentinel 留 J6。
+> 2026-11-21 · J5 消息队列与事件驱动：Python outbox + 独立 relay；Java worker 消费 / retry / DLQ。
 > 前置：P4 生产化（多 worker + PostgreSQL + Redis）已完成；P5 不以“重写”为目标。
 >
 > **业务动机**：P5 不是“把 Python 换成 Java”，而是把产品闭环从“面试诊断”延伸到“学习执行”——
@@ -437,12 +438,17 @@
 
 | Topic | Key | 分区 | 保留 | 生产者 | 消费者 | 用途 |
 | --- | --- | --- | --- | --- | --- | --- |
-| `interview.finalized` | interview_id | 6 | 7d | agent | business | 报告完成 |
-| `learning.plan.requested` | user_id | 6 | 7d | business | worker | 建计划（MVP 可选） |
-| `notification.requested` | user_id | 6 | 7d | business | notification worker | 发通知 |
-| `notification.retry` | user_id | 6 | 3d | worker | worker | 退避重试 |
-| `notification.dlq` | user_id | 3 | 30d | worker | 人工 / 工具 | 死信 |
-| `user.activity` | user_id | 12 | 3d | gateway / agent | 分析 worker | 可选 |
+| `interview.finalized` | interview_id | 1（HA 6） | 7d | agent | business worker | 报告完成 |
+| `notification.requested` | user_id | 1（HA 6） | 7d | business | notification worker | 通知投递 |
+| `interview.finalized.retry-<delay>` / `.dlq` | interview_id | 1（HA 3） | 3d / 30d | worker | worker / 人工 | 重试 / 死信 |
+| `notification.requested.retry-<delay>` / `.dlq` | user_id | 1（HA 3） | 3d / 30d | worker | worker / 人工 | 重试 / 死信 |
+
+- J5 实际用 **`<event>.retry-<delay>` / `<event>.dlq`**（Spring `@RetryableTopic` 每个退避档一个
+  retry topic：1s / 2s / 4s / 8s；`sameIntervalTopicReuseStrategy=SINGLE_TOPIC` 只在同间隔时合并，
+  指数退避下仍是多档）。J1 目录里的 `notification.retry` / `notification.dlq` 是族名，不是逐字 topic 名。
+- dev 单 broker、1 分区、RF=1；HA 的 6 分区 / RF=3 留 J6。
+- `learning.plan.requested` 未启用：计划生成是纯代码，business 消费者直接建；
+  `user.activity` 留 J8。**不引入第二个 MQ**。
 
 - 生产：`acks=all`、`enable.idempotence=true`、`compression=zstd`、`linger.ms=5-20`。
 - HA：3 broker、RF=3、`min.insync.replicas=2`；dev 单 broker、RF=1。
@@ -458,17 +464,23 @@
 relay 轮询 `FOR UPDATE SKIP LOCKED` 批量发布，成功后标记 `published_at`。
 
 - **不共享 outbox 表**：每张表只有一个写者（见 §2.3、内部 J1 评审稿 §3.1）；
-- relay 单实例多线程或 ShedLock 选主；批量 100；失败退避；
-- 事件 `event_id` 唯一；消费者幂等；
+- `event_id` 由场次 / 通知确定性派生（Python `uuid5`、Java `nameUUIDFromBytes`）+ 唯一键
+  `(aggregate_type, aggregate_id, event_type)`：`retry_persist` / 重放不会造第二条；
+- Python relay **独立进程**（`python -m app.outbox.relay`，只支持 PG）；领取用
+  `FOR UPDATE SKIP LOCKED` + 租约写 `next_attempt_at`，relay 崩溃后租约到期由其他 relay 接手；
+- Java relay 在 worker 角色里 `@Scheduled` 轮询；批量默认 100；失败退避 + `attempts` / `last_error`；
+- 保留：已发布的 outbox 行 30 天后清理；**未发布的行永远不删**（那是待补发的事实）；
 - 可选升级：Debezium CDC 读 binlog，减少轮询延迟（加分项，不是必需）。
 
 ### 6.4 消费（不重 / 可重放）
 
 - 至少一次 + `processed_event(event_id, consumer)` 唯一索引 = 业务幂等；
-- 重试：指数退避 + 重试 topic；5 次后进 DLQ；
-- 毒消息：进 DLQ，不阻塞分区；提供 replay 工具；
+  去重记录与业务写入**同一事务**：业务失败时一起去滚，重投仍会重新处理；
+- 重试：指数退避 + `<event>.retry-<delay>`（1s / 2s / 4s / 8s）；5 次后 `<event>.dlq`；
+- 毒消息：解析 / 校验失败抛 `NonRetryableEventException`，**不重试**直送 DLQ，不阻塞分区；
 - 消费位点：成功后提交；失败不提交；
-- 背压：`max.poll.records`、消费者并发、暂停/恢复；lag 告警；
+- 背压：`max.poll.records=10`、消费者并发、暂停/恢复；lag 告警留 J8；
+- DLQ 重放：`backend/scripts/replay_dlq.py`（不提交位点，消费者去重兜底）；
 - **不宣称端到端 exactly-once**：Kafka 事务只覆盖 Kafka 内部；DB + MQ 仍是至少一次，靠幂等。
 
 ### 6.5 事件流
@@ -490,6 +502,25 @@ relay 轮询 `FOR UPDATE SKIP LOCKED` 批量发布，成功后标记 `published_
 ### 6.7 什么不进 MQ
 
 面试轮次、LLM 调用、finalize 事务、会话锁、任何要求“写完立刻读到”的操作。
+
+### 6.8 J5 实现口径（2026-11-21）
+
+| 决策 | 结论 | 理由 |
+| --- | --- | --- |
+| Python outbox 位置 | `finalize_interview` **同一事务**写 `agent_outbox`；`OUTBOX_ENABLED` 默认关，P5 compose 开 | 报告提交了事件就一定在；Kafka 不在请求路径 |
+| Python relay | 独立进程，只支持 PG；SQLite 只建表 / 写表，不跑 relay | 单机形态不引入 Kafka；`SKIP LOCKED` 只有 PG 有 |
+| 事件摘要来源 | `app/outbox/summary.py` 服务端唯一实现；smoke 复用；前端保留展示副本 | 避免第三份派生漂移 |
+| 行为面 / 未评分 | 行为面发**空 `weak_domains`**（消费者记审计）；整场未评分**不发** | 维度名带下划线不符合契约；缺数据 ≠ 0 分 |
+| worker 形态 | 同镜像独立 compose 服务，`business.worker.enabled=true`；web 角色不起消费者 | 部署单元独立、故障演练真实；不复制 Java 代码 |
+| 重试 topic 命名 | `<event>.retry-1000/2000/4000/8000` + `<event>.dlq` | 指数退避每档一个 topic（Spring 实际行为）；不预建、不写死族名 |
+| 通知行写入方 | 生产方在计划 / 测试提醒**同一事务**写 notification + outbox；worker 只投递并标 sent | Kafka 挂时通知行仍在（pending）；保留 J3 的 202 语义 |
+| 通知读接口 | `GET /api/v1/learning/notifications`，默认 `status=sent` | J3 明确留到 J5；让「送达」可被产品验证 |
+| 分区 / RF | dev 1 / 1；HA 6 / 3 | 单机 demo 不预支 HA 资源 |
+| 不做什么 | `learning.plan.requested` / `user.activity` / `user_preference` / 到点提醒调度 / exactly-once | 没有真实消费方或数据量不支撑；按 J1 范围控制 |
+
+> J5 测试证据（2026-11-21）：pytest 1032 passed / 33 skipped；PG + Kafka 真链路用例通过；
+> `mvn verify` 55 passed（含 Testcontainers PG + Kafka：重复事件、毒消息 DLQ、retry 成功、
+> DLT handler 标 dead、通知读接口）。故障演练与 compose 证据见内部 J5 记录。
 
 ---
 
@@ -731,7 +762,7 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 | P5-J2 | Java 网关 + 可观测骨架 | 1–2 周 | 🚧 2026-11-10 第二片：鉴权 + Redis 令牌桶限流 + Resilience4j 熔断/超时/舱壁 + 灰度 + CI Java job；重试 / 优雅下线 / 压测 / 故障演练待续 |
 | P5-J3 | Java 业务服务 + 学习计划 | 1–2 周 | E2E + 幂等 |
 | P5-J4 | Redis 缓存 + 故障回源（Sentinel 留 J6） | 1 周 | ✅ 2026-11-15：5 个热 key；X-Cache 命中 / 写后失效 / 停 Redis 回源；pytest 1002 · mvn 45 |
-| P5-J5 | Kafka + outbox + worker | 1–2 周 | 零丢失 / 幂等 / DLQ |
+| P5-J5 | Kafka + outbox + worker | 1–2 周 | ✅ 2026-11-21：Python `agent_outbox` + 独立 relay；Java `business_outbox` + worker（consumers / retry / DLQ / 通知读接口）；pytest 1032 · mvn 55 |
 | P5-J6 | 多实例 + HA + 故障演练 | 1–2 周 | 演练全过 |
 | P5-J7 | 压测 + 调优 | 1–2 周 | SLO 达成 |
 | P5-J8 | 监控 / 追踪 / 告警 / runbook | 1 周 | 看板 + 告警 |
@@ -758,7 +789,8 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 - [x] 时间预算：MVP（5–7 周）还是 Full（8–12 周）？——MVP 优先。
 - [x] 是否接受“单机多实例、fake LLM、非生产规模”的诚实边界？——接受。
 - [x] 分支 `exp/microservices` + `v1.0.0` Release 先行？——已执行：v1.0.0 已发布；`exp/microservices` 已建。
-- [ ] 学习计划域是否就是最终选定的 Java 新域？（备选：题库运营后台 / 通知中心）——留 J3。
+- [x] 学习计划域是否就是最终选定的 Java 新域？（备选：题库运营后台 / 通知中心）——留 J3。
+- [x] J5 的 outbox / 消费 / 通知口径？——按 §6.8；worker 同镜像独立 compose 服务；通知行生产方写、worker 投递；行为面空短板、未评分不发事件。
 
 ---
 

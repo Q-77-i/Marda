@@ -1,6 +1,6 @@
 package com.marda.business.notification.domain;
 
-/** 通知状态（MVP 只写 pending，投递/重试是 J5 worker）。 */
+/** 通知状态：pending → sent / failed；failed → pending（重试）/ dead（DLQ）。 */
 public enum NotificationStatus {
     PENDING("pending"),
     SENT("sent"),
@@ -15,5 +15,14 @@ public enum NotificationStatus {
 
     public String apiValue() {
         return apiValue;
+    }
+
+    public static NotificationStatus fromApi(String value) {
+        for (NotificationStatus status : values()) {
+            if (status.apiValue.equals(value)) {
+                return status;
+            }
+        }
+        throw new IllegalArgumentException("未知通知状态：" + value);
     }
 }
