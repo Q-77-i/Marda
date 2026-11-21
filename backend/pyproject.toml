@@ -25,6 +25,8 @@ dependencies = [
     "psycopg-pool>=3.2",
     # 协调层：会话锁 / per-user 限流 / 全局 LLM 槽（多 worker 共享）
     "redis>=5.2",
+    # P5-J5 outbox relay：librdkafka（acks=all + 幂等 + zstd）；只被独立 relay 进程使用
+    "confluent-kafka>=2.6",
     "pyjwt>=2.8",
     "langfuse==4.9.1",
     "python-multipart>=0.0.9",
@@ -40,6 +42,8 @@ dev = [
     "openai>=3.14",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    # P5-J5：事件契约测试直接拿 docs/p5/contracts 的 JSON Schema 校验生产者产物
+    "jsonschema>=4.23",
     "ragas>=0.3,<0.4",
     # MCP 题库查询 server（P2-M10）：**可选组件**，只有 app/mcp_server 用它。
     # 放 dev 组的理由：容器 `uv sync --no-dev` 天然不进 api 镜像（协议代码与 api 无关），
@@ -57,6 +61,7 @@ asyncio_mode = "auto"
 markers = [
     "postgres: 需要 PostgreSQL（MARDA_TEST_DATABASE_URL / MARDA_TEST_CHECKPOINT_URL）",
     "redis: 需要 Redis（MARDA_TEST_REDIS_URL）",
+    "kafka: 需要 Kafka（MARDA_TEST_KAFKA_BOOTSTRAP）",
 ]
 
 [[tool.uv.index]]

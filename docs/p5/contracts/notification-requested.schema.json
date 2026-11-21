@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marda.local/contracts/notification-requested.schema.json",
+  "title": "notification.requested payload",
+  "description": "通知投递请求。只带定位信息；通知内容在 notification 行（生产方同一本地事务写入），Kafka 不重复放个人数据。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["notification_id", "user_id", "channel", "template"],
+  "properties": {
+    "notification_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "通知行主键；worker 按它读取内容并投递。"
+    },
+    "user_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "channel": {
+      "type": "string",
+      "enum": ["in_app"],
+      "description": "MVP 只做 in_app；email / webhook 后续加枚举值。"
+    },
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "idempotency_key": {
+      "type": "string",
+      "maxLength": 200,
+      "description": "与 notification.idempotency_key 一致；重放时用于去重。"
+    }
+  }
+}

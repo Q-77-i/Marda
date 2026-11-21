@@ -24,12 +24,17 @@ from __future__ import annotations
 
 import argparse
 import os
-import statistics
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
+
+# 摘要派生与服务端同一实现（P5-J5）：脚本不再自己算一份。
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from app.outbox.summary import summarize_report  # noqa: E402
 
 
 def expect(condition: bool, message: str, response: httpx.Response | None = None) -> None:
@@ -39,36 +44,6 @@ def expect(condition: bool, message: str, response: httpx.Response | None = None
     if response is not None:
         detail = f"：HTTP {response.status_code} {response.text[:300]}"
     raise SystemExit(f"❌ {message}{detail}")
-
-
-def summarize_report(report: dict[str, Any]) -> dict[str, Any]:
-    """报告 payload → 事件 schema 的 report_summary；缺分数的短板不按 0 分猜。"""
-    weaknesses = [domain for domain in (report.get("weaknesses") or []) if domain]
-    scores = report.get("domain_scores") or {}
-    advice = {
-        item.get("domain"): item.get("advice")
-        for item in (report.get("study_advice") or [])
-        if isinstance(item, dict)
-    }
-    weak_domains = [
-        {
-            "domain": domain,
-            "score": float(scores[domain]),
-            "advice": advice.get(domain),
-        }
-        for domain in weaknesses
-        if isinstance(scores.get(domain), (int, float))
-    ]
-    expect(bool(weak_domains), "该报告没有可生成计划的短板域（或 domain_scores 缺分数）")
-
-    overall = report.get("overall")
-    if not isinstance(overall, (int, float)):
-        values = [
-            value for value in (report.get("scores") or {}).values()
-            if isinstance(value, (int, float))
-        ]
-        overall = statistics.mean(values) if values else 0.0
-    return {"overall": round(float(overall), 2), "weak_domains": weak_domains}
 
 
 def cleanup_smoke_user(user_id: str, username: str) -> None:
@@ -160,6 +135,10 @@ def main() -> None:
             position = report.get("position") or "Agent"
             interview_type = report.get("interview_type", "tech")
             report_summary = summarize_report(report)
+            expect(
+                bool(report_summary and report_summary["weak_domains"]),
+                "该报告没有可生成计划的短板域（或 domain_scores 缺分数）",
+            )
             goal = None
         else:
             source_interview_id = f"smoke-plan-{uuid.uuid4().hex}"

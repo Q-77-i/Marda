@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator
 
@@ -21,6 +22,7 @@ from pydantic import BaseModel
 
 from app import cache, coordination, db, llm, observability
 from app.config import Settings
+from app.outbox.events import build_interview_finalized
 from app.pg_retry import retry_on_conflict
 from app.domain import INTERVIEW_TECH
 from app.graph.checkpointer import create_checkpointer
@@ -502,6 +504,8 @@ class Service:
         """
         records = [_answers_row(q) for q in values.get("answered_questions") or []]
         report = values.get("report") or {}
+        # 事件只构建一次（确定性 event_id；重试沿用同一份，不会算出两个事件）
+        event = self._finalize_event(interview_id, values)
         last_error: Exception | None = None
         for attempt in range(3):  # 首次 + 2 次重试
             try:
@@ -511,6 +515,7 @@ class Service:
                     interview_id,
                     records,
                     report,
+                    event=event,
                 )
                 await self._evict_user_caches(values.get("user_id", ""), interview_id)
                 return
@@ -519,6 +524,25 @@ class Service:
                 if attempt < 2:
                     await asyncio.sleep(0.2 * (attempt + 1))
         raise PersistFailedError(f"落库失败（重试 3 次仍失败）：{last_error}")
+
+    def _finalize_event(self, interview_id: str, values: dict) -> dict | None:
+        """构建 `interview.finalized`（P5-J5）。
+
+        **构建失败不阻断落库**：报告是主产物，一条事件不值得让用户看到「保存失败」。
+        失败时记 warning，之后可用 `scripts/emit_finalized.py` 从已落库报告补发。
+        """
+        if not self._settings.outbox_enabled:
+            return None
+        try:
+            return build_interview_finalized(
+                interview_id=interview_id,
+                user_id=values.get("user_id") or "",
+                report=values.get("report") or {},
+                finished_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 事件是旁路，不能拖垮落库
+            logger.warning("收尾事件构建失败（报告照常落库，可 backfill 补发）：%s", exc)
+            return None
 
     async def _evict_user_caches(self, user_id: str, interview_id: str | None = None) -> None:
         """写/删成功后失效缓存；缓存故障只记日志，TTL 是最终边界。"""

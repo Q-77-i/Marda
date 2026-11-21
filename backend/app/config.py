@@ -90,6 +90,11 @@ class Settings(BaseSettings):
     cache_redis_timeout_s: float = 0.2
     cache_key_prefix: str = "marda:cache:"
 
+    # ===== P5-J5 事件 outbox =====
+    # 默认关闭：单机 / SQLite 形态行为不变；P5 compose 用 true。
+    # 打开后 finalize 会在**同一事务**写 agent_outbox；Kafka 由独立 relay 发布。
+    outbox_enabled: bool = False
+
     # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）
     coordination_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"

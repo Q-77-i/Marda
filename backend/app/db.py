@@ -37,6 +37,7 @@ _STORE_METHODS = (
     "save_answers",
     "save_report",
     "finalize_interview",
+    "enqueue_outbox",
     "get_interview",
     "delete_interview",
     "query_interviews",
@@ -147,12 +148,20 @@ def finalize_interview(
     interview_id: str,
     records: list[dict[str, Any]],
     report: dict[str, Any],
+    *,
+    event: dict[str, Any] | None = None,
 ) -> None:
     """**单事务**收尾（P4-E2）：answers + report + interviews.status 一起成或一起败。
 
     旧路径三次独立写，中途失败会留下「图 finished、业务 running、报告缺失」的半成品场次。
+    P5-J5：`event` 非空时，**同一事务**再写 `agent_outbox`（Kafka 不在请求路径里）。
     """
-    _store(target).finalize_interview(interview_id, records, report)
+    _store(target).finalize_interview(interview_id, records, report, event=event)
+
+
+def enqueue_outbox(target: Path | str, event: dict[str, Any]) -> bool:
+    """单独入队（回填 / 补发）：同一张 outbox 表、同一唯一键；重复事件返回 False。"""
+    return _store(target).enqueue_outbox(event)
 
 
 def get_interview(target: Path | str, interview_id: str) -> dict | None:

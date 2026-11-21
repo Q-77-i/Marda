@@ -11,6 +11,8 @@
 | [event-envelope.schema.json](event-envelope.schema.json) | Kafka 事件统一信封（JSON Schema 2020-12） |
 | [interview-finalized.schema.json](interview-finalized.schema.json) | `interview.finalized` payload |
 | [examples/interview-finalized.json](examples/interview-finalized.json) | 示例事件（虚构 id；无题库原文 / 个人数据） |
+| [notification-requested.schema.json](notification-requested.schema.json) | `notification.requested` payload（只带通知行定位信息） |
+| [examples/notification-requested.json](examples/notification-requested.json) | 示例事件（虚构 id） |
 
 ## 约定
 
@@ -51,6 +53,7 @@ OpenAPI 的 `$ref` 结构检查（无第三方依赖）：
 
 ```bash
 backend/.venv/bin/python - <<'PY'
+import json
 import yaml
 from pathlib import Path
 base = Path("docs/p5/contracts")
@@ -67,8 +70,15 @@ def walk(node):
             walk(v)
 walk(spec)
 for ref in refs:
-    if ref.startswith("./"):
-        assert (base / ref).exists(), ref
+    path, _, fragment = ref.partition("#")
+    if path.startswith("./"):
+        target = base / path
+        assert target.exists(), ref
+        # JSON Schema 片段（#/properties/...）也要能解析，别只查文件存在
+        if fragment:
+            node = json.loads(target.read_text(encoding="utf-8"))
+            for part in fragment.lstrip("/").split("/"):
+                node = node[part]
     elif ref.startswith("#/"):
         node = spec
         for part in ref[2:].split("/"):

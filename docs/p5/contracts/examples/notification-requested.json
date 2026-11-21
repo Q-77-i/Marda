@@ -1,0 +1,14 @@
+{
+  "event_id": "8a6c1d2e-4b7f-4c1a-9e2d-3f5a7b9c0d11",
+  "type": "notification.requested",
+  "version": 1,
+  "occurred_at": "2026-11-20T12:00:05Z",
+  "producer": "business",
+  "payload": {
+    "notification_id": "2d9f4c7a-1e3b-4a5c-8f6d-0b2e4a6c8d10",
+    "user_id": "u_7d2c1a9b",
+    "channel": "in_app",
+    "template": "plan_created",
+    "idempotency_key": "plan_created:5b3e8c41-7a2d-4f6e-9c1b-8d0e2f4a6c80"
+  }
+}
