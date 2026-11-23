@@ -15,12 +15,12 @@
 <text x="585.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">提炼项目 / 方向</text>
 <text x="585.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">不计分</text>
 <rect x="790" y="250" width="300" height="160" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
-<text x="940.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">TECH_BASE 技术问答</text>
-<text x="940.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">默认 9 道</text>
+<text x="940.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">PROJECT 项目深挖</text>
+<text x="940.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">按项目定制 2–3 道</text>
 <text x="940.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">计分</text>
 <rect x="1145" y="250" width="300" height="160" rx="12" fill="#EDF1F8" stroke="#8E97B8" stroke-width="2"/>
-<text x="1295.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">PROJECT 场景深挖</text>
-<text x="1295.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">1 道架构设计</text>
+<text x="1295.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">TECH_BASE 技术问答</text>
+<text x="1295.0" y="338.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="21" fill="#5C6478" text-anchor="middle" font-weight="400">默认 10 题场 7 道</text>
 <text x="1295.0" y="374.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="19" fill="#5C6478" text-anchor="middle" font-weight="400">计分</text>
 <rect x="1500" y="250" width="300" height="160" rx="12" fill="#F6F7FB" stroke="#8E97B8" stroke-width="2"/>
 <text x="1650.0" y="302.3" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#1F2430" text-anchor="middle" font-weight="700">CLOSING 反问</text>
@@ -41,7 +41,7 @@
 <polyline points="1800.0,330.0 1855.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
 <polyline points="2155.0,330.0 2210.0,330.0" fill="none" stroke="#5B6478" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow)"/>
 <rect x="720" y="530" width="860" height="110" rx="12" fill="#F6F7FB" stroke="#C9CEDD" stroke-width="2" stroke-dasharray="8 7"/>
-<text x="1150.0" y="568.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#4F5D8A" text-anchor="middle" font-weight="600">技术问答与场景深挖的内部循环</text>
+<text x="1150.0" y="568.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="26" fill="#4F5D8A" text-anchor="middle" font-weight="600">项目深挖与技术问答的内部循环</text>
 <text x="1150.0" y="606.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="middle" font-weight="400">出题 → 作答 → 评分 → 追问决策（纯代码，单题追问上限 3 次）</text>
 <rect x="80" y="754" width="26" height="26" rx="6" fill="#F6F7FB" stroke="#8E97B8" stroke-width="1.5"/>
 <text x="118.0" y="774.0" font-family="Helvetica, Arial, PingFang SC, Noto Sans CJK SC, sans-serif" font-size="22" fill="#5C6478" text-anchor="start" font-weight="normal">不计分阶段</text>
