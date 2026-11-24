@@ -37,6 +37,8 @@ async def test_同一场并发请求第二个拿409(client):
             f"/api/interviews/{interview_id}/messages", json={"content": "你好"}
         )
         assert r.status_code == 409
+        # 进程被杀时客户端靠这个值知道最多等多久（锁的兜底 TTL）
+        assert r.headers["retry-after"] == "30"
     finally:
         await service.release_session(interview_id, token)
 

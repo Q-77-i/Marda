@@ -72,14 +72,22 @@ def _is_retryable(exc: BaseException) -> bool:
     return False
 
 
-@lru_cache
-def _get_client() -> AsyncOpenAI:
-    """单例复用连接池；测试通过 monkeypatch 此函数注入 fake。
+def _build_client(settings) -> Any:
+    """按配置构造 LLM 客户端（纯函数，便于单测；`_get_client` 负责缓存）。
 
-    配了 Langfuse key 时换 drop-in 客户端（LLM 调用自动成为 generation，带 usage →
-    token 成本可统计，P1-M4）；未配置时用原生 SDK，零额外开销。
+    `LLM_MODE=fake` 只用于故障演练 / 压测（J6/J7）：确定性输出、可配分片延迟，
+    不调用真实模型、不烧 token。默认 real；显式开启才生效，并打一条启动告警。
+    测试仍通过 monkeypatch `_get_client` 注入，不受这里影响。
     """
-    settings = get_settings()
+    if settings.llm_mode == "fake":
+        from app.llm_fake import FakeLLMClient
+
+        logger.warning(
+            "LLM_MODE=fake：使用确定性 FakeLLM（不调用真实模型）；"
+            "分片延迟 %.2fs。仅用于演练 / 压测",
+            settings.llm_fake_delay_s,
+        )
+        return FakeLLMClient(delay_s=settings.llm_fake_delay_s)
     kwargs = {
         "api_key": settings.deepseek_api_key,
         "base_url": settings.deepseek_base_url,
@@ -90,6 +98,16 @@ def _get_client() -> AsyncOpenAI:
 
         return TracingAsyncOpenAI(**kwargs)
     return AsyncOpenAI(**kwargs)
+
+
+@lru_cache
+def _get_client() -> Any:
+    """单例复用连接池；测试通过 monkeypatch 此函数注入 fake。
+
+    配了 Langfuse key 时换 drop-in 客户端（LLM 调用自动成为 generation，带 usage →
+    token 成本可统计，P1-M4）；未配置时用原生 SDK，零额外开销。
+    """
+    return _build_client(get_settings())
 
 
 _guards: dict[str, reliability.UpstreamGuard] = {}

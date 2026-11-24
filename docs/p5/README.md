@@ -141,5 +141,6 @@ P5 也有工程能力建设的考虑：在真实业务域里补齐 Spring 业务
 | **本文** | 为什么做、为谁做、成功怎么衡量 |
 | [P5-Java业务](P5-Java业务.md) | 做什么 / 不做什么、B / C 评估、J0–J9 里程碑、SLO 与验收 |
 | [contracts/](contracts/) | OpenAPI 骨架 + 事件 JSON Schema（公开契约） |
+| [../ops/HA-演练.md](../ops/HA-演练.md) | J6 单机多实例 HA：profile、故障演练、失败语义与边界 |
 | 内部 J0 基线 | 改造前的测试、数据、性能与形态基线（不随仓库） |
 | [P4-生产化](../ops/P4-生产化.md) | P5 的前置：多 worker、PG、Redis、checkpoint 治理 |

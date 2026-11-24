@@ -130,6 +130,23 @@
 11. **SQLite 不支持 `SKIP LOCKED`**：relay 只跑 PG；SQLite 形态只写 outbox 表，不跑 relay。
 12. **dev RF=1 是持久性边界**：outbox 保证「DB 提交的事件不丢」，已发布消息在单 broker 上不承诺磁盘冗余；HA 到 J6。
 
+## P5-J6 高可用坑位（写代码前必读）
+
+1. **单文件 bind mount 会读到半截**：nginx 配置按目录挂（`./docker/nginx-ha:/etc/nginx/conf.d`）；单文件挂载时编辑器 truncate+write，容器可能读到截断版本（`nginx -t` 报 unexpected end of file）。
+2. **nginx 被动摘流必须设短 `proxy_connect_timeout`**：默认 60s，死实例黑洞时客户端先超时，`proxy_next_upstream` 根本来不及；HA 配 1s。
+3. **gateway 到 business 的多实例要自己接**：`lb://business` + SimpleDiscoveryClient 静态列表 + `HealthCheckServiceInstanceListSupplier`（2s）；不引注册中心；`BUSINESS_URL` 单 URL 只适合单实例。
+4. **会话锁 TTL + 心跳缺一不可**：TTL 管崩溃释放（30s），心跳（10s）管长轮次；没有心跳时一轮比 TTL 长会被第二个请求抢锁；409 带 `Retry-After`。
+5. **Sentinel 下的锁要 `WAIT 2`**：异步复制切换可能提升没收到锁的副本；取锁后等两个从库确认，不足 fail closed；缓存/限流仍 fail open。
+6. **被 Sentinel 提升的副本重启会按容器 `--replicaof` 回退成从库**：运行期角色不写进 compose 命令行；演练中不要重启被提升的 master，生产用托管 Redis 或持久化配置。
+7. **Python Sentinel 客户端首请求可能打到旧主/只读副本**：`ReadOnlyError` 会断开连接并在下一命令重连；首请求可能 503，重试恢复；不要把 fail open 的缓存错误当成锁问题。
+8. **Kafka 3 broker 必须同一个 `CLUSTER_ID`**：不设则每个容器各自生成，组不成集群；topic 预建 6 分区 RF3，`min.insync.replicas=2`；消费者显式 `CooperativeStickyAssignor`。
+9. **`docker kill` 是手动停止**：`restart: unless-stopped` 不会把它拉起来。演练后恢复实例用 **`docker compose up -d --no-deps <svc>`**，不要用 `docker compose start`——`start` 会按 `depends_on` 把已停的旧 `postgres-primary` 拉起来，变成双主。杀 worker 后到 rebalance 完成有 session timeout（约 50s），期间分区仍在旧成员名下。
+10. **PG 副本初始化别依赖 `.sh` 执行位**：挂载脚本常是 644；`postgres` entrypoint 会按 `-x` 判断，非执行位可能直接 exec 失败。用 `.sql` 建角色 + 挂自定义 `pg_hba.conf`；副本用 `.pgpass` 保证重启后回连。
+11. **PG 提升后应用要重指**：`PG_HOST=postgres-replica` 在 compose 插值；`--no-deps` 绕过已停止的 `postgres-primary` 依赖；旧主库保持停止，重启会变第二主库。
+12. **FakeLLM 的 SSE 事件名在 `event:` 行**：不是 data JSON 里的字段；杀 Agent 要等 `delta_chunk`（逐片），不是聚合 `delta`（节点完成后才发）；否则 kill 永远晚一步。
+13. **HA 数据必须独立**：`docker/volumes/ha/`（gitignore）；seed 用 dev 副本管道；证据只留计数/ID，报告/题库原文不进仓库。
+14. **不要宣称 exactly-once / 多可用区**：至少一次 + 幂等；单机多实例；PG 手动提升 + 异步复制 RPO 不承诺 0。
+
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)

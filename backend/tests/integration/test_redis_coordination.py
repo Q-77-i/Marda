@@ -16,7 +16,7 @@ import uuid
 
 import pytest
 
-from app.coordination import RedisCoordinator
+from app.coordination import CoordinationUnavailable, RedisCoordinator
 
 pytestmark = pytest.mark.redis
 
@@ -100,3 +100,48 @@ async def test_锁的TTL会自动过期(coordinators):
     await a._client.expire(f"interview:{interview_id}:lock", 1)  # noqa: SLF001
     await asyncio.sleep(1.2)
     assert await b.acquire_session(interview_id) is not None
+
+
+@requires_redis
+async def test_心跳续租能跨过原TTL():
+    """TTL=1s，0.6s 时续租 → 1.2s 仍被持有；没有心跳的话 1.0s 就过期了。"""
+    import asyncio
+
+    from redis.asyncio import Redis
+
+    a = RedisCoordinator(Redis.from_url(REDIS_URL), session_ttl_s=1,
+                         slots={"flash": 1, "pro": 1})
+    b = RedisCoordinator(Redis.from_url(REDIS_URL), session_ttl_s=1,
+                         slots={"flash": 1, "pro": 1})
+    try:
+        interview_id = f"iv-renew-{uuid.uuid4().hex[:8]}"
+        token = await a.acquire_session(interview_id)
+        assert token
+        await asyncio.sleep(0.6)
+        assert await a.renew_session(interview_id, token) is True
+        await asyncio.sleep(0.6)  # t=1.2 > 原 TTL，但 < 续租后的 1.6
+        assert await b.acquire_session(interview_id) is None
+        await asyncio.sleep(0.6)  # t=1.8 > 续租后的 TTL
+        assert await b.acquire_session(interview_id) is not None
+    finally:
+        await a.close()
+        await b.close()
+
+
+@requires_redis
+async def test_单机Redis上要求复制确认会fail_closed():
+    """HA 配了 replica_acks 但实际是单机 Redis → 取锁必须拒绝（503），不能假装成功。"""
+    from redis.asyncio import Redis
+
+    coordinator = RedisCoordinator(
+        Redis.from_url(REDIS_URL),
+        session_ttl_s=30,
+        replica_acks=1,
+        slots={"flash": 1, "pro": 1},
+    )
+    try:
+        interview_id = f"iv-wait-{uuid.uuid4().hex[:8]}"
+        with pytest.raises(CoordinationUnavailable):
+            await coordinator.acquire_session(interview_id)
+    finally:
+        await coordinator.close()

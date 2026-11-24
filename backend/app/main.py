@@ -1,7 +1,10 @@
+import os
+import socket
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
 from app.api.bank import router as bank_router
@@ -34,6 +37,19 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Marda 码达 API", version="0.1.0", lifespan=lifespan)
 
+# 实例标识（J6-A）：多实例演练时证明「请求真的落到了不同实例」。
+# 只做诊断，不是 API 契约；可用 INSTANCE_HEADER_ENABLED=false 关掉。
+INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}"
+
+
+@app.middleware("http")
+async def _instance_header(request: Request, call_next):
+    response = await call_next(request)
+    if get_settings().instance_header_enabled:
+        response.headers["X-Marda-Instance"] = INSTANCE_ID
+    return response
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000"],
@@ -54,4 +70,14 @@ app.include_router(coding_router)  # 代码工作台（M15）：随机算法题 
 
 @app.get("/healthz")
 def healthz() -> dict:
+    """liveness：进程活着就 200（与依赖无关，别把探针变成依赖检查）。"""
+    return {"status": "ok"}
+
+
+@app.get("/readyz")
+async def readyz(request: Request):
+    """readiness：业务库 + checkpoint 库都通才 200；否则 503（摘流用）。"""
+    service = getattr(request.app.state, "service", None)
+    if service is None or not await service.is_ready():
+        return JSONResponse({"status": "unready"}, status_code=503)
     return {"status": "ok"}

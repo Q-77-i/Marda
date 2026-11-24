@@ -162,6 +162,11 @@ class PostgresStore:
 
     # ---------- schema ----------
 
+    def ping(self) -> None:
+        """轻量连通性探针（readiness 用）：连接池拿不到连接就抛。"""
+        with self._pool.connection() as conn:
+            conn.execute("SELECT 1").fetchone()
+
     def ensure_schema(self) -> None:
         with self._pool.connection() as conn:
             conn.execute(SCHEMA)

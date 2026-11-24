@@ -129,6 +129,11 @@ class SqliteStore:
 
     # ---------- schema ----------
 
+    def ping(self) -> None:
+        """轻量连通性探针（readiness 用）：打不开库就抛。"""
+        with closing(self._connect()) as conn:
+            conn.execute("SELECT 1").fetchone()
+
     def ensure_schema(self) -> None:
         with closing(self._connect()) as conn:
             conn.executescript(SCHEMA)

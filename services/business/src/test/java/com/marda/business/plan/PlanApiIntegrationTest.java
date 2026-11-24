@@ -12,6 +12,7 @@ import org.springframework.boot.test.web.client.TestRestTemplate;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.context.annotation.Primary;
+import org.springframework.core.env.Environment;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -40,6 +41,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -111,10 +113,23 @@ class PlanApiIntegrationTest {
     @Autowired
     JdbcClient jdbc;
 
+    @Autowired
+    Environment environment;
+
     @BeforeEach
     void clean() {
         jdbc.sql("TRUNCATE learning_task, learning_plan, notification, learning_plan_skip, business_outbox, processed_event CASCADE")
                 .update();
+    }
+
+    @Test
+    void responses_carry_instance_header_and_graceful_shutdown() throws Exception {
+        mockMvc.perform(
+                        org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get(
+                                "/actuator/health"))
+                .andExpect(status().isOk())
+                .andExpect(header().exists("X-Marda-Instance"));
+        assertThat(environment.getProperty("server.shutdown")).isEqualTo("graceful");
     }
 
     @Test

@@ -10,6 +10,7 @@
 | [PRD](PRD.md) | 产品需求：功能、业务规则、页面、验收标准 |
 | [spec/SPEC.md](spec/SPEC.md) | 技术规格索引；正文按域拆分到 `spec/01..12`，章节号冻结 |
 | [ops/P4-生产化.md](ops/P4-生产化.md) | 生产化：多 worker + PG + Redis、迁移、备份、已知边界 |
+| [ops/HA-演练.md](ops/HA-演练.md) | P5-J6 高可用：单机多实例、故障演练、失败语义与边界 |
 | [p5/README.md](p5/README.md) | P5 业务背景：为什么从面试诊断延伸到学习执行 |
 | [p5/P5-Java业务.md](p5/P5-Java业务.md) | P5 评估稿：B / C 方案、边界、里程碑、SLO |
 | [p5/contracts/](p5/contracts/) | P5 公开契约：OpenAPI 骨架 + 事件 JSON Schema |

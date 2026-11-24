@@ -222,6 +222,7 @@ class Service:
         self._graph = None
         self._conn: aiosqlite.Connection | None = None
         self._close_checkpointer: Callable[[], Awaitable[None]] | None = None
+        self._checkpoint_ping: Callable[[], Awaitable[None]] | None = None
         self._coordinator: coordination.Coordinator | None = None
         self._cache: cache.Cache | None = cache_client
 
@@ -231,6 +232,7 @@ class Service:
         handle = await create_checkpointer(self._settings)
         self._conn = None  # SQLite 连接已由 checkpointer 句柄持有
         self._close_checkpointer = handle.close
+        self._checkpoint_ping = handle.ping
         self._graph = build_graph(checkpointer=handle.saver)
         self._coordinator = coordination.get_coordinator(self._settings)
         if self._cache is None:
@@ -291,6 +293,7 @@ class Service:
         if self._close_checkpointer is not None:
             await self._close_checkpointer()
             self._close_checkpointer = None
+        self._checkpoint_ping = None
         if self._coordinator is not None:
             await self._coordinator.close()
             coordination.reset_coordinator()
@@ -305,6 +308,25 @@ class Service:
         if self._coordinator is None:
             raise RuntimeError("service 未启动（lifespan）")
         return self._coordinator
+
+    async def is_ready(self) -> bool:
+        """readiness（J6-A）：业务库 + checkpoint 库都通才算 ready。
+
+        **只查 PG，不查 Redis**：Redis 挂了会让面试锁 fail closed（503），
+        但题库/档案等读接口仍可用；把它算进 readiness 会让编排层摘掉整个 API，
+        与「缓存/协调故障时尽量降级」的语义相反。
+        """
+        if self._graph is None:
+            return False
+        checks = [asyncio.to_thread(db.ping, self._settings.business_db)]
+        if self._checkpoint_ping is not None:
+            checks.append(self._checkpoint_ping())
+        try:
+            await asyncio.wait_for(asyncio.gather(*checks), timeout=2.0)
+        except Exception as exc:  # noqa: BLE001 —— readiness 失败是状态，不是异常
+            logger.warning("readiness 检查失败：%s", exc)
+            return False
+        return True
 
     @property
     def cache(self) -> cache.Cache:
@@ -332,6 +354,14 @@ class Service:
     async def release_session(self, interview_id: str, token: str) -> None:
         """释放会话锁（token 不匹配不删）。"""
         await self.coordinator.release_session(interview_id, token)
+
+    async def renew_session(self, interview_id: str, token: str) -> bool:
+        """续租会话锁（J6-B）：活跃 SSE 流靠它把 TTL 续下去。
+
+        失败返回 False（token 不匹配 / Redis 抖动）：心跳只记录，不打断面试；
+        锁的最终释放仍由 `finally` 或 TTL 兜底。
+        """
+        return await self.coordinator.renew_session(interview_id, token)
 
     @property
     def _g(self):

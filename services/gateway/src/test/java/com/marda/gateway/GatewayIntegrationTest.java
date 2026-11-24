@@ -94,6 +94,7 @@ class GatewayIntegrationTest {
                 .header("X-Service-Token", "attacker")
                 .exchange()
                 .expectStatus().isOk()
+                .expectHeader().exists("X-Marda-Instance")
                 .expectBody().json("{\"items\":[]}");
 
         RecordedRequest request = DOWNSTREAM.takeRequest(2, TimeUnit.SECONDS);

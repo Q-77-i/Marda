@@ -27,6 +27,7 @@ from app.domain import INTERVIEW_TECH
 
 # 后端实现必须提供的公共方法（两个 store 都要有，缺一个就是接口漂移）
 _STORE_METHODS = (
+    "ping",
     "ensure_schema",
     "create_user",
     "get_user",
@@ -70,6 +71,11 @@ def _store(target: Path | str):
 
 
 # ---------- schema ----------
+
+
+def ping(target: Path | str) -> None:
+    """连通性探针（readiness）：业务库不可用时抛。"""
+    _store(target).ping()
 
 
 def ensure_schema(target: Path | str) -> None:

@@ -1,9 +1,14 @@
 server:
   port: 8080
+  # J6-A：SIGTERM 后先停止接新请求，等在途请求完成（编排层/负载均衡看到 readiness
+  # 变为 REFUSING_TRAFFIC 后摘流）；超时由 lifecycle 阶段上限兜底。
+  shutdown: graceful
 
 spring:
   application:
     name: marda-gateway
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -19,7 +24,9 @@ spring:
         response-timeout: 5s
       routes:
         - id: learning
-          uri: ${BUSINESS_URL:http://localhost:8081}
+          # J6-A：HA 用 lb://business（SimpleDiscoveryClient 静态列表 + 健康检查）；
+          # 单机 P5 仍用 BUSINESS_URL。两层占位符保持既有测试/部署不变。
+          uri: ${BUSINESS_URI:${BUSINESS_URL:http://localhost:8081}}
           predicates:
             - Path=/api/v1/learning/**
           filters:
@@ -61,6 +68,9 @@ gateway:
   jwt:
     secret: ${JWT_SECRET:}
   service-token: ${SERVICE_TOKEN:}
+  # J6-A：多实例演练的诊断头（hostname:pid）；不是对外契约。
+  instance-header:
+    enabled: ${GATEWAY_INSTANCE_HEADER_ENABLED:true}
   rate-limit:
     enabled: ${GATEWAY_RATE_LIMIT_ENABLED:true}
     # tokens/秒（int）：1 + burst 20 ≈ 60 次/分钟/用户，允许 20 次突发。

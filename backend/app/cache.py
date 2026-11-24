@@ -241,10 +241,11 @@ class RedisCache(BaseCache):
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RedisCache":
-        from redis.asyncio import Redis
+        from app.redis_client import make_redis_client
 
-        client = Redis.from_url(
-            settings.cache_redis_url,
+        client = make_redis_client(
+            settings,
+            url=settings.cache_redis_url,
             decode_responses=False,
             socket_connect_timeout=settings.cache_redis_timeout_s,
             socket_timeout=settings.cache_redis_timeout_s,

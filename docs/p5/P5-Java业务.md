@@ -4,6 +4,7 @@
 > 2026-11-10 · J0 基线已完成；J1 已评审通过（内部记录，不随仓库）。
 > 2026-11-15 · J4 分布式缓存实现：5 个热 key + 故障回源；Sentinel 留 J6。
 > 2026-11-21 · J5 消息队列与事件驱动：Python outbox + 独立 relay；Java worker 消费 / retry / DLQ。
+> 2026-11-24 · J6 高可用：2×gateway/business/api、Redis Sentinel、Kafka 3/RF3、PG 主从 + 手动提升；8 项故障演练。
 > 前置：P4 生产化（多 worker + PostgreSQL + Redis）已完成；P5 不以“重写”为目标。
 >
 > **业务动机**：P5 不是“把 Python 换成 Java”，而是把产品闭环从“面试诊断”延伸到“学习执行”——
@@ -589,6 +590,51 @@ relay 轮询 `FOR UPDATE SKIP LOCKED` 批量发布，成功后标记 `published_
 - 不为“微服务”而拆一个只有 CRUD 的服务；
 - 不将单机多实例表述为多可用区高可用，需明确边界。
 
+### 7.7 J6 实现口径（2026-11-24）
+
+**形态**：`docker-compose.ha.yml` + 三个 profile（core / agent / events），单机多实例，**不是多可用区**。
+core = 2 gateway + 2 business + PG 主从 + Redis 1 主 2 从 3 哨兵 + nginx/web；
+agent = 2 api（每容器 1 uvicorn worker）+ Qdrant + embedding；events = 3 Kafka KRaft + 2 worker + 2 relay。
+数据在 `docker/volumes/ha/`（gitignore）；演练数据 = dev 正式库副本，行数逐表对齐（1 用户 / 12 场 / 93 答 / 11 报告；2 计划 / 4 任务 / 1 通知）。
+
+| 决策 | 结论 | 理由 |
+| --- | --- | --- |
+| 服务拆分 | **不新增服务**；四进程边界 + business 包内模块化 | 按数据所有权/失败域拆；再拆只会增加序列化与一致性成本 |
+| 多实例 | 每服务 2 实例；nginx upstream + 被动摘流 + drain 脚本；gateway→business 用 `lb://business` + SimpleDiscoveryClient + 2s 健康检查 | nginx 开源版无主动探活；静态实例列表不引注册中心 |
+| 优雅下线 | Java `server.shutdown=graceful`；uvicorn `--timeout-graceful-shutdown 30`；Python `/readyz` 只查 PG | readiness 摘流；Redis 故障不应把整个 API 摘掉 |
+| 会话锁 | TTL 30s + 心跳 10s；Sentinel 下取锁 `WAIT 2`；409 带 `Retry-After` | 锁的 TTL 只管进程崩溃后的释放；`WAIT 2` 保证切换后任意被提升副本都带锁 |
+| Redis | Sentinel 1 主 2 从 3 哨兵；缓存/限流 fail open，锁 fail closed | 切换后首请求可能 503（锁），重试恢复；缓存可丢 |
+| Kafka | 3 broker KRaft、6 分区、RF=3、minISR=2、CooperativeStickyAssignor；topic 预建 | broker 宕机不丢；协作式再均衡避免 stop-the-world |
+| PG | 主 + 异步流复制从；手动提升 + `PG_HOST` 重指；**不做应用层读写分离** | 主故障读写都失败，提升后恢复；读写分离的读己之写/事务路由成本高 |
+| 有状态资产 | uploads 用宿主共享卷；Qdrant 单节点（SPOF）；**不引入 MinIO** | 单节点 MinIO/Qdrant 仍是 SPOF；真正 HA 需要多机，生产路径写文档 |
+| 演练数据 | dev 正式库副本进独立 HA 卷 | 破坏性演练不碰 dev/正式库；证据只留计数 |
+
+**演练结果**（2026-11-24，单机 Docker 7.65GB，按 profile 分批）：
+
+| 演练 | 结果 |
+| --- | --- |
+| 杀 gateway（drain / kill） | drain 后零 5xx；未计划 kill 40/40 200，最坏 ~1.0s（connect 1s + 被动重试） |
+| 杀 business | 40/40 200，gateway 健康检查摘除，另一实例接管 |
+| 杀 Agent（SSE 中途） | `stalled` 可判；立即重试 409 + `Retry-After: 30`；TTL 后另一实例续跑；自我介绍不重复；answered=2 / answers=2 / report=1 |
+| Redis 主故障 | Sentinel 检测 1.64s；应用跟随到新 master（新缓存键落在新主库）；首请求锁 fail closed 503，重试恢复 |
+| Kafka broker 宕机 | RF3/minISR2 下新 leader；事件 4.92s 内建计划、通知 sent，零丢失；恢复后 ISR 回 3 |
+| worker 宕机 | 幸存者 1.4s 内建计划；约 50s 会话超时后单成员接管 6 分区；重启后协作式再均衡回两成员 |
+| PG 主库故障 | 停主→提升→重指：RTO 28.1s；RPO 探针保留（本次 0，异步复制不承诺）；checkpoint/报告/计划恢复可读 |
+| relay 停机 | outbox pending；启动后 1.37s 发布并建计划，零丢失 |
+| 缓存全清 | `FLUSHDB` db1 后 MISS → HIT，回源 DB，无错误 |
+
+**测试**：pytest 1051 passed / 36 skipped；gateway `mvn verify` 27；business `mvn verify` 56；
+CI 增加 HA compose 配置校验（`docker compose ... config -q`，不起容器）。
+
+**诚实边界**：
+
+- 单机多实例，不是多可用区；全量 HA 未在同一 8GB Docker 内同时起，按故障域 profile 分批演练；
+- PG 是**手动提升 + 异步复制**，RPO 不承诺 0；旧主库保持停止，不能直接重启；
+- 不做应用层读写分离：主库故障期间读写都失败，提升后恢复；
+- nginx 单点（生产用云 LB）；Qdrant 单点；uploads 是宿主共享卷（多机需对象存储）；
+- SSE 客户端仍是「对账 + 手动重试」，未做自动重连；`Retry-After` 给出等待上界；
+- Redis 整体不可用又恢复的窄窗口仍可能丢锁：靠 fail closed + 心跳 + 演练覆盖，不宣称绝对。
+
 ---
 
 ## 8. P5-J7｜性能压测与调优
@@ -763,7 +809,7 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 | P5-J3 | Java 业务服务 + 学习计划 | 1–2 周 | E2E + 幂等 |
 | P5-J4 | Redis 缓存 + 故障回源（Sentinel 留 J6） | 1 周 | ✅ 2026-11-15：5 个热 key；X-Cache 命中 / 写后失效 / 停 Redis 回源；pytest 1002 · mvn 45 |
 | P5-J5 | Kafka + outbox + worker | 1–2 周 | ✅ 2026-11-21：Python `agent_outbox` + 独立 relay；Java `business_outbox` + worker（consumers / retry / DLQ / 通知读接口）；pytest 1032 · mvn 55 |
-| P5-J6 | 多实例 + HA + 故障演练 | 1–2 周 | 演练全过 |
+| P5-J6 | 多实例 + HA + 故障演练 | 1–2 周 | ✅ 2026-11-24：2×gateway/business/api；Redis Sentinel；Kafka 3/RF3；PG 主从 + 手动提升；8 项演练；pytest 1051 · mvn gateway 27 / business 56 |
 | P5-J7 | 压测 + 调优 | 1–2 周 | SLO 达成 |
 | P5-J8 | 监控 / 追踪 / 告警 / runbook | 1 周 | 看板 + 告警 |
 | P5-J9 | 灰度 / 回滚 / 证据包 | 1 周 | 验收 + 材料 |
@@ -783,8 +829,9 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 - [x] MQ 选 **Kafka**（推荐）还是 RabbitMQ？——Kafka；J5 前可改，不引入第二个 MQ。
 - [x] HA 做到哪一档：单实例 / 多实例 / 多实例 + Sentinel + PG 主从 + 3 broker？——MVP：单机多实例 + 一次故障演练；Sentinel / PG 主从留 Full。
 - [x] J4 是否上 Sentinel？——不上，留 J6；J4 做“停 Redis → 回源”演练，并保持缓存与锁的失败语义分离。
-- [ ] 是否引入 MinIO / 对象存储（替换本地 uploads）？——留 J6。
+- [x] 是否引入 MinIO / 对象存储（替换本地 uploads）？——**不引入**；HA 用宿主共享 uploads 卷（单机多实例成立），多机生产路径用对象存储并写文档。
 - [ ] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？——留 J8。
+- [x] J6 的 HA 口径？——单机多实例 + profile 分批演练；PG 主 + 异步从 + **手动提升**；Redis Sentinel；Kafka 3 broker/RF3；**不做**应用层读写分离、Qdrant 集群、MinIO。见 §7.7。
 - [x] 压测目标：500 RPS / 50 并发会话，是否够？——作为 J7 目标；J0 基线不据此宣称达成。
 - [x] 时间预算：MVP（5–7 周）还是 Full（8–12 周）？——MVP 优先。
 - [x] 是否接受“单机多实例、fake LLM、非生产规模”的诚实边界？——接受。

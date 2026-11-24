@@ -1,9 +1,14 @@
 server:
   port: ${SERVER_PORT:8081}
+  # J6-A：SIGTERM 后先停止接新请求；readiness 变 REFUSING_TRAFFIC，
+  # gateway 的健康检查负载均衡据此摘流，在途请求跑完再退出。
+  shutdown: graceful
 
 spring:
   application:
     name: marda-business
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
   threads:
     virtual:
       # J3 的 Spring MVC 用虚拟线程跑阻塞 JDBC；Hikari 池仍是 DB 并发上限。
@@ -17,6 +22,10 @@ spring:
       max-poll-records: 10
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        # J6-D：2 个 worker 滚动重启时用协作式再均衡，避免 stop-the-world
+        # 把两个实例的消费都停住（默认 RangeAssignor 是 eager）。
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
   datasource:
     url: ${DB_URL:jdbc:postgresql://localhost:55432/marda_business}
     username: ${DB_USER:marda}
@@ -63,6 +72,8 @@ management:
 business:
   service-token: ${SERVICE_TOKEN:}
   timezone: ${BUSINESS_TIMEZONE:Asia/Shanghai}
+  # J6-A：多实例演练的诊断头（hostname:pid）；不是对外契约。
+  instance-header-enabled: ${BUSINESS_INSTANCE_HEADER_ENABLED:true}
   # P5-J5：worker 角色（消费者 / relay）默认关闭；compose 的 worker 容器打开。
   worker:
     enabled: ${BUSINESS_WORKER_ENABLED:false}

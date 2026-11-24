@@ -1,0 +1,10 @@
+# J6-C：HA 形态的业务服务配置。
+#
+# 数据层用 Redis Sentinel（master 名与 docker/redis-ha/sentinel.conf 一致）；
+# 缓存仍只做加速：Redis 故障时回源 DB（BusinessCache 的 fail-open 语义不变）。
+spring:
+  data:
+    redis:
+      sentinel:
+        master: ${REDIS_SENTINEL_MASTER:marda-master}
+        nodes: ${REDIS_SENTINEL_NODES:sentinel-1:26379,sentinel-2:26379,sentinel-3:26379}

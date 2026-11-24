@@ -189,6 +189,18 @@ jobs:
         working-directory: backend
         run: uv run pytest -m "postgres or redis or kafka" -q
 
+  compose-config:
+    name: HA compose 配置校验（不起容器）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # .env.example 里已有占位密钥；compose 的 env_file 要求文件存在。
+      # 只做插值 / extends / profile / YAML 校验，不启动任何服务、不连任何端口。
+      - name: 校验 HA compose
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.ha.yml --profile agent --profile events config -q
+
   redline:
     name: 语料红线（CI 可查部分：入库守卫 + 检查器自检）
     runs-on: ubuntu-latest

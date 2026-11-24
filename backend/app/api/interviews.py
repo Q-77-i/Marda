@@ -8,7 +8,9 @@ SSE 心跳与注释由 EventSourceResponse 自带 ping 机制承担（15s，SPEC
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
+from contextlib import suppress
 from datetime import date
 from typing import Literal
 
@@ -37,6 +39,8 @@ router = APIRouter(
 
 SSE_HEADERS = {"X-Accel-Buffering": "no"}  # SPEC §7：关闭代理缓冲
 
+logger = logging.getLogger(__name__)
+
 
 async def _rate_limit(service: Service, user_id: str) -> None:
     """per-user 限流（P4-E4）：超限 429。
@@ -57,22 +61,61 @@ async def _acquire_session(service: Service, interview_id: str) -> str:
     try:
         return await service.acquire_session(interview_id)
     except InterviewLockedError as exc:
-        raise HTTPException(status_code=409, detail="该场次正在处理中，请稍后重试") from exc
+        # Retry-After = 锁的兜底 TTL：进程被杀时，客户端知道最多等这么久再重试。
+        # 心跳在正常流里把 TTL 续下去，所以这个值只对「实例已死」有意义。
+        raise HTTPException(
+            status_code=409,
+            detail="该场次正在处理中，请稍后重试",
+            headers={"Retry-After": str(get_settings().interview_lock_ttl_s)},
+        ) from exc
     except coordination.CoordinationUnavailable as exc:
         raise HTTPException(status_code=503, detail="服务暂时不可用，请稍后重试") from exc
 
 
-def _with_session_release(service: Service, interview_id: str, token: str, stream):
-    """SSE 流结束后释放会话锁（流被客户端断开时也会走 finally）。
+async def _heartbeat_loop(
+    service: Service, interview_id: str, token: str, interval_s: float
+) -> None:
+    """SSE 存活期间续租会话锁（J6-B）。
 
-    锁的 TTL（默认 600s）是兜底：进程崩了锁会自己过期，不会永久卡住一场面试。
+    为什么要有它：锁的 TTL 只能管「进程崩溃后的自动释放」；一轮 LLM + 评分可能
+    跑得比 TTL 长，没有续租就会在流还没结束时被第二个请求抢锁（多 worker 下
+    两份状态同时推进）。心跳失败只记录：token 已被别人接手时停止续租，
+    Redis 抖动时下一轮继续试，绝不打断面试。
     """
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            renewed = await service.renew_session(interview_id, token)
+        except Exception as exc:  # noqa: BLE001 —— 续租失败不打断面试（TTL 兜底）
+            logger.warning("会话锁续租异常（继续面试）：%s", exc)
+            continue
+        if not renewed:
+            logger.warning(
+                "会话锁已不属于本流（token 不匹配），停止续租：interview=%s",
+                interview_id,
+            )
+            return
+
+
+def _with_session_release(service: Service, interview_id: str, token: str, stream):
+    """SSE 流结束后释放会话锁；存活期间按 TTL/3 续租。
+
+    释放走 finally（客户端断开、实例优雅下线都会触发）；进程被 SIGKILL 时
+    靠短 TTL 自动过期（J6-B 起默认 30s），不再出现「杀实例后十分钟不能重连」。
+    """
+    interval_s = max(1.0, get_settings().interview_lock_ttl_s / 3)
 
     async def _gen():
+        heartbeat = asyncio.create_task(
+            _heartbeat_loop(service, interview_id, token, interval_s)
+        )
         try:
             async for event in stream:
                 yield event
         finally:
+            heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat
             await service.release_session(interview_id, token)
 
     return _gen()

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,13 @@ class Settings(BaseSettings):
     llm_acquire_timeout_s: float = 30.0
     llm_breaker_threshold: int = 5  # 连续「上游不可用」次数（内容类失败不计）
     llm_breaker_cooldown_s: float = 30.0
+    # J6-0：应用级 fake（real | fake）。只给故障演练 / J7 压测用，默认 real。
+    llm_mode: Literal["real", "fake"] = "real"
+    # fake 模式下每个流式分片后的延迟（秒）：把一轮拉长到「中途杀实例」可复现的窗口。
+    llm_fake_delay_s: float = 0.0
+
+    # J6-A：多实例演练时在响应头带 X-Marda-Instance（hostname:pid），只做诊断。
+    instance_header_enabled: bool = True
 
     # 面试默认值
     default_question_count: int = 10
@@ -98,8 +106,16 @@ class Settings(BaseSettings):
     # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）
     coordination_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
-    # 会话锁 TTL 要大于一轮最长耗时；worker 崩了靠 TTL 自动过期
-    interview_lock_ttl_s: int = 600
+    # 会话锁：TTL 管「进程崩溃后的自动释放」，活跃流靠心跳续租（J6-B）。
+    # 30s/10s = 崩溃后最多 30s 可重连；正常一轮再长也不会丢锁（心跳在跑）。
+    interview_lock_ttl_s: int = 30
+    # Sentinel 模式下取锁要求至少 N 个从库确认（WAIT N timeout）：切换后任意被提升
+    # 的副本都带着锁。0 = 不等待（单机 Redis / 测试默认）；HA 配 2。
+    interview_lock_replica_acks: int = 0
+    interview_lock_wait_timeout_ms: int = 100
+    # Sentinel（J6-C）：逗号分隔 host:port；非空时协调层 / 缓存都走 Sentinel。
+    redis_sentinel_nodes: str = ""
+    redis_sentinel_master: str = "marda-master"
     # 单用户每分钟请求上限（Redis 模式下全局生效）
     user_rate_limit_per_min: int = 30
     # 全局 LLM 并发槽（**跨 worker 共享**，不是每 worker 一份）
