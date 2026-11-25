@@ -54,8 +54,11 @@ management:
   endpoints:
     web:
       exposure:
-        # 缓存命中率走 Micrometer 的 cache.requests 计数器；Prometheus 抓取留 J8。
-        include: health,info,metrics
+        # J8：缓存命中走 cache.requests，Prometheus 内网抓取（/actuator/prometheus）。
+        include: health,info,metrics,prometheus
+  tracing:
+    # J8-B：默认关闭（本地/测试不连 collector）；HA profile 显式开启。
+    enabled: false
   endpoint:
     health:
       probes:

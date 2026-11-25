@@ -1,0 +1,104 @@
+{
+  "uid": "marda-infra",
+  "title": "Marda · 资源与中间件",
+  "tags": ["marda", "infra"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "容器 CPU（marda-ha-*）",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(container_cpu_usage_seconds_total{job=\"cadvisor\",id=~\"/docker/.+\"}[5m]))", "legendFormat": "containers"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 3}, "overrides": []}
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "容器内存（Docker cgroup 汇总）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(container_memory_working_set_bytes{job=\"cadvisor\",id=~\"/docker/.+\"})", "legendFormat": "containers"}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "JVM 堆（按实例）",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (instance) (jvm_memory_used_bytes{job=\"business\",area=\"heap\"})", "legendFormat": "{{instance}}"}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "PG 连接（按状态）",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (state) (pg_stat_activity_count{job=\"postgres\"})", "legendFormat": "{{state}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "PG 复制延迟",
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max(marda_pg_replication_lag_seconds)", "legendFormat": "replay lag"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "PG 库大小",
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "marda_pg_database_size_bytes", "legendFormat": "{{datname}}"}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Redis 命中率",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(redis_keyspace_hits_total{job=\"redis\"}[5m])) / clamp_min(sum(rate(redis_keyspace_hits_total{job=\"redis\"}[5m])) + sum(rate(redis_keyspace_misses_total{job=\"redis\"}[5m])), 1e-9)", "legendFormat": "hit ratio"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 3, "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Redis 内存",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "redis_memory_used_bytes{job=\"redis\"}", "legendFormat": "used"}],
+      "fieldConfig": {"defaults": {"unit": "bytes", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "nginx 连接 / 请求",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [
+        {"refId": "A", "expr": "nginx_connections_active{job=\"nginx\"}", "legendFormat": "active"},
+        {"refId": "B", "expr": "sum(rate(nginx_http_requests_total{job=\"nginx\"}[5m]))", "legendFormat": "req/s"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Kafka lag（按组）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (consumergroup) (kafka_consumergroup_lag)", "legendFormat": "{{consumergroup}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    }
+  ]
+}

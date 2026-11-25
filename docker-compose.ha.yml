@@ -338,7 +338,7 @@ services:
       service: api
     # 容器级多实例：1 worker/容器 × 2 容器 = 2 实例；PG 池按每实例 15 连接算，总账可控。
     command: !override
-      ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "30", "--loop", "app.graph.checkpointer:uvicorn_loop_factory"]
+      ["sh", "-c", "rm -rf /tmp/prom_mp && mkdir -p /tmp/prom_mp && exec /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --timeout-graceful-shutdown 30 --loop app.graph.checkpointer:uvicorn_loop_factory"]
     environment:
       DB_PATH: /app/data/marda.sqlite3
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
@@ -375,6 +375,10 @@ services:
       LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
       LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
       INSTANCE_HEADER_ENABLED: "true"
+      # J8-B：OTLP → collector；OTEL_SDK_DISABLED=true 可整体关掉。
+      OTEL_SDK_DISABLED: ${HA_OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: marda-api
     volumes: !override
       - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
       - ./docker/volumes/ha/uploads:/app/data/uploads
@@ -404,7 +408,7 @@ services:
       file: docker-compose.yml
       service: api
     command: !override
-      ["/app/.venv/bin/uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "30", "--loop", "app.graph.checkpointer:uvicorn_loop_factory"]
+      ["sh", "-c", "rm -rf /tmp/prom_mp && mkdir -p /tmp/prom_mp && exec /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --timeout-graceful-shutdown 30 --loop app.graph.checkpointer:uvicorn_loop_factory"]
     environment:
       DB_PATH: /app/data/marda.sqlite3
       CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
@@ -439,6 +443,10 @@ services:
       LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
       LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
       INSTANCE_HEADER_ENABLED: "true"
+      # J8-B：OTLP → collector；OTEL_SDK_DISABLED=true 可整体关掉。
+      OTEL_SDK_DISABLED: ${HA_OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: marda-api
     volumes: !override
       - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
       - ./docker/volumes/ha/uploads:/app/data/uploads

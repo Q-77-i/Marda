@@ -1,0 +1,101 @@
+# P5-J8：告警规则（对应 P5 §9.4；runbook 见 docs/ops/可观测与运维.md）。
+#
+# 阈值是 **demo 尺度**（与 J7 压测环境一致），不是生产建议：
+# - outbox / kafka lag 的绝对值按演练数据量放宽；
+# - checkpoint 用绝对大小（J7 容量模型 + J8 实测后调整）；
+# - 生产口径在 runbook 里给出调整方向。
+#
+# 每条告警必须绑定 runbook 动作；没有处置动作的告警不写。
+
+groups:
+  - name: marda-alerts
+    rules:
+      - alert: HighErrorRate
+        expr: job:http_5xx_ratio:5m > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "5xx 比例超过 1%"
+          runbook: "docs/ops/可观测与运维.md#higherrorrate"
+
+      - alert: HighLatencyP95
+        expr: job:http_latency_p95:5m{job="business"} > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "业务 API p95 超过 100ms"
+          runbook: "docs/ops/可观测与运维.md#highlatencyp95"
+
+      - alert: KafkaConsumerLagHigh
+        expr: sum(kafka_consumergroup_lag) > 10000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka 消费滞后超过 10000"
+          runbook: "docs/ops/可观测与运维.md#kafkaconsumerlaghigh"
+
+      - alert: OutboxBacklog
+        expr: sum(marda_outbox_pending) > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "outbox 未发布积压超过 1000"
+          runbook: "docs/ops/可观测与运维.md#outboxbacklog"
+
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis exporter 不可达（缓存/锁可能降级）"
+          runbook: "docs/ops/可观测与运维.md#redisdown"
+
+      - alert: ReplicationLagHigh
+        expr: max(marda_pg_replication_lag_seconds) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PG 复制延迟超过 10s"
+          runbook: "docs/ops/可观测与运维.md#replicationlaghigh"
+
+      - alert: CacheHitRatioLow
+        expr: marda:cache_hit_ratio:5m < 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "缓存命中率低于 80%"
+          runbook: "docs/ops/可观测与运维.md#cachehitratiolow"
+
+      - alert: LlmQueueHigh
+        expr: marda:llm_slot_wait_p95:5m > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM 全局槽等待 p95 超过 30s"
+          runbook: "docs/ops/可观测与运维.md#llmqueuehigh"
+
+      - alert: TargetDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "抓取目标不可达"
+          runbook: "docs/ops/可观测与运维.md#targetdown"
+
+      - alert: CheckpointGrowthHigh
+        expr: marda_pg_database_size_bytes{datname="marda_checkpoints"} > 5e9
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "checkpoint 库超过 5GB（demo 阈值）"
+          runbook: "docs/ops/可观测与运维.md#checkpointgrowthhigh"

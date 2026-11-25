@@ -159,6 +159,22 @@
 8. **HA 全量内存 7.57 GiB / 目标 8GB**：25 个容器（不含 k6 生成器）；再加副本 / 更大堆前先复测。
 9. **notification 表没有 `sent_at`**：MQ 通知跳不能从 DB 精确重算；J7 只重测事件→计划（p95 0.95s），通知跳沿用 J5 的 4.92s；要独立测就先加 `sent_at`（schema 变更）。
 
+## P5-J8 可观测与运维坑位（写代码前必读）
+
+1. **compose 每个服务名一个独立镜像**：只 `build gateway-1` 时 `gateway-2` 仍是旧镜像（表现为 401/403/404 假象）。构建/重建要覆盖全部实例，或用 `docker tag` 把同一镜像复用到其余实例。
+2. **构建上下文在 `docker compose build` 启动时快照**：与编辑并行时，后写入的配置不会进镜像（本次 20:06 的构建缺 20:09 的 application-ha.yml）。改完代码再构建，构建完核对容器 jar 内的配置。
+3. **Spring Boot BOM 不管理 `logstash-logback-encoder`**：必须显式版本（7.4），否则 Maven 直接报 `version is missing`。
+4. **FastAPI 0.141 / Starlette 1.6 下 `FastAPIInstrumentor` 静默不产生 HTTP span**（Jaeger 只有 psycopg span）；改用通用 `OpenTelemetryMiddleware`（`opentelemetry-instrumentation-asgi`），ASGI 协议稳定、不依赖框架内部 hook。
+5. **Starlette 的 `add_middleware` 是 `insert(0)`，最后添加的才在最外层**：OTel middleware 必须在所有自定义中间件之后添加，span 才覆盖它们——否则日志里的 trace_id 只能靠随机 id。`build_middleware_stack` 用 `reversed()` 包装，方向别记反。
+6. **gateway（WebFlux）的 WebFilter 里拿不到 span**：`Tracer.currentSpan()` / MDC / Reactor context 的 `Span.class` 都为空——server span 在 handler 层创建，访问日志的 WebFilter 在其外层。网关访问日志用 `request_id` 串联（与 business/api 一致），trace 看 Jaeger；不要为此再手写 traceparent（会与 OTel 生成两条 trace）。
+7. **手写 `traceparent` 必须删干净**：gateway 的 `UserHeaderFilter` / `AccessLogFilter` 同时手写 traceparent 与 OTel 注入会让网关和下游落在两条不同 trace 上；B 阶段以 OTel 为准。
+8. **Docker Desktop 的 cAdvisor 只有 cgroup `id` 标签，没有容器名 `name`**：看板用 `id=~"/docker/.+"` 汇总；不要写 `name=~"marda-ha-.*"`（永远空）。
+9. **worker 的 web 端口是 8082**（business 是 8081）；Prometheus 的 business job 要分开列 `worker-1:8082`，否则 connection refused。
+10. **Prometheus recording rule 在无 5xx 时是空而不是 0**：`sum(rate(5xx))` 没有序列，整个可用性表达式变空、看板空白；用 `(sum(rate(5xx)) or (sum(rate(all)) * 0))` 补 0。
+11. **postgres_exporter 的自定义指标名 = query key + `_` + metric 名**：`marda_outbox` + `pending` = `marda_outbox_pending`；写错一边告警就是空的。
+12. **HA 的 profile 文件不能有重复顶层键**：append 第二个 `spring:` 会让 SnakeYAML 抛 `DuplicateKeyException`，应用启动即失败；Kafka observation 与 Redis Sentinel 必须合并在同一个 `spring:` 块。
+13. **观测栈配置按目录挂载**：单文件 bind mount 在编辑时可能被读到截断版本（Prometheus 报 YAML `unexpected end of stream`），与 J6 的 nginx 坑位同源。
+
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)

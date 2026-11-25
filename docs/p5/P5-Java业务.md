@@ -766,6 +766,25 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 - 基础设施：compose 资源估算；云上按 CPU / 内存 / 存储 / 流量估算。
 - 成本优化：缓存、批量、模型路由、降级；不做“为了省钱牺牲正确性”。
 
+### 9.6 执行结果（2026-11-25）
+
+**条件**：Apple M3 / 24 GiB；Docker 8 CPU / 12.5 GiB；`docker-compose.ha.yml` 全量
+（2 gateway / 2 business / 2 api / 2 worker / 2 relay / Kafka 3 / Redis Sentinel / PG 主从）
++ `docker-compose.obs.yml` 12 个观测容器；FakeLLM。**单机多实例，不是生产监控。**
+
+| 能力 | 实测 |
+| --- | --- |
+| 指标 | **16 个 targets 全 up**；Java `/actuator/prometheus`、Python `/metrics`（多 worker 聚合）、PG 自定义查询（interviews / outbox / 库大小 / 复制延迟 / 学习计划 / 通知） |
+| 看板 | 4 个（总览 SLO / 学习闭环 / 资源与中间件 / LLM 槽位），provisioning as code |
+| 告警 | 10 条规则；`promtool test rules` SUCCESS；真实注入 **RedisDown / TargetDown / OutboxBacklog / HighErrorRate**，Alertmanager → sink JSONL |
+| 追踪 | gateway → business **同一条 trace**（7 span / 2 service）；api 的 HTTP span 与**面试轮次 `interview.turn`**（attribute：`interview.id` / `interview.type` / `langfuse.trace_id`）在 Jaeger；正常 **9.9%** / 错误 **100%**（errors 策略保留）；Langfuse 以 `langfuse.trace_id` attribute 关联 |
+| 日志 | JSON + `request_id` / `trace_id`；gateway 访问日志用 `request_id`（WebFlux 的 WebFilter 在 server span 外层，拿不到 trace_id——边界） |
+| 资源 | 观测栈 **536 MiB**（12 容器）；HA 应用栈空闲 4.7 GiB |
+
+**边界**：单机多实例、非多可用区、非生产监控；Jaeger 内存存储（重启丢）；
+Docker Desktop 的 cAdvisor 只有 cgroup id（无容器名）；告警阈值为 demo 尺度；
+gateway 访问日志的 trace_id 为空（用 request_id 串联）。
+
 ---
 
 ## 10. P5-J9｜发布、回滚与验收
@@ -863,7 +882,7 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 - [x] HA 做到哪一档：单实例 / 多实例 / 多实例 + Sentinel + PG 主从 + 3 broker？——MVP：单机多实例 + 一次故障演练；Sentinel / PG 主从留 Full。
 - [x] J4 是否上 Sentinel？——不上，留 J6；J4 做“停 Redis → 回源”演练，并保持缓存与锁的失败语义分离。
 - [x] 是否引入 MinIO / 对象存储（替换本地 uploads）？——**不引入**；HA 用宿主共享 uploads 卷（单机多实例成立），多机生产路径用对象存储并写文档。
-- [ ] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？——留 J8。
+- [x] 是否引入 OTel + Jaeger（还是先只做 Prometheus / Grafana）？——**引入**：Java（micrometer-tracing-bridge-otel / OTLP）+ Python（ASGI middleware）+ OTel Collector（tail sampling：错误 100% / 正常 10%）+ Jaeger all-in-one；2026-11-25 验证 gateway → business 同 trace、api HTTP span、采样比例。
 - [x] J6 的 HA 口径？——单机多实例 + profile 分批演练；PG 主 + 异步从 + **手动提升**；Redis Sentinel；Kafka 3 broker/RF3；**不做**应用层读写分离、Qdrant 集群、MinIO。见 §7.7。
 - [x] 压测目标：500 RPS / 50 并发会话，是否够？——作为 J7 目标；J0 基线不据此宣称达成。
 - [x] 时间预算：MVP（5–7 周）还是 Full（8–12 周）？——MVP 优先。

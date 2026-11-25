@@ -20,7 +20,7 @@ from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 from pydantic import BaseModel
 
-from app import cache, coordination, db, llm, observability
+from app import cache, coordination, db, llm, metrics, observability, tracing
 from app.config import Settings
 from app.outbox.events import build_interview_finalized
 from app.pg_retry import retry_on_conflict
@@ -418,6 +418,7 @@ class Service:
         candidate_profile / resume_id（P2-M11 FR-28）：简历解析结果预填候选人插槽；
         空值 = 没传简历，出题侧消息构造与接入前逐字一致。
         """
+        metrics.record_interview_started(interview_type)
         state = InterviewState(
             interview_id=interview_id,
             position=position,
@@ -434,8 +435,10 @@ class Service:
             "interview_id": interview_id, "phase": "intro",
             "answered_count": 0, "question_count": question_count,
         })
-        async for event in self._run(state, config, state.model_dump(), user_id=user_id):
-            yield event
+        # J8-B：轮次 span 覆盖整轮（OTel 未启用时为空操作）。
+        with tracing.turn_span(interview_id, interview_type):
+            async for event in self._run(state, config, state.model_dump(), user_id=user_id):
+                yield event
 
     async def send_message(
         self,
@@ -466,8 +469,10 @@ class Service:
                 payload["images"] = list(images)
             if speech:
                 payload["speech"] = dict(speech)
-        async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
-            yield event
+        interview_type = values.get("interview_type") or INTERVIEW_TECH
+        with tracing.turn_span(interview_id, interview_type):
+            async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
+                yield event
 
     async def _run(
         self, input_value: Any, config: dict, initial_values: dict, *, user_id: str = ""
@@ -548,6 +553,9 @@ class Service:
                     event=event,
                 )
                 await self._evict_user_caches(values.get("user_id", ""), interview_id)
+                metrics.record_interview_completed(
+                    values.get("interview_type") or INTERVIEW_TECH
+                )
                 return
             except Exception as exc:  # noqa: BLE001 —— 落库失败要兜住，别把流打断
                 last_error = exc

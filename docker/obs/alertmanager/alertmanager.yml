@@ -1,0 +1,26 @@
+# P5-J8：Alertmanager（单机 demo）。
+#
+# - 分组：alertname + cluster；抑制：RedisDown 时不再重复报缓存命中低；
+# - 通知：webhook 到 alert-sink（写 JSONL，作为"告警真的会发"的机械证据）；
+# - 没有接邮件 / IM：demo 不需要，且带外账号不进仓库。
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: alert-sink
+  group_by: [alertname, cluster]
+  group_wait: 10s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: alert-sink
+    webhook_configs:
+      - url: http://alert-sink:9000/alert
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers: ['alertname="RedisDown"']
+    target_matchers: ['alertname="CacheHitRatioLow"']
+    equal: [cluster]

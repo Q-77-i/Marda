@@ -54,9 +54,8 @@ public class UserHeaderFilter implements WebFilter, Ordered {
         if (!headers.containsKey("X-Request-Id")) {
             headers.set("X-Request-Id", UUID.randomUUID().toString());
         }
-        if (!headers.containsKey("traceparent")) {
-            headers.set("traceparent", newTraceparent());
-        }
+        // J8-B：traceparent 由 Micrometer Tracing / OTel 的 client observation 注入；
+        // 不在这里手写——手写会让网关与下游落在两条不同的 trace 上。
         ServerHttpRequest request = new ServerHttpRequestDecorator(exchange.getRequest()) {
             @Override
             public HttpHeaders getHeaders() {
@@ -64,12 +63,6 @@ public class UserHeaderFilter implements WebFilter, Ordered {
             }
         };
         return exchange.mutate().request(request).build();
-    }
-
-    private String newTraceparent() {
-        String traceId = UUID.randomUUID().toString().replace("-", "");
-        String spanId = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
-        return "00-" + traceId + "-" + spanId + "-01";
     }
 
     @Override

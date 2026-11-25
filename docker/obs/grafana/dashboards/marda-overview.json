@@ -1,0 +1,78 @@
+{
+  "uid": "marda-overview",
+  "title": "Marda · 总览与 SLO",
+  "tags": ["marda", "slo"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "可用性（1h，business 非 5xx）",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "slo:availability:ratio_1h", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 0.999}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "错误预算 burn rate（1h）",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "slo:error_budget_burn:1h", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1}, {"color": "red", "value": 5}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "请求率（req/s）",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(job:http_requests:rate5m)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "5xx 比例（最大服务）",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max(job:http_5xx_ratio:5m)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 0.01}, {"color": "red", "value": 0.05}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "5xx 比例（按服务）",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "job:http_5xx_ratio:5m", "legendFormat": "{{job}}"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 3}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "p95 延迟（按服务）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "job:http_latency_p95:5m", "legendFormat": "{{job}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 3}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "请求率（按服务）",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "job:http_requests:rate5m", "legendFormat": "{{job}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []}
+    }
+  ]
+}

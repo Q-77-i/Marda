@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from functools import lru_cache
@@ -39,7 +40,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, AsyncOpe
 from pydantic import BaseModel, ValidationError
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential_jitter
 
-from app import coordination, observability, reliability
+from app import coordination, metrics, observability, reliability
 from app.config import get_settings
 from app.reliability import UpstreamBusy
 
@@ -158,13 +159,20 @@ async def _release_global_slot(lease: coordination.SlotLease) -> None:
 
 
 @asynccontextmanager
-async def _upstream_slot(guard: reliability.UpstreamGuard, model: str | None):
+async def _upstream_slot(guard: reliability.UpstreamGuard, model: str | None, purpose: str | None = None):
     """上游并发保护：Redis 模式用全局槽，memory 模式用进程内闸门。
 
     两种模式的**断路器语义一致**（都走 guard.breaker），记账责任也一样
     （成功/失败由调用方调 record_success / record_failure）。
+
+    J8：这里同时记录槽等待（按 tier）与调用结果（tier/purpose/outcome）；
+    断路器状态在调用前后各刷新一次——record_failure 造成的开路也能被下一次采样看到。
     """
-    lease = await _acquire_global_slot(_slot_tier(model))
+    tier = _slot_tier(model)
+    started = time.monotonic()
+    lease = await _acquire_global_slot(tier)
+    metrics.record_llm_slot_wait(tier, time.monotonic() - started)
+    metrics.set_breaker_open(tier, guard.breaker.state is reliability.BreakerState.OPEN)
     try:
         if lease is None:
             async with guard.acquire():
@@ -172,7 +180,16 @@ async def _upstream_slot(guard: reliability.UpstreamGuard, model: str | None):
         else:
             async with guard.acquire_breaker():
                 yield
+    except UpstreamBusy:
+        metrics.record_llm_call(tier, purpose, "busy")
+        raise
+    except Exception:
+        metrics.record_llm_call(tier, purpose, "error")
+        raise
+    else:
+        metrics.record_llm_call(tier, purpose, "ok")
     finally:
+        metrics.set_breaker_open(tier, guard.breaker.state is reliability.BreakerState.OPEN)
         if lease is not None:
             await _release_global_slot(lease)
 
@@ -290,7 +307,7 @@ async def stream_chat(
     guard = _guard_for(model)
     try:
         # 闸门持有期 = 整条流：流式响应体是长连接，只包住建连段等于没限流（P2-M9）
-        async with _upstream_slot(guard, model):
+        async with _upstream_slot(guard, model, purpose):
             try:
                 response = await _create_stream(
                     messages,
@@ -326,7 +343,7 @@ async def _request(
     """发一次请求并取正文；网络层异常统一转 LLMError，并过保护器（P2-M9）。"""
     guard = _guard_for(model)
     try:
-        async with _upstream_slot(guard, model):
+        async with _upstream_slot(guard, model, purpose):
             try:
                 response = await _create(
                     messages,

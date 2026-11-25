@@ -26,7 +26,9 @@ public class SecurityConfig {
                 .httpBasic(ServerHttpSecurity.HttpBasicSpec::disable)
                 .formLogin(ServerHttpSecurity.FormLoginSpec::disable)
                 .authorizeExchange(exchanges -> exchanges
-                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info")
+                        // J8：指标端点内网放行（Prometheus 直接抓容器端口，不经过网关路由）。
+                        .pathMatchers("/actuator/health", "/actuator/health/**", "/actuator/info",
+                                "/actuator/prometheus")
                         .permitAll()
                         .anyExchange()
                         .authenticated())

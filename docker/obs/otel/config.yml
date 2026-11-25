@@ -1,0 +1,42 @@
+# P5-J8-B：OTel Collector（tail sampling）。
+#
+# 采样口径：错误 100%、正常 10%。应用侧全采样（always_on），
+# 由 collector 在 trace 结束后决定是否落 Jaeger——错误样本不会在源头被抽掉。
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  tail_sampling:
+    decision_wait: 5s
+    num_traces: 50000
+    policies:
+      - name: errors
+        type: status_code
+        status_code:
+          status_codes: [ERROR]
+      - name: normal
+        type: probabilistic
+        probabilistic:
+          # 默认 10%；验证面试轮次 span 时曾临时改为 100（见 J8 规划 §5.2）。
+          sampling_percentage: 10
+
+exporters:
+  otlp:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [tail_sampling]
+      exporters: [otlp]

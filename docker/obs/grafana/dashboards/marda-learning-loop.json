@@ -1,0 +1,96 @@
+{
+  "uid": "marda-learning-loop",
+  "title": "Marda · 学习闭环与事件",
+  "tags": ["marda", "business"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "面试开始（累计）",
+      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(marda_interviews_started_total)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "面试完成（累计，报告已落库）",
+      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(marda_interviews_completed_total)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "outbox 积压（agent + business）",
+      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(marda_outbox_pending) + sum(marda_business_outbox_pending)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 100}, {"color": "red", "value": 1000}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Kafka 消费滞后（全部组）",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(kafka_consumergroup_lag)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 1000}, {"color": "red", "value": 10000}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "缓存命中率",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "marda:cache_hit_ratio:5m", "legendFormat": "hit ratio"}],
+      "fieldConfig": {"defaults": {"unit": "percentunit", "decimals": 3, "min": 0, "max": 1}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "学习计划（按状态）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (status) (marda_learning_plan_total)", "legendFormat": "{{status}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "任务（按状态）",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (status) (marda_learning_task_total)", "legendFormat": "{{status}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "通知（按状态）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (status) (marda_notification_total)", "legendFormat": "{{status}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Kafka lag（按消费组）",
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 21},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (consumergroup) (kafka_consumergroup_lag)", "legendFormat": "{{consumergroup}}"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0}, "overrides": []}
+    }
+  ]
+}

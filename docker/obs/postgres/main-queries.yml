@@ -1,0 +1,46 @@
+# P5-J8：postgres_exporter 自定义查询（业务库 marda）。
+# 指标名 = key + "_" + metric 名（例：marda_outbox_pending / marda_pg_database_size_bytes）。
+# 只读；不做写操作，不导出个人数据内容（只有计数 / 状态 / 库大小）。
+
+marda_interviews:
+  query: "SELECT status, COUNT(*) AS total FROM interviews GROUP BY status"
+  metrics:
+    - status:
+        usage: "LABEL"
+        description: "interview status"
+    - total:
+        usage: "GAUGE"
+        description: "interviews by status"
+
+marda_outbox:
+  query: "SELECT COUNT(*) AS pending FROM agent_outbox WHERE published_at IS NULL"
+  metrics:
+    - pending:
+        usage: "GAUGE"
+        description: "unpublished agent_outbox rows"
+
+marda_pg_database:
+  query: |
+    SELECT datname, pg_database_size(datname) AS size_bytes
+    FROM pg_database
+    WHERE datname IN ('marda', 'marda_checkpoints', 'marda_business')
+  metrics:
+    - datname:
+        usage: "LABEL"
+        description: "database name"
+    - size_bytes:
+        usage: "GAUGE"
+        description: "database size in bytes"
+
+marda_pg_replication:
+  query: |
+    SELECT COALESCE(client_addr::text, 'unknown') AS client_addr,
+           COALESCE(EXTRACT(EPOCH FROM replay_lag), 0) AS lag_seconds
+    FROM pg_stat_replication
+  metrics:
+    - client_addr:
+        usage: "LABEL"
+        description: "replica address"
+    - lag_seconds:
+        usage: "GAUGE"
+        description: "replay lag seconds"

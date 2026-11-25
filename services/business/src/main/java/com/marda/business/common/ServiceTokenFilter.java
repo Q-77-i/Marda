@@ -41,7 +41,7 @@ public class ServiceTokenFilter extends OncePerRequestFilter {
     public ServiceTokenFilter(
             @Value("${business.service-token:}") String serviceToken,
             @Value("${business.security.permit-paths:/actuator/health,/actuator/health/**,"
-                    + "/actuator/info,/error}") String permitPaths,
+                    + "/actuator/info,/actuator/prometheus,/error}") String permitPaths,
             ObjectMapper objectMapper) {
         if (serviceToken == null || serviceToken.isBlank()) {
             throw new IllegalStateException("SERVICE_TOKEN must be set");

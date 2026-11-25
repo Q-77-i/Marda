@@ -1,0 +1,179 @@
+# P5-J8：告警规则单测（promtool test rules）。
+#
+# 跑法（无需本地装 promtool）：
+#   docker run --rm -v "$PWD/docker/obs/prometheus/rules:/rules:ro" \
+#     --entrypoint promtool prom/prometheus:v2.55.1 \
+#     test rules /rules/tests/alerts_test.yml
+#
+# 覆盖全部 10 条规则；端到端"真实故障 → Alertmanager → sink"另见
+# docs/private/p5/j8/fault_alerts.sh（至少 3 条）。
+
+rule_files:
+  - ../recording.yml
+  - ../alerts.yml
+
+evaluation_interval: 15s
+
+tests:
+  # ---------- 基础告警 ----------
+  - interval: 15s
+    input_series:
+      - series: 'up{job="redis",cluster="marda-ha"}'
+        values: '1 1 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis
+              cluster: marda-ha
+            exp_annotations:
+              summary: "Redis exporter 不可达（缓存/锁可能降级）"
+              runbook: "docs/ops/可观测与运维.md#redisdown"
+
+  - interval: 15s
+    input_series:
+      - series: 'up{job="business",cluster="marda-ha"}'
+        values: '1 1 1 1 1 1 1 1 1 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: TargetDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: business
+              cluster: marda-ha
+            exp_annotations:
+              summary: "抓取目标不可达"
+              runbook: "docs/ops/可观测与运维.md#targetdown"
+
+  - interval: 15s
+    input_series:
+      - series: 'marda_outbox_pending{job="postgres",instance="postgres-exporter-main:9187",cluster="marda-ha"}'
+        values: '0+1000x40'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: OutboxBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "outbox 未发布积压超过 1000"
+              runbook: "docs/ops/可观测与运维.md#outboxbacklog"
+
+  - interval: 15s
+    input_series:
+      - series: 'kafka_consumergroup_lag{consumergroup="business-plan",cluster="marda-ha"}'
+        values: '0 0 20000+0x40'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: KafkaConsumerLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Kafka 消费滞后超过 10000"
+              runbook: "docs/ops/可观测与运维.md#kafkaconsumerlaghigh"
+
+  - interval: 15s
+    input_series:
+      - series: 'marda_pg_replication_lag_seconds{job="postgres",cluster="marda-ha"}'
+        values: '0 0 20+0x40'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ReplicationLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "PG 复制延迟超过 10s"
+              runbook: "docs/ops/可观测与运维.md#replicationlaghigh"
+
+  - interval: 15s
+    input_series:
+      - series: 'marda_pg_database_size_bytes{datname="marda_checkpoints"}'
+        values: '1e9 1e9 6e9+0x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CheckpointGrowthHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              datname: marda_checkpoints
+            exp_annotations:
+              summary: "checkpoint 库超过 5GB（demo 阈值）"
+              runbook: "docs/ops/可观测与运维.md#checkpointgrowthhigh"
+
+  # ---------- 依赖 recording rules 的告警 ----------
+  - interval: 15s
+    input_series:
+      - series: 'http_server_requests_seconds_count{job="business",status="200"}'
+        values: '0+10x50'
+      - series: 'http_server_requests_seconds_count{job="business",status="500"}'
+        values: '0+1x50'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HighErrorRate
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: business
+            exp_annotations:
+              summary: "5xx 比例超过 1%"
+              runbook: "docs/ops/可观测与运维.md#higherrorrate"
+
+  - interval: 15s
+    input_series:
+      - series: 'http_server_requests_seconds_bucket{job="business",le="0.05",status="200"}'
+        values: '0+0x50'
+      - series: 'http_server_requests_seconds_bucket{job="business",le="0.1",status="200"}'
+        values: '0+0x50'
+      - series: 'http_server_requests_seconds_bucket{job="business",le="0.5",status="200"}'
+        values: '0+10x50'
+      - series: 'http_server_requests_seconds_bucket{job="business",le="+Inf",status="200"}'
+        values: '0+10x50'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: HighLatencyP95
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: business
+            exp_annotations:
+              summary: "业务 API p95 超过 100ms"
+              runbook: "docs/ops/可观测与运维.md#highlatencyp95"
+
+  - interval: 15s
+    input_series:
+      - series: 'cache_requests_total{job="business",result="HIT"}'
+        values: '0+1x60'
+      - series: 'cache_requests_total{job="business",result="MISS"}'
+        values: '0+4x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CacheHitRatioLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "缓存命中率低于 80%"
+              runbook: "docs/ops/可观测与运维.md#cachehitratiolow"
+
+  - interval: 15s
+    input_series:
+      - series: 'marda_llm_slot_wait_seconds_bucket{le="1"}'
+        values: '0+0x60'
+      - series: 'marda_llm_slot_wait_seconds_bucket{le="60"}'
+        values: '0+1x60'
+      - series: 'marda_llm_slot_wait_seconds_bucket{le="+Inf"}'
+        values: '0+1x60'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: LlmQueueHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "LLM 全局槽等待 p95 超过 30s"
+              runbook: "docs/ops/可观测与运维.md#llmqueuehigh"
