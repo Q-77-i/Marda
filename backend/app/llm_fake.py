@@ -164,7 +164,8 @@ class FakeLLMClient:
     """chat.completions.create 的 fake（经 app.llm._get_client 注入）。
 
     `delay_s` 是每个流式分片后的延迟（J6 杀 Agent 演练用它把一轮拉长到可击杀的窗口）；
-    默认 0，测试与单机 demo 零开销。
+    `call_delay_s` 是每次调用开始前的固定延迟（J7 压测用它表达 TTFB / 非流式调用耗时）。
+    默认都是 0，测试与单机 demo 零开销。
     """
 
     def __init__(
@@ -181,6 +182,7 @@ class FakeLLMClient:
         text: str = "面试官文案",
         closing: str = DEFAULT_CLOSING,
         delay_s: float = 0.0,
+        call_delay_s: float = 0.0,
     ) -> None:
         self._score = score if score is not None else DEFAULT_SCORE
         self._behavioral_score = (
@@ -195,6 +197,7 @@ class FakeLLMClient:
         self._text = text
         self._closing = closing
         self.delay_s = delay_s
+        self.call_delay_s = call_delay_s
         self.calls: list[dict] = []
 
     @property
@@ -205,22 +208,27 @@ class FakeLLMClient:
             async def create(self, **kwargs):
                 if kwargs.get("stream"):
                     return outer._stream(**kwargs)  # 异步生成器对象（await 后可直接 async for）
-                return outer._create(**kwargs)
+                return await outer._create(**kwargs)
 
         return SimpleNamespace(completions=_Completions())
 
     async def _stream(self, **kwargs):
         """流式分支（P2-M4）：按固定粒度切片产出，结尾补 usage 块。
 
-        `delay_s` 在每个分片之后等待，模拟慢模型；延迟放在 yield 之后，
-        消费者先拿到分片，再等下一片——杀进程的窗口落在分片之间。
+        `call_delay_s` 在第一次 yield 之前等待，模拟 TTFB；
+        `delay_s` 在每个分片之后等待，模拟慢模型——延迟放在 yield 之后，
+        消费者先拿到分片，再等下一片（杀进程的窗口落在分片之间）。
         """
+        if self.call_delay_s > 0:
+            await asyncio.sleep(self.call_delay_s)
         async for chunk in stream_of(self._content(**kwargs)):
             yield chunk
             if self.delay_s > 0:
                 await asyncio.sleep(self.delay_s)
 
-    def _create(self, **kwargs):
+    async def _create(self, **kwargs):
+        if self.call_delay_s > 0:
+            await asyncio.sleep(self.call_delay_s)
         return _response(self._content(**kwargs))
 
     def _content(self, **kwargs) -> str:

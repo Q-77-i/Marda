@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     # SiliconFlow：M3 起只留 rerank（嵌入退为本地 BGE-M3）
     siliconflow_api_key: str
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    # J7：rerank 模式（real | fake）。fake 只跳过 SiliconFlow，保留真实 embedding + Qdrant + RRF，
+    # 用于压测检索路径；默认 real，不改变生产行为。
+    rerank_mode: Literal["real", "fake"] = "real"
 
     # 可观测（P1-M4）：Langfuse 云形态；Key 缺失时整体降级零开销（本地/CI 无需账号）
     langfuse_public_key: str = ""
@@ -67,6 +70,9 @@ class Settings(BaseSettings):
     llm_mode: Literal["real", "fake"] = "real"
     # fake 模式下每个流式分片后的延迟（秒）：把一轮拉长到「中途杀实例」可复现的窗口。
     llm_fake_delay_s: float = 0.0
+    # J7：fake 模式下每次调用**开始前**的固定延迟（秒）。流式即 TTFB、非流式即整次调用；
+    # 默认 0，不改变既有演练 / 测试行为。J7 用它让「首 token / 整轮」可测。
+    llm_fake_call_delay_s: float = 0.0
 
     # J6-A：多实例演练时在响应头带 X-Marda-Instance（hostname:pid），只做诊断。
     instance_header_enabled: bool = True

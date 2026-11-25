@@ -147,6 +147,18 @@
 13. **HA 数据必须独立**：`docker/volumes/ha/`（gitignore）；seed 用 dev 副本管道；证据只留计数/ID，报告/题库原文不进仓库。
 14. **不要宣称 exactly-once / 多可用区**：至少一次 + 幂等；单机多实例；PG 手动提升 + 异步复制 RPO 不承诺 0。
 
+## P5-J7 压测与调优坑位（写代码前必读）
+
+1. **Redis 全局槽是 `LLM_SLOTS_FLASH` / `LLM_SLOTS_PRO`**：`RedisCoordinator` 用它们；`LLM_MAX_CONCURRENCY_FLASH` 只是本地闸门（Redis 模式只走断路器）。改错 env 会让槽位实验全部无效（16/32/64 实际都跑 16）。
+2. **gateway 429 先看 body**：`网关繁忙` = bulkhead 拒绝；`请求过于频繁` = token bucket。bulkhead 默认 20 在单实例 500 RPS + 延迟尖刺下会误伤；HA 用 100（J7-T2，after 网关/写 3/3 零 429）。
+3. **FakeLLM 的首 token 需要 `LLM_FAKE_CALL_DELAY_S`**：`LLM_FAKE_DELAY_S` 只作用于流式片间，首片立即返回；非流式 judge/report 也没有延迟。默认 0，J7 用 0.8s / 0.03s。
+4. **同步首波会打满舱壁**：`constant-vus` 140 同时起会产生 429；写场景用 30s 爬坡，不能把测试同步性当成容量信号。
+5. **k6 口径**：`http_req_failed` 含 warmup，summary export 的 `passes/fails` 语义反直觉；SLO 用自定义 `measure_requests` / `measure_errors`，分位用自定义 Trend + `--summary-trend-stats`（默认没有 p(99)）。
+6. **Redis EVALSHA 慢日志 10–35ms + 同机调度抖动是真实存在的**：缓存超时按 fail open 回源；不要把压测中的 429/延迟尖刺直接归因于业务代码。
+7. **Agent 64 槽下「10 题 42 秒」会撞 per-user 30 次/分钟限流**：槽位不是唯一瓶颈；50 并发 SLO 的可用最小槽位是 **32**，用户限流是下一层。
+8. **HA 全量内存 7.57 GiB / 目标 8GB**：25 个容器（不含 k6 生成器）；再加副本 / 更大堆前先复测。
+9. **notification 表没有 `sent_at`**：MQ 通知跳不能从 DB 精确重算；J7 只重测事件→计划（p95 0.95s），通知跳沿用 J5 的 4.92s；要独立测就先加 `sent_at`（schema 变更）。
+
 ## 开发纪律
 
 - **验证命令跑通才算完成**，不口头声称成功；每阶段的验证标准见 [PRD §7](docs/PRD.md) 与 [SPEC §10](docs/spec/10-testing.md)

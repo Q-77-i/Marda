@@ -84,10 +84,14 @@ def _build_client(settings) -> Any:
 
         logger.warning(
             "LLM_MODE=fake：使用确定性 FakeLLM（不调用真实模型）；"
-            "分片延迟 %.2fs。仅用于演练 / 压测",
+            "调用前延迟 %.2fs、分片延迟 %.2fs。仅用于演练 / 压测",
+            settings.llm_fake_call_delay_s,
             settings.llm_fake_delay_s,
         )
-        return FakeLLMClient(delay_s=settings.llm_fake_delay_s)
+        return FakeLLMClient(
+            delay_s=settings.llm_fake_delay_s,
+            call_delay_s=settings.llm_fake_call_delay_s,
+        )
     kwargs = {
         "api_key": settings.deepseek_api_key,
         "base_url": settings.deepseek_base_url,

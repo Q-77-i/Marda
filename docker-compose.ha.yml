@@ -223,8 +223,11 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
       GATEWAY_CANARY_ENABLED: "false"
       # 演练探针要打很多次同一用户；把限流抬到不干扰判据（限流本身有独立测试）。
+      GATEWAY_RATE_LIMIT_ENABLED: ${GATEWAY_RATE_LIMIT_ENABLED:-true}
       GATEWAY_RATE_LIMIT_BURST_CAPACITY: ${GATEWAY_RATE_LIMIT_BURST_CAPACITY:-1000}
       GATEWAY_RATE_LIMIT_REPLENISH_RATE: ${GATEWAY_RATE_LIMIT_REPLENISH_RATE:-1000}
+      # J7-T2：单实例 500 RPS 时 20 太紧；调度/Redis 抖动会把瞬时并发顶过 20。
+      GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS: ${GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS:-20}
     depends_on: !override
       business-1:
         condition: service_healthy
@@ -252,8 +255,11 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
       GATEWAY_CANARY_ENABLED: "false"
+      GATEWAY_RATE_LIMIT_ENABLED: ${GATEWAY_RATE_LIMIT_ENABLED:-true}
       GATEWAY_RATE_LIMIT_BURST_CAPACITY: ${GATEWAY_RATE_LIMIT_BURST_CAPACITY:-1000}
       GATEWAY_RATE_LIMIT_REPLENISH_RATE: ${GATEWAY_RATE_LIMIT_REPLENISH_RATE:-1000}
+      # J7-T2：单实例 500 RPS 时 20 太紧；调度/Redis 抖动会把瞬时并发顶过 20。
+      GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS: ${GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS:-20}
     depends_on: !override
       business-1:
         condition: service_healthy
@@ -356,6 +362,18 @@ services:
       # 演练默认 fake LLM（可配分片延迟）；真实演示把它改成 real。
       LLM_MODE: ${HA_LLM_MODE:-fake}
       LLM_FAKE_DELAY_S: ${HA_LLM_FAKE_DELAY_S:-0.2}
+      # J7：调用前延迟（流式即 TTFB；非流式即整次调用）；0 = 保持 J6 行为
+      LLM_FAKE_CALL_DELAY_S: ${HA_LLM_FAKE_CALL_DELAY_S:-0}
+      # J7：检索压测跳过 SiliconFlow rerank；默认 real
+      RERANK_MODE: ${HA_RERANK_MODE:-real}
+      # J7：槽位实验；默认仍是应用里的 16 / 4
+      LLM_MAX_CONCURRENCY_FLASH: ${HA_LLM_MAX_CONCURRENCY_FLASH:-32}
+      LLM_MAX_CONCURRENCY_PRO: ${HA_LLM_MAX_CONCURRENCY_PRO:-4}
+      # RedisCoordinator 的全局槽用 LLM_SLOTS_*（不是 LLM_MAX_CONCURRENCY_*，后者是本地闸门）
+      # J7-T3：50 并发下 16 槽首 token p95 7.32s；32 槽 2.49s；HA 默认 32（真实账户 flash 2500）
+      LLM_SLOTS_FLASH: ${HA_LLM_SLOTS_FLASH:-32}
+      LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
+      LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
       INSTANCE_HEADER_ENABLED: "true"
     volumes: !override
       - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
@@ -408,6 +426,18 @@ services:
       INTERVIEW_LOCK_REPLICA_ACKS: ${HA_LOCK_REPLICA_ACKS:-2}
       LLM_MODE: ${HA_LLM_MODE:-fake}
       LLM_FAKE_DELAY_S: ${HA_LLM_FAKE_DELAY_S:-0.2}
+      # J7：调用前延迟（流式即 TTFB；非流式即整次调用）；0 = 保持 J6 行为
+      LLM_FAKE_CALL_DELAY_S: ${HA_LLM_FAKE_CALL_DELAY_S:-0}
+      # J7：检索压测跳过 SiliconFlow rerank；默认 real
+      RERANK_MODE: ${HA_RERANK_MODE:-real}
+      # J7：槽位实验；默认仍是应用里的 16 / 4
+      LLM_MAX_CONCURRENCY_FLASH: ${HA_LLM_MAX_CONCURRENCY_FLASH:-32}
+      LLM_MAX_CONCURRENCY_PRO: ${HA_LLM_MAX_CONCURRENCY_PRO:-4}
+      # RedisCoordinator 的全局槽用 LLM_SLOTS_*（不是 LLM_MAX_CONCURRENCY_*，后者是本地闸门）
+      # J7-T3：50 并发下 16 槽首 token p95 7.32s；32 槽 2.49s；HA 默认 32（真实账户 flash 2500）
+      LLM_SLOTS_FLASH: ${HA_LLM_SLOTS_FLASH:-32}
+      LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
+      LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
       INSTANCE_HEADER_ENABLED: "true"
     volumes: !override
       - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
