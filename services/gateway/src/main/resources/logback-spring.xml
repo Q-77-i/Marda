@@ -1,14 +1,27 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- P5-J8：一行一个 JSON；访问日志字段由 StructuredArguments 展开。 -->
+<!--
+  P5-J8：结构化 JSON 日志只在 HA profile 启用（容器形态）。
+  默认 / 测试用 Spring Boot 默认 console（见 business 同名文件的说明）。
+-->
 <configuration>
-    <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
-        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
-            <includeMdc>true</includeMdc>
-            <customFields>{"service":"marda-gateway"}</customFields>
-        </encoder>
-    </appender>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 
-    <root level="INFO">
-        <appender-ref ref="JSON"/>
-    </root>
+    <springProfile name="ha">
+        <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+                <includeMdc>true</includeMdc>
+                <customFields>{"service":"marda-gateway"}</customFields>
+            </encoder>
+        </appender>
+        <root level="INFO">
+            <appender-ref ref="JSON"/>
+        </root>
+    </springProfile>
+
+    <springProfile name="!ha">
+        <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
 </configuration>
