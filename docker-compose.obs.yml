@@ -1,0 +1,179 @@
+# P5-J8：可观测栈（独立 compose，接入 marda-ha-net；不占 HA 应用栈 8GB 预算）。
+#
+# 用法（HA 已起，网络 marda-ha-net 存在）：
+#   docker compose -f docker-compose.obs.yml up -d
+# 端口只绑 127.0.0.1：Prometheus 9090 / Alertmanager 9093 / Grafana 3001 / Jaeger 16686。
+#
+# 抓取目标全部走容器 DNS（不预设静态 IP）；HA 应用重启换 IP 不影响。
+
+name: marda-obs
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --web.enable-lifecycle
+    volumes:
+      # 按目录挂载：单文件 bind mount 在编辑时可能被读到截断版本（J6 坑位 1）。
+      - ./docker/obs/prometheus:/etc/prometheus:ro
+      - ./docker/volumes/obs/prometheus:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - alertmanager
+    networks:
+      - marda-ha-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - ./docker/obs/alertmanager:/etc/alertmanager:ro
+      - ./docker/volumes/obs/alertmanager:/alertmanager
+    ports:
+      - "127.0.0.1:9093:9093"
+    networks:
+      - marda-ha-net
+
+  alert-sink:
+    image: python:3.12-alpine
+    restart: unless-stopped
+    command: ["python", "/app/alert_sink.py"]
+    environment:
+      ALERT_LOG: /data/alerts.jsonl
+    volumes:
+      - ./docker/obs/alert_sink.py:/app/alert_sink.py:ro
+      - ./docker/volumes/obs/alerts:/data
+    networks:
+      - marda-ha-net
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    restart: unless-stopped
+    environment:
+      # demo：匿名只读 + 本机 admin；密码从 env 注入（不写死进仓库）。
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-marda-demo}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./docker/obs/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/obs/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./docker/volumes/obs/grafana:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3001:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - marda-ha-net
+
+  postgres-exporter-main:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@postgres-primary:5432/${POSTGRES_DB:-marda}?sslmode=disable
+    command: ["--extend.query-path=/etc/postgres-exporter/main-queries.yml"]
+    volumes:
+      - ./docker/obs/postgres:/etc/postgres-exporter:ro
+    ports:
+      - "127.0.0.1:9187:9187"
+    networks:
+      - marda-ha-net
+
+  postgres-exporter-business:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    restart: unless-stopped
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@postgres-primary:5432/marda_business?sslmode=disable
+    command: ["--extend.query-path=/etc/postgres-exporter/business-queries.yml"]
+    volumes:
+      - ./docker/obs/postgres:/etc/postgres-exporter:ro
+    ports:
+      - "127.0.0.1:9188:9187"
+    networks:
+      - marda-ha-net
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.66.0
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: redis://redis-master:6379
+    ports:
+      - "127.0.0.1:9121:9121"
+    networks:
+      - marda-ha-net
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    restart: unless-stopped
+    command: ["--kafka.server=kafka-1:9092"]
+    ports:
+      - "127.0.0.1:9308:9308"
+    networks:
+      - marda-ha-net
+
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.3.0
+    restart: unless-stopped
+    command: ["--nginx.scrape-uri=http://nginx:80/stub_status"]
+    ports:
+      - "127.0.0.1:9113:9113"
+    networks:
+      - marda-ha-net
+
+  # 容器级 CPU / 内存。macOS Docker Desktop 上若读不到 cgroup，退化为 JVM/进程指标
+  # （见 docs/ops/可观测与运维.md 的边界），不阻塞其余看板。
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    restart: unless-stopped
+    privileged: true
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    networks:
+      - marda-ha-net
+
+  # J8-B：OTLP 接收 + tail sampling（错误 100% / 正常 10%）→ Jaeger。
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yml"]
+    volumes:
+      # 目录挂载：单文件 bind mount 在编辑时可能被读到截断版本（J8 坑位）。
+      - ./docker/obs/otel:/etc/otel:ro
+    ports:
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+      - "127.0.0.1:8888:8888"
+    depends_on:
+      - jaeger
+    networks:
+      - marda-ha-net
+
+  # J8-B：Jaeger all-in-one（内存存储，重启丢；边界见运维手册）。
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+    networks:
+      - marda-ha-net
+
+networks:
+  marda-ha-net:
+    external: true
+    name: marda-ha-net

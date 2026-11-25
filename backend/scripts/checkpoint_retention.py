@@ -8,7 +8,7 @@
     # PostgreSQL
     uv run python scripts/checkpoint_retention.py --postgres "$CHECKPOINT_DATABASE_URL" --keep 20
 
-**删掉更早的快照 = 更早的节点时间线不可回放**（取舍见 docs/P4-生产化.md §4.3）。
+**删掉更早的快照 = 更早的节点时间线不可回放**（取舍见 docs/ops/P4-生产化.md §4.3）。
 `--keep` 调大是安全的；调小会丢历史。想看会删多少，先跑 `--dry-run`。
 """
 

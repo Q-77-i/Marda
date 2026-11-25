@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from collections.abc import Callable
 from typing import Any
 
@@ -81,10 +81,28 @@ CREATE TABLE IF NOT EXISTS resumes (
     content_hash TEXT,
     created_at TEXT
 );
+-- P5-J5 outbox：与 finalize / plan 写在同一本地事务；relay 用 FOR UPDATE SKIP LOCKED 发布。
+-- id = 事件的 event_id（确定性 uuid5）：重放同一场次只会命中唯一键，不造第二条。
+CREATE TABLE IF NOT EXISTS agent_outbox (
+    id TEXT PRIMARY KEY,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    partition_key TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    published_at TEXT,
+    attempts INT NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT,
+    CONSTRAINT uq_agent_outbox_event UNIQUE (aggregate_type, aggregate_id, event_type)
+);
 CREATE INDEX IF NOT EXISTS interviews_user_id_idx ON interviews (user_id);
 CREATE INDEX IF NOT EXISTS answers_interview_id_idx ON answers (interview_id);
 CREATE INDEX IF NOT EXISTS reports_interview_id_idx ON reports (interview_id);
 CREATE INDEX IF NOT EXISTS resumes_user_id_idx ON resumes (user_id);
+CREATE INDEX IF NOT EXISTS agent_outbox_pending_idx
+    ON agent_outbox (created_at) WHERE published_at IS NULL;
 """
 
 # 轻量迁移：补列（幂等）。SQLite 侧用 PRAGMA 探测，PG 侧用 IF NOT EXISTS。
@@ -143,6 +161,11 @@ class PostgresStore:
         self._pool.close()
 
     # ---------- schema ----------
+
+    def ping(self) -> None:
+        """轻量连通性探针（readiness 用）：连接池拿不到连接就抛。"""
+        with self._pool.connection() as conn:
+            conn.execute("SELECT 1").fetchone()
 
     def ensure_schema(self) -> None:
         with self._pool.connection() as conn:
@@ -285,11 +308,16 @@ class PostgresStore:
         interview_id: str,
         records: list[dict[str, Any]],
         report: dict[str, Any],
+        *,
+        event: dict[str, Any] | None = None,
     ) -> None:
         """**单事务**收尾：answers + report + interviews.status（P4-E2）。
 
         与 SQLite 侧同语义：先删本场旧 answers 再插（幂等，不重复计分），
         report upsert，最后把场次标 finished——三步同生共死。
+
+        P5-J5：`event` 非空时，**同一事务**再写 `agent_outbox`。这是「零丢失」的地基：
+        数据库提交了，事件就一定在；Kafka 不在请求路径里，挂掉不影响这里。
         """
         now = self.clock()
         rows = [
@@ -327,6 +355,119 @@ class PostgresStore:
                     "UPDATE interviews SET status='finished', ended_at=%s WHERE id=%s",
                     (now, interview_id),
                 )
+                if event is not None:
+                    self._insert_outbox(conn, event, now)
+
+    # ---------- outbox（P5-J5）----------
+
+    @staticmethod
+    def _outbox_row(event: dict[str, Any]) -> tuple:
+        payload = event.get("payload") or {}
+        interview_id = str(payload.get("interview_id") or "")
+        return (
+            str(event["event_id"]),
+            "interview",
+            interview_id,
+            str(event["type"]),
+            interview_id,
+            json.dumps(event, ensure_ascii=False),
+        )
+
+    def _insert_outbox(self, conn, event: dict[str, Any], now: str) -> bool:
+        """写 outbox；唯一键冲突 = 同一场次重放 → 0 行（幂等）。"""
+        cur = conn.execute(
+            "INSERT INTO agent_outbox (id, aggregate_type, aggregate_id, event_type,"
+            " partition_key, payload, created_at, next_attempt_at)"
+            " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+            " ON CONFLICT DO NOTHING",
+            (*self._outbox_row(event), now, now),
+        )
+        return cur.rowcount == 1
+
+    def enqueue_outbox(self, event: dict[str, Any]) -> bool:
+        """单独入队（回填 / 补发工具）；与 finalize 内联写同一张表、同一唯一键。"""
+        with self._pool.connection() as conn:
+            inserted = self._insert_outbox(conn, event, self.clock())
+            conn.commit()
+        return inserted
+
+    def claim_outbox_batch(self, *, limit: int = 100, lease_s: int = 60) -> list[dict]:
+        """领一批待发事件：`FOR UPDATE SKIP LOCKED` + 租约，多 relay 安全。
+
+        租约写在 `next_attempt_at`：relay 崩溃时，其他 relay 在租约到期后接手；
+        发布成功后由 `mark_outbox_published` 落 `published_at`。
+        """
+        now = datetime.now(timezone.utc)
+        lease_until = (now + timedelta(seconds=lease_s)).isoformat(timespec="microseconds")
+        with self._pool.connection() as conn:
+            rows = conn.execute(
+                """
+                WITH batch AS (
+                    SELECT id FROM agent_outbox
+                    WHERE published_at IS NULL
+                      AND (next_attempt_at IS NULL OR next_attempt_at <= %s)
+                    ORDER BY created_at, id
+                    LIMIT %s
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE agent_outbox AS o
+                SET next_attempt_at = %s
+                FROM batch
+                WHERE o.id = batch.id
+                RETURNING o.*
+                """,
+                (now.isoformat(timespec="microseconds"), limit, lease_until),
+            ).fetchall()
+            conn.commit()
+        return [dict(row) for row in rows]
+
+    def mark_outbox_published(self, ids: list[str]) -> int:
+        if not ids:
+            return 0
+        with self._pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE agent_outbox SET published_at=%s, last_error=NULL"
+                " WHERE id = ANY(%s)",
+                (self.clock(), ids),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def mark_outbox_failed(
+        self, ids: list[str], *, error: str, next_attempt_at: str
+    ) -> int:
+        """失败只记 attempts / 退避时间；行仍可被后续 relay 领取。"""
+        if not ids:
+            return 0
+        with self._pool.connection() as conn:
+            cur = conn.execute(
+                "UPDATE agent_outbox SET attempts=attempts+1, last_error=%s,"
+                " next_attempt_at=%s WHERE id = ANY(%s)",
+                (error[:500], next_attempt_at, ids),
+            )
+            conn.commit()
+            return cur.rowcount
+
+    def count_outbox_pending(self) -> int:
+        with self._pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM agent_outbox WHERE published_at IS NULL"
+            ).fetchone()
+        return int(row["n"])
+
+    def cleanup_outbox(self, *, older_than_days: int = 30) -> int:
+        """删已发布且超过保留期的行；未发布的行永远不删（那是待补发的事实）。"""
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=older_than_days)
+        ).isoformat(timespec="microseconds")
+        with self._pool.connection() as conn:
+            cur = conn.execute(
+                "DELETE FROM agent_outbox WHERE published_at IS NOT NULL"
+                " AND published_at < %s",
+                (cutoff,),
+            )
+            conn.commit()
+            return cur.rowcount
 
     def get_interview(self, interview_id: str) -> dict | None:
         with self._pool.connection() as conn:

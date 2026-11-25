@@ -121,3 +121,16 @@ async def test_空documents不发请求():
     client = rerank.rerank("q", [], base_url="http://sf", api_key="k", transport=_service(sink))
     assert await client == []
     assert sink == []
+
+
+async def test_fake模式保序且不发请求(monkeypatch):
+    """J7 压测旋钮：跳过 SiliconFlow，但保留候选序；默认 real 不受影响。"""
+    monkeypatch.setenv("RERANK_MODE", "fake")
+    rerank.get_settings.cache_clear()
+    sink: list = []
+    out = await rerank.rerank(
+        "q", ["doc1", "doc2", "doc3"], top_n=2,
+        base_url="http://sf", api_key="k", transport=_service(sink),
+    )
+    assert out == [(0, 3.0), (1, 2.0)]
+    assert sink == []

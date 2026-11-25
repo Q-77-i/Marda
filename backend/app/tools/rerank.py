@@ -31,6 +31,11 @@ async def rerank(
     if not documents:
         return []
     settings = get_settings()
+    if settings.rerank_mode == "fake":
+        # J7 压测：跳过计费 / 抖动的 SiliconFlow，保留调用方的候选序（分数仅用于排序）。
+        # 只用于测试环境；默认 real，不会静默改变检索质量。
+        ranked = [(index, float(len(documents) - index)) for index in range(len(documents))]
+        return ranked[:top_n] if top_n is not None else ranked
     body: dict = {
         "model": RERANK_MODEL,
         "query": query,

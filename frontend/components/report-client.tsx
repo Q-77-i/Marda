@@ -22,12 +22,17 @@ import { DIMENSIONS, domainLabel, isBehavioral, reportLabel } from "@/lib/consta
 import { reportDegradedNotice } from "@/lib/degrade";
 import { downloadBlob, reportFileName } from "@/lib/download";
 import { commentLabels, completedCount, formatScore, formatTime } from "@/lib/format";
+import { buildReportSummary } from "@/lib/learning";
+import { createLearningPlan } from "@/lib/learning-api";
 
 export function ReportClient({ interviewId }: { interviewId: string }) {
   const [data, setData] = useState<ReportResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
+  const [planCreating, setPlanCreating] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const [planId, setPlanId] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -103,6 +108,28 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
   // 老报告没有 dims → 退回技术面常量
   const dims = report.dims?.length ? report.dims : DIMENSIONS;
   const behavioral = isBehavioral(report.interview_type);
+  // 学习计划入口只在“技术面 + 至少一个有分数的短板域”时出现；行为面/整场未评分没有可执行域。
+  const planSummary = behavioral ? null : buildReportSummary(report);
+
+  /** 从报告摘要建学习计划：201 新建 / 200 幂等重放都视为成功；失败就地提示，不挡报告页。 */
+  async function onCreatePlan() {
+    if (!planSummary || planCreating) return;
+    setPlanCreating(true);
+    setPlanError(null);
+    try {
+      const result = await createLearningPlan({
+        sourceInterviewId: interviewId,
+        position: report.position,
+        interviewType: report.interview_type,
+        reportSummary: planSummary,
+      });
+      setPlanId(result.plan.id);
+    } catch (err: unknown) {
+      setPlanError(err instanceof Error ? err.message : "生成学习计划失败");
+    } finally {
+      setPlanCreating(false);
+    }
+  }
   // 降级态（P2-M9）：整场未评分时报告端不落 scores（**空 ≠ 0 分**）——分数区整块收起，
   // 页头挂说明；部分未评分（degraded 但仍有分数）照常展示，只多一行提示
   const hasScores = Object.keys(report.scores ?? {}).length > 0;
@@ -159,6 +186,25 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
               >
                 {exporting ? "导出中…" : "导出 PDF"}
               </button>
+              {planSummary ? (
+                planId ? (
+                  <Link
+                    href={`/learn?interview=${interviewId}`}
+                    className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+                  >
+                    查看学习计划
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void onCreatePlan()}
+                    disabled={planCreating}
+                    className={cn(buttonVariants({ size: "sm" }))}
+                  >
+                    {planCreating ? "生成中…" : "生成学习计划"}
+                  </button>
+                )
+              ) : null}
               <Link
                 href={`/trace/${interviewId}`}
                 className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
@@ -180,6 +226,8 @@ export function ReportClient({ interviewId }: { interviewId: string }) {
             </div>
           }
         />
+
+        {planError ? <StatusBanner tone="error">{planError}</StatusBanner> : null}
 
         <StatStrip items={stats} />
 

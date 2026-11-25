@@ -9,6 +9,8 @@ Lua 比对释放），真 Redis 的连通性由 tests/integration 覆盖。
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from app.coordination import (
@@ -51,6 +53,15 @@ async def test_释放时token不匹配就不删锁(coordinator):
     assert await coordinator.acquire_session("iv-1") is None  # 锁还在
     await coordinator.release_session("iv-1", token_a)
     assert await coordinator.acquire_session("iv-1") is not None
+
+
+async def test_锁可以续租且token必须匹配(coordinator):
+    """心跳用：token 匹配才续；释放后 / 别人的 token 都不能续。"""
+    token = await coordinator.acquire_session("iv-1")
+    assert await coordinator.renew_session("iv-1", token) is True
+    assert await coordinator.renew_session("iv-1", "别人的token") is False
+    await coordinator.release_session("iv-1", token)
+    assert await coordinator.renew_session("iv-1", token) is False
 
 
 async def test_限流超限返回False(coordinator):
@@ -109,6 +120,27 @@ async def test_redis挂掉时会话锁fail_closed():
         await broken.acquire_session("iv-1")
 
 
+async def test_redis取锁要求从库确认_不足则fail_closed():
+    """Sentinel 切换可能提升没收到锁的副本：WAIT 不足必须释放并拒绝。"""
+    fake = _FakeRedis(wait_ack=1)
+    coordinator = RedisCoordinator(
+        fake, slots={"flash": 1, "pro": 1}, replica_acks=2
+    )
+    with pytest.raises(CoordinationUnavailable):
+        await coordinator.acquire_session("iv-wait")
+    assert "interview:iv-wait:lock" not in fake.store, "确认不足时必须把锁删掉"
+
+
+async def test_redis取锁从库确认足够时成功():
+    fake = _FakeRedis(wait_ack=2)
+    coordinator = RedisCoordinator(
+        fake, slots={"flash": 1, "pro": 1}, replica_acks=2
+    )
+    token = await coordinator.acquire_session("iv-wait-ok")
+    assert token
+    assert await coordinator.renew_session("iv-wait-ok", token) is True
+
+
 async def test_redis挂掉时限流fail_open():
     """限流是保护不是正确性：Redis 不可用要放行。"""
     broken = RedisCoordinator(_BrokenRedis(), slots={"flash": 1, "pro": 1})
@@ -142,19 +174,26 @@ async def test_redis挂掉时tts票据回退进程内():
 
 
 class _FakeRedis:
-    """够用的假 Redis：SET NX PX / INCR / EXPIRE / EVAL（只实现比对删除这一支）。"""
+    """够用的假 Redis：SET NX EX / INCR / EXPIRE / EVAL（释放 + 续租）/ WAIT。"""
 
-    def __init__(self) -> None:
+    def __init__(self, *, wait_ack: int = 2) -> None:
         self.store: dict[str, str] = {}
         self.expiry: dict[str, float] = {}
+        self.wait_ack = wait_ack
+        self.waits: list[tuple[int, int]] = []
 
     async def set(self, key, value, nx=False, ex=None):
         if nx and key in self.store:
             return None
         self.store[key] = value if isinstance(value, str) else value.decode()
+        if ex is not None:
+            self.expiry[key] = time.monotonic() + ex
         return True
 
     async def get(self, key):
+        if key in self.expiry and self.expiry[key] <= time.monotonic():
+            self.store.pop(key, None)
+            self.expiry.pop(key, None)
         return self.store.get(key)
 
     async def incr(self, key):
@@ -162,13 +201,24 @@ class _FakeRedis:
         return int(self.store[key])
 
     async def expire(self, key, seconds):
+        self.expiry[key] = time.monotonic() + seconds
         return True
 
-    async def eval(self, script, numkeys, key, token):
-        if self.store.get(key) == token:
-            del self.store[key]
+    async def eval(self, script, numkeys, key, *args):
+        token = args[0] if args else None
+        if self.store.get(key) != token:
+            return 0
+        if len(args) >= 2:  # 续租：token + ttl_ms
+            self.expiry[key] = time.monotonic() + int(args[1]) / 1000
             return 1
-        return 0
+        del self.store[key]  # 释放
+        self.expiry.pop(key, None)
+        return 1
+
+    async def execute_command(self, command, *args):
+        assert command == "WAIT"
+        self.waits.append((int(args[0]), int(args[1])))
+        return self.wait_ack
 
     async def aclose(self):
         return None
@@ -188,6 +238,9 @@ class _BrokenRedis:
         raise ConnectionError("redis down")
 
     async def eval(self, *args, **kwargs):
+        raise ConnectionError("redis down")
+
+    async def execute_command(self, *args, **kwargs):
         raise ConnectionError("redis down")
 
     async def aclose(self):

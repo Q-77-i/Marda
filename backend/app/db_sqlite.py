@@ -75,6 +75,24 @@ CREATE TABLE IF NOT EXISTS resumes (
     content_hash TEXT,
     created_at TEXT
 );
+-- P5-J5 outbox：与 finalize 同事务；SQLite 形态不跑 relay（单机演示），
+-- 但表与写入语义与 PG 保持一致——门面两个后端的 finalize 行为不漂移。
+CREATE TABLE IF NOT EXISTS agent_outbox (
+    id TEXT PRIMARY KEY,
+    aggregate_type TEXT NOT NULL,
+    aggregate_id TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    partition_key TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    published_at TEXT,
+    attempts INT NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    last_error TEXT,
+    UNIQUE (aggregate_type, aggregate_id, event_type)
+);
+CREATE INDEX IF NOT EXISTS agent_outbox_pending_idx
+    ON agent_outbox (created_at) WHERE published_at IS NULL;
 """
 
 
@@ -110,6 +128,11 @@ class SqliteStore:
                 return fn(conn, *args, **kwargs)
 
     # ---------- schema ----------
+
+    def ping(self) -> None:
+        """轻量连通性探针（readiness 用）：打不开库就抛。"""
+        with closing(self._connect()) as conn:
+            conn.execute("SELECT 1").fetchone()
 
     def ensure_schema(self) -> None:
         with closing(self._connect()) as conn:
@@ -307,6 +330,8 @@ class SqliteStore:
         interview_id: str,
         records: list[dict[str, Any]],
         report: dict[str, Any],
+        *,
+        event: dict[str, Any] | None = None,
     ) -> None:
         """**单事务**收尾：answers + report + interviews.status（P4-E2）。
 
@@ -315,6 +340,7 @@ class SqliteStore:
         这里把三步放进同一个事务：要么全成，要么全不成。
 
         幂等：先删本场旧 answers 再插（重放同一场不会重复计分）。
+        P5-J5：`event` 非空时同事务写 `agent_outbox`（与 PG 侧同语义）。
         """
         now = self.clock()
         payload = json.dumps(report, ensure_ascii=False)
@@ -351,8 +377,41 @@ class SqliteStore:
                 "UPDATE interviews SET status='finished', ended_at=? WHERE id=?",
                 (now, interview_id),
             )
+            if event is not None:
+                self._insert_outbox(conn, event, now)
 
         self._write(_finalize)
+
+    # ---------- outbox（P5-J5）----------
+
+    @staticmethod
+    def _outbox_row(event: dict[str, Any]) -> tuple:
+        payload = event.get("payload") or {}
+        interview_id = str(payload.get("interview_id") or "")
+        return (
+            str(event["event_id"]),
+            "interview",
+            interview_id,
+            str(event["type"]),
+            interview_id,
+            json.dumps(event, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _insert_outbox(conn: sqlite3.Connection, event: dict[str, Any], now: str) -> bool:
+        """写 outbox；唯一键冲突 = 同一场次重放 → 0 行（幂等）。"""
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO agent_outbox (id, aggregate_type, aggregate_id,"
+            " event_type, partition_key, payload, created_at, next_attempt_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (*SqliteStore._outbox_row(event), now, now),
+        )
+        return cur.rowcount == 1
+
+    def enqueue_outbox(self, event: dict[str, Any]) -> bool:
+        """单独入队（回填 / 补发工具）；与 finalize 内联写同一张表、同一唯一键。"""
+        now = self.clock()
+        return self._write(lambda conn: self._insert_outbox(conn, event, now))
 
     def get_interview(self, interview_id: str) -> dict | None:
         row = self._read(

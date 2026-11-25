@@ -1,0 +1,718 @@
+# P5-J6｜HA 演练编排（单机多实例，不是多可用区）。
+#
+# 用法：
+#   core（网关/业务/数据层 HA）：docker compose -f docker-compose.ha.yml up -d --build
+#   agent（面试链路）：          docker compose -f docker-compose.ha.yml --profile agent up -d
+#   events（Kafka/worker/relay）：docker compose -f docker-compose.ha.yml --profile events up -d
+#   全量：                       docker compose -f docker-compose.ha.yml --profile agent --profile events up -d
+#
+# 为什么用 profile：本机 Docker Desktop 默认内存约 8GB；embedding(~2–3GB) + 3 Kafka +
+# 2×Java 全套同时起会顶穿。演练按故障域起：core 跑网关/Redis/PG 演练，agent 跑杀 Agent，
+# events 跑 Kafka/outbox。全量需要把 Docker 内存调到 ≥10GB。
+#
+# IPAM 是契约：docker/nginx-ha/upstreams.conf 与 scripts/ha/drain.sh 都按这里的静态 IP
+# 指向实例；改 IP 必须三处同步。
+#   nginx .10 | gateway .11/.12 | business .21/.22 | api .31/.32 | worker .41/.42
+#   relay .51/.52 | web .60 | postgres .70/.71 | redis .80/.81/.82 | sentinel .91/.92/.93
+#   kafka .101/.102/.103 | qdrant .110 | embedding .111
+#
+# 数据隔离：HA 的全部数据在 docker/volumes/ha/（已 gitignore）；不读写 dev 卷。
+# 演练前用 scripts/ha/seed.sh 从 dev 库的副本灌入（J6-E）。
+
+name: marda-ha
+
+x-kafka-env: &kafka-env
+  KAFKA_PROCESS_ROLES: broker,controller
+  KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka-1:9093,2@kafka-2:9093,3@kafka-3:9093
+  KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+  KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+  KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+  KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "3"
+  KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "3"
+  KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "2"
+  KAFKA_DEFAULT_REPLICATION_FACTOR: "3"
+  KAFKA_MIN_INSYNC_REPLICAS: "2"
+  KAFKA_NUM_PARTITIONS: "6"
+  KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+  KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+  KAFKA_LOG_DIRS: /var/lib/kafka/data
+  KAFKA_HEAP_OPTS: "-Xms256m -Xmx256m"
+  # 3 个 broker 必须用同一个 cluster id（不设的话每个容器各自生成，组不成集群）
+  CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+
+x-kafka-healthcheck: &kafka-healthcheck
+  test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server 127.0.0.1:9092 --list >/dev/null 2>&1"]
+  interval: 10s
+  timeout: 10s
+  retries: 12
+  start_period: 30s
+
+services:
+  # ==================== 数据层 ====================
+
+  postgres-primary:
+    extends:
+      file: docker-compose.yml
+      service: postgres
+    # P4 的 2 worker 形态下连接池约 30；HA 有 2 api 容器 + 2 business + 2 worker + 2 relay，
+    # 默认 100 会打满。显式抬到 200，并在 J6-E 用 pg_stat_activity 复核。
+    command: ["postgres", "-c", "max_connections=200", "-c", "wal_level=replica", "-c", "max_wal_senders=10", "-c", "wal_keep_size=128MB", "-c", "hba_file=/ha/pg_hba.conf"]
+    volumes: !override
+      - ./docker/volumes/ha/postgres-primary:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./docker/postgres-ha/pg_hba.conf:/ha/pg_hba.conf:ro
+    ports: !override
+      - "127.0.0.1:${HA_POSTGRES_HOST_PORT:-55433}:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-marda}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      POSTGRES_DB: ${POSTGRES_DB:-marda}
+      REPLICATION_USER: ${REPLICATION_USER:-replicator}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+    networks:
+      default:
+        ipv4_address: 172.31.240.70
+
+  postgres-replica:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/ha/replica-entrypoint.sh"]
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_USER: ${POSTGRES_USER:-marda}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      POSTGRES_DB: ${POSTGRES_DB:-marda}
+      PRIMARY_HOST: postgres-primary
+      REPLICATION_USER: ${REPLICATION_USER:-replicator}
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-replicator}
+    volumes:
+      - ./docker/volumes/ha/postgres-replica:/var/lib/postgresql/data
+      - ./docker/postgres-ha/replica-entrypoint.sh:/ha/replica-entrypoint.sh:ro
+      - ./docker/postgres-ha/pg_hba.conf:/ha/pg_hba.conf:ro
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-marda}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      default:
+        ipv4_address: 172.31.240.71
+
+  # Redis 1 主 2 从 3 哨兵（J6-C）。不开持久化：锁/限流/缓存都是可重建状态。
+  redis-master:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.80
+
+  redis-replica-1:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--replicaof", "172.31.240.80", "6379", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.81
+
+  redis-replica-2:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--replicaof", "172.31.240.80", "6379", "--save", "", "--appendonly", "no", "--protected-mode", "no"]
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.82
+
+  sentinel-1:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "[ -f /data/sentinel.conf ] || cp /ha/sentinel.conf /data/sentinel.conf; exec redis-sentinel /data/sentinel.conf"]
+    volumes:
+      - ./docker/redis-ha/sentinel.conf:/ha/sentinel.conf:ro
+      - ./docker/volumes/ha/sentinel-1:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.91
+
+  sentinel-2:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "[ -f /data/sentinel.conf ] || cp /ha/sentinel.conf /data/sentinel.conf; exec redis-sentinel /data/sentinel.conf"]
+    volumes:
+      - ./docker/redis-ha/sentinel.conf:/ha/sentinel.conf:ro
+      - ./docker/volumes/ha/sentinel-2:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.92
+
+  sentinel-3:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["sh", "-c", "[ -f /data/sentinel.conf ] || cp /ha/sentinel.conf /data/sentinel.conf; exec redis-sentinel /data/sentinel.conf"]
+    volumes:
+      - ./docker/redis-ha/sentinel.conf:/ha/sentinel.conf:ro
+      - ./docker/volumes/ha/sentinel-3:/data
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "26379", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      default:
+        ipv4_address: 172.31.240.93
+
+  # ==================== 应用层（core） ====================
+
+  gateway-1:
+    extends:
+      file: docker-compose.p5.yml
+      service: gateway
+    environment:
+      BUSINESS_URL: http://business-1:8081
+      BUSINESS_URI: lb://business
+      SPRING_PROFILES_ACTIVE: ha
+      REDIS_HOST: redis-master
+      REDIS_PORT: "6379"
+      REDIS_SENTINEL_MASTER: marda-master
+      REDIS_SENTINEL_NODES: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      GATEWAY_CANARY_ENABLED: "false"
+      # 演练探针要打很多次同一用户；把限流抬到不干扰判据（限流本身有独立测试）。
+      GATEWAY_RATE_LIMIT_ENABLED: ${GATEWAY_RATE_LIMIT_ENABLED:-true}
+      GATEWAY_RATE_LIMIT_BURST_CAPACITY: ${GATEWAY_RATE_LIMIT_BURST_CAPACITY:-1000}
+      GATEWAY_RATE_LIMIT_REPLENISH_RATE: ${GATEWAY_RATE_LIMIT_REPLENISH_RATE:-1000}
+      # J7-T2：单实例 500 RPS 时 20 太紧；调度/Redis 抖动会把瞬时并发顶过 20。
+      GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS: ${GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS:-20}
+    depends_on: !override
+      business-1:
+        condition: service_healthy
+      business-2:
+        condition: service_healthy
+      redis-master:
+        condition: service_healthy
+    ports: !override
+      - "127.0.0.1:${HA_GATEWAY_1_PORT:-8181}:8080"
+    stop_grace_period: 45s
+    networks:
+      default:
+        ipv4_address: 172.31.240.11
+
+  gateway-2:
+    extends:
+      file: docker-compose.p5.yml
+      service: gateway
+    environment:
+      BUSINESS_URL: http://business-2:8081
+      BUSINESS_URI: lb://business
+      SPRING_PROFILES_ACTIVE: ha
+      REDIS_HOST: redis-master
+      REDIS_PORT: "6379"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      GATEWAY_CANARY_ENABLED: "false"
+      GATEWAY_RATE_LIMIT_ENABLED: ${GATEWAY_RATE_LIMIT_ENABLED:-true}
+      GATEWAY_RATE_LIMIT_BURST_CAPACITY: ${GATEWAY_RATE_LIMIT_BURST_CAPACITY:-1000}
+      GATEWAY_RATE_LIMIT_REPLENISH_RATE: ${GATEWAY_RATE_LIMIT_REPLENISH_RATE:-1000}
+      # J7-T2：单实例 500 RPS 时 20 太紧；调度/Redis 抖动会把瞬时并发顶过 20。
+      GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS: ${GATEWAY_BULKHEAD_MAX_CONCURRENT_CALLS:-20}
+    depends_on: !override
+      business-1:
+        condition: service_healthy
+      business-2:
+        condition: service_healthy
+      redis-master:
+        condition: service_healthy
+    ports: !override
+      - "127.0.0.1:${HA_GATEWAY_2_PORT:-8182}:8080"
+    stop_grace_period: 45s
+    networks:
+      default:
+        ipv4_address: 172.31.240.12
+
+  business-1:
+    extends:
+      file: docker-compose.p5.yml
+      service: business
+    environment:
+      DB_URL: jdbc:postgresql://${PG_HOST:-postgres-primary}:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      REDIS_HOST: redis-master
+      REDIS_PORT: "6379"
+      REDIS_DB: "1"
+      REDIS_SENTINEL_MASTER: marda-master
+      REDIS_SENTINEL_NODES: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      SPRING_PROFILES_ACTIVE: ha
+      BUSINESS_CACHE_ENABLED: "true"
+      BUSINESS_INSTANCE_HEADER_ENABLED: "true"
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+    ports: !override
+      - "127.0.0.1:${HA_BUSINESS_1_PORT:-8281}:8081"
+    stop_grace_period: 45s
+    networks:
+      default:
+        ipv4_address: 172.31.240.21
+
+  business-2:
+    extends:
+      file: docker-compose.p5.yml
+      service: business
+    environment:
+      DB_URL: jdbc:postgresql://${PG_HOST:-postgres-primary}:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      REDIS_HOST: redis-master
+      REDIS_PORT: "6379"
+      REDIS_DB: "1"
+      REDIS_SENTINEL_MASTER: marda-master
+      REDIS_SENTINEL_NODES: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      SPRING_PROFILES_ACTIVE: ha
+      BUSINESS_CACHE_ENABLED: "true"
+      BUSINESS_INSTANCE_HEADER_ENABLED: "true"
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+    ports: !override
+      - "127.0.0.1:${HA_BUSINESS_2_PORT:-8282}:8081"
+    stop_grace_period: 45s
+    networks:
+      default:
+        ipv4_address: 172.31.240.22
+
+  # ==================== 面试链路（agent profile） ====================
+
+  api-1:
+    extends:
+      file: docker-compose.yml
+      service: api
+    # 容器级多实例：1 worker/容器 × 2 容器 = 2 实例；PG 池按每实例 15 连接算，总账可控。
+    command: !override
+      ["sh", "-c", "rm -rf /tmp/prom_mp && mkdir -p /tmp/prom_mp && exec /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --timeout-graceful-shutdown 30 --loop app.graph.checkpointer:uvicorn_loop_factory"]
+    environment:
+      DB_PATH: /app/data/marda.sqlite3
+      CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
+      UPLOAD_DIR: /app/data/uploads
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_URL: http://embedding:8091
+      DB_BACKEND: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/${POSTGRES_DB:-marda}
+      CHECKPOINT_BACKEND: postgres
+      CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/marda_checkpoints
+      COORDINATION_BACKEND: redis
+      REDIS_URL: redis://redis-master:6379/0
+      REDIS_SENTINEL_MASTER: marda-master
+      REDIS_SENTINEL_NODES: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      CACHE_BACKEND: redis
+      CACHE_REDIS_URL: redis://redis-master:6379/1
+      OUTBOX_ENABLED: "true"
+      INTERVIEW_LOCK_TTL_S: "30"
+      # Sentinel 模式：取锁等 2 个从库确认，切换后任意被提升的副本都带着锁。
+      INTERVIEW_LOCK_REPLICA_ACKS: ${HA_LOCK_REPLICA_ACKS:-2}
+      # 演练默认 fake LLM（可配分片延迟）；真实演示把它改成 real。
+      LLM_MODE: ${HA_LLM_MODE:-fake}
+      LLM_FAKE_DELAY_S: ${HA_LLM_FAKE_DELAY_S:-0.2}
+      # J7：调用前延迟（流式即 TTFB；非流式即整次调用）；0 = 保持 J6 行为
+      LLM_FAKE_CALL_DELAY_S: ${HA_LLM_FAKE_CALL_DELAY_S:-0}
+      # J7：检索压测跳过 SiliconFlow rerank；默认 real
+      RERANK_MODE: ${HA_RERANK_MODE:-real}
+      # J7：槽位实验；默认仍是应用里的 16 / 4
+      LLM_MAX_CONCURRENCY_FLASH: ${HA_LLM_MAX_CONCURRENCY_FLASH:-32}
+      LLM_MAX_CONCURRENCY_PRO: ${HA_LLM_MAX_CONCURRENCY_PRO:-4}
+      # RedisCoordinator 的全局槽用 LLM_SLOTS_*（不是 LLM_MAX_CONCURRENCY_*，后者是本地闸门）
+      # J7-T3：50 并发下 16 槽首 token p95 7.32s；32 槽 2.49s；HA 默认 32（真实账户 flash 2500）
+      LLM_SLOTS_FLASH: ${HA_LLM_SLOTS_FLASH:-32}
+      LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
+      LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
+      INSTANCE_HEADER_ENABLED: "true"
+      # J8-B：OTLP → collector；OTEL_SDK_DISABLED=true 可整体关掉。
+      OTEL_SDK_DISABLED: ${HA_OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: marda-api
+    volumes: !override
+      - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
+      - ./docker/volumes/ha/uploads:/app/data/uploads
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      embedding:
+        condition: service_healthy
+    healthcheck: !override
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    ports: !override
+      - "127.0.0.1:${HA_API_1_PORT:-8101}:8000"
+    stop_grace_period: 45s
+    profiles: ["agent"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.31
+
+  api-2:
+    extends:
+      file: docker-compose.yml
+      service: api
+    command: !override
+      ["sh", "-c", "rm -rf /tmp/prom_mp && mkdir -p /tmp/prom_mp && exec /app/.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --timeout-graceful-shutdown 30 --loop app.graph.checkpointer:uvicorn_loop_factory"]
+    environment:
+      DB_PATH: /app/data/marda.sqlite3
+      CHECKPOINT_DB_PATH: /app/data/checkpoints.sqlite3
+      UPLOAD_DIR: /app/data/uploads
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_URL: http://embedding:8091
+      DB_BACKEND: postgres
+      DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/${POSTGRES_DB:-marda}
+      CHECKPOINT_BACKEND: postgres
+      CHECKPOINT_DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/marda_checkpoints
+      COORDINATION_BACKEND: redis
+      REDIS_URL: redis://redis-master:6379/0
+      REDIS_SENTINEL_MASTER: marda-master
+      REDIS_SENTINEL_NODES: sentinel-1:26379,sentinel-2:26379,sentinel-3:26379
+      CACHE_BACKEND: redis
+      CACHE_REDIS_URL: redis://redis-master:6379/1
+      OUTBOX_ENABLED: "true"
+      INTERVIEW_LOCK_TTL_S: "30"
+      INTERVIEW_LOCK_REPLICA_ACKS: ${HA_LOCK_REPLICA_ACKS:-2}
+      LLM_MODE: ${HA_LLM_MODE:-fake}
+      LLM_FAKE_DELAY_S: ${HA_LLM_FAKE_DELAY_S:-0.2}
+      # J7：调用前延迟（流式即 TTFB；非流式即整次调用）；0 = 保持 J6 行为
+      LLM_FAKE_CALL_DELAY_S: ${HA_LLM_FAKE_CALL_DELAY_S:-0}
+      # J7：检索压测跳过 SiliconFlow rerank；默认 real
+      RERANK_MODE: ${HA_RERANK_MODE:-real}
+      # J7：槽位实验；默认仍是应用里的 16 / 4
+      LLM_MAX_CONCURRENCY_FLASH: ${HA_LLM_MAX_CONCURRENCY_FLASH:-32}
+      LLM_MAX_CONCURRENCY_PRO: ${HA_LLM_MAX_CONCURRENCY_PRO:-4}
+      # RedisCoordinator 的全局槽用 LLM_SLOTS_*（不是 LLM_MAX_CONCURRENCY_*，后者是本地闸门）
+      # J7-T3：50 并发下 16 槽首 token p95 7.32s；32 槽 2.49s；HA 默认 32（真实账户 flash 2500）
+      LLM_SLOTS_FLASH: ${HA_LLM_SLOTS_FLASH:-32}
+      LLM_SLOTS_PRO: ${HA_LLM_SLOTS_PRO:-4}
+      LLM_ACQUIRE_TIMEOUT_S: ${HA_LLM_ACQUIRE_TIMEOUT_S:-30}
+      INSTANCE_HEADER_ENABLED: "true"
+      # J8-B：OTLP → collector；OTEL_SDK_DISABLED=true 可整体关掉。
+      OTEL_SDK_DISABLED: ${HA_OTEL_SDK_DISABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_SERVICE_NAME: marda-api
+    volumes: !override
+      - ./data/marda.sqlite3:/app/data/marda.sqlite3:ro
+      - ./docker/volumes/ha/uploads:/app/data/uploads
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      embedding:
+        condition: service_healthy
+    healthcheck: !override
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    ports: !override
+      - "127.0.0.1:${HA_API_2_PORT:-8102}:8000"
+    stop_grace_period: 45s
+    profiles: ["agent"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.32
+
+  qdrant:
+    extends:
+      file: docker-compose.yml
+      service: qdrant
+    volumes: !override
+      - ./docker/volumes/ha/qdrant:/qdrant/storage
+    ports: !override []
+    profiles: ["agent"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.110
+
+  embedding:
+    extends:
+      file: docker-compose.yml
+      service: embedding
+    ports: !override []
+    profiles: ["agent"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.111
+
+  # ==================== 事件链路（events profile） ====================
+
+  kafka-1:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "1"
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:19094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-1:9092,EXTERNAL://127.0.0.1:19094
+    volumes:
+      - ./docker/volumes/ha/kafka-1:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:${HA_KAFKA_1_PORT:-19094}:19094"
+    healthcheck: *kafka-healthcheck
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.101
+
+  kafka-2:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "2"
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:19095
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-2:9092,EXTERNAL://127.0.0.1:19095
+    volumes:
+      - ./docker/volumes/ha/kafka-2:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:${HA_KAFKA_2_PORT:-19095}:19095"
+    healthcheck: *kafka-healthcheck
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.102
+
+  kafka-3:
+    image: apache/kafka:3.9.1
+    restart: unless-stopped
+    environment:
+      <<: *kafka-env
+      KAFKA_NODE_ID: "3"
+      KAFKA_LISTENERS: INTERNAL://:9092,CONTROLLER://:9093,EXTERNAL://:19096
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka-3:9092,EXTERNAL://127.0.0.1:19096
+    volumes:
+      - ./docker/volumes/ha/kafka-3:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:${HA_KAFKA_3_PORT:-19096}:19096"
+    healthcheck: *kafka-healthcheck
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.103
+
+  kafka-init:
+    image: apache/kafka:3.9.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists \
+          --topic interview.finalized --partitions 6 --replication-factor 3 &&
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka-1:9092 --create --if-not-exists \
+          --topic notification.requested --partitions 6 --replication-factor 3
+    depends_on:
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+    restart: "no"
+    profiles: ["events"]
+
+  worker-1:
+    extends:
+      file: docker-compose.p5.yml
+      service: worker
+    environment:
+      DB_URL: jdbc:postgresql://${PG_HOST:-postgres-primary}:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      BUSINESS_WORKER_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      SERVER_PORT: "8082"
+      BUSINESS_KAFKA_RETRY_DELAY_MS: "1000"
+      BUSINESS_KAFKA_PARTITIONS: "6"
+      BUSINESS_KAFKA_REPLICATION_FACTOR: "3"
+      BUSINESS_OUTBOX_POLL_INTERVAL_MS: "1000"
+      BUSINESS_CACHE_ENABLED: "false"
+      # J8：worker 是唯一真正跑 Kafka 的进程，必须拿 ha profile——
+      # 否则 JSON 日志 / OTel / Kafka observation 在它身上全部不生效。
+      SPRING_PROFILES_ACTIVE: ha
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    stop_grace_period: 45s
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.41
+
+  worker-2:
+    extends:
+      file: docker-compose.p5.yml
+      service: worker
+    environment:
+      DB_URL: jdbc:postgresql://${PG_HOST:-postgres-primary}:5432/marda_business
+      DB_USER: ${POSTGRES_USER:-marda}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-marda}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN must be set}
+      BUSINESS_TIMEZONE: ${BUSINESS_TIMEZONE:-Asia/Shanghai}
+      BUSINESS_WORKER_ENABLED: "true"
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      SERVER_PORT: "8082"
+      BUSINESS_KAFKA_RETRY_DELAY_MS: "1000"
+      BUSINESS_KAFKA_PARTITIONS: "6"
+      BUSINESS_KAFKA_REPLICATION_FACTOR: "3"
+      BUSINESS_OUTBOX_POLL_INTERVAL_MS: "1000"
+      BUSINESS_CACHE_ENABLED: "false"
+      # J8：worker 是唯一真正跑 Kafka 的进程，必须拿 ha profile——
+      # 否则 JSON 日志 / OTel / Kafka observation 在它身上全部不生效。
+      SPRING_PROFILES_ACTIVE: ha
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    stop_grace_period: 45s
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.42
+
+  relay-1:
+    extends:
+      file: docker-compose.p5.yml
+      service: relay
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/${POSTGRES_DB:-marda}
+      KAFKA_BOOTSTRAP: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_TOPIC: interview.finalized
+      OUTBOX_BATCH_SIZE: "100"
+      OUTBOX_POLL_INTERVAL_S: "1"
+      OUTBOX_LEASE_S: "60"
+      OUTBOX_BACKOFF_BASE_S: "1"
+      OUTBOX_BACKOFF_MAX_S: "60"
+      OUTBOX_RETENTION_DAYS: "30"
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.51
+
+  relay-2:
+    extends:
+      file: docker-compose.p5.yml
+      service: relay
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-marda}:${POSTGRES_PASSWORD:-marda}@${PG_HOST:-postgres-primary}:5432/${POSTGRES_DB:-marda}
+      KAFKA_BOOTSTRAP: kafka-1:9092,kafka-2:9092,kafka-3:9092
+      KAFKA_TOPIC: interview.finalized
+      OUTBOX_BATCH_SIZE: "100"
+      OUTBOX_POLL_INTERVAL_S: "1"
+      OUTBOX_LEASE_S: "60"
+      OUTBOX_BACKOFF_BASE_S: "1"
+      OUTBOX_BACKOFF_MAX_S: "60"
+      OUTBOX_RETENTION_DAYS: "30"
+    depends_on: !override
+      postgres-primary:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    profiles: ["events"]
+    networks:
+      default:
+        ipv4_address: 172.31.240.52
+
+  # ==================== 入口 ====================
+
+  web:
+    extends:
+      file: docker-compose.yml
+      service: web
+    depends_on: !override {}
+    networks:
+      default:
+        ipv4_address: 172.31.240.60
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      # 挂目录而不是单文件：单文件 bind mount 在编辑（truncate + write）时，
+      # 容器可能读到截断的中间态，nginx -t 报 unexpected end of file。
+      - ./docker/nginx-ha:/etc/nginx/conf.d:ro
+    ports:
+      - "${HA_MARDA_PORT:-8088}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/nginx-health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    networks:
+      default:
+        ipv4_address: 172.31.240.10
+
+networks:
+  default:
+    name: marda-ha-net
+    ipam:
+      config:
+        - subnet: 172.31.240.0/24

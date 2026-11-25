@@ -1,0 +1,75 @@
+{
+  "uid": "marda-llm",
+  "title": "Marda · LLM 槽位与成本",
+  "tags": ["marda", "llm"],
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "LLM 槽等待 p95",
+      "gridPos": {"h": 5, "w": 8, "x": 0, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "marda:llm_slot_wait_p95:5m", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "orange", "value": 5}, {"color": "red", "value": 30}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "断路器开路（任一档）",
+      "gridPos": {"h": 5, "w": 8, "x": 8, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "max(marda_llm_breaker_open)", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "none"}
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "调用速率（calls/s）",
+      "gridPos": {"h": 5, "w": 8, "x": 16, "y": 0},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum(rate(marda_llm_calls_total[5m]))", "instant": true}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 2}, "overrides": []},
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "槽等待 p95（按 tier）",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (tier, le) (rate(marda_llm_slot_wait_seconds_bucket[5m])))", "legendFormat": "{{tier}}"}],
+      "fieldConfig": {"defaults": {"unit": "s", "decimals": 2}, "overrides": []}
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "调用结果（按 outcome）",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(marda_llm_calls_total[5m]))", "legendFormat": "{{outcome}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 3}, "overrides": []}
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "调用速率（按 purpose）",
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 13},
+      "datasource": {"type": "prometheus", "uid": "prometheus"},
+      "targets": [{"refId": "A", "expr": "sum by (purpose) (rate(marda_llm_calls_total[5m]))", "legendFormat": "{{purpose}}"}],
+      "fieldConfig": {"defaults": {"unit": "reqps", "decimals": 3}, "overrides": []}
+    },
+    {
+      "id": 7,
+      "type": "text",
+      "title": "成本 / token",
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 13},
+      "options": {"mode": "markdown", "content": "成本与 token 按场次 / 环节在 Langfuse 查看（自建部署时替换 base_url）：\n\n- 云端控制台：`https://cloud.langfuse.com`\n- 读回命令：`backend/scripts/cost_report.py <interview_id>`\n\nPrometheus 不重复采集 token（避免与 Langfuse 双源）。"}
+    }
+  ]
+}

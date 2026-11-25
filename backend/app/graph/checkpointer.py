@@ -118,6 +118,8 @@ class CheckpointerHandle:
     backend: str
     close: Callable[[], Awaitable[None]]
     prune: Callable[[int], Awaitable[list]] | None = None
+    # readiness 探针：checkpoint 库不可用时抛（面试主链路没有它就跑不了）
+    ping: Callable[[], Awaitable[None]] | None = None
 
 
 async def create_checkpointer(settings: Settings) -> CheckpointerHandle:
@@ -148,6 +150,9 @@ async def _create_sqlite(settings: Settings) -> CheckpointerHandle:
     async def _close() -> None:
         await conn.close()
 
+    async def _ping() -> None:
+        await conn.execute("SELECT 1")
+
     async def _prune(keep: int):
         from app.graph.retention import prune_all_sqlite
 
@@ -155,7 +160,7 @@ async def _create_sqlite(settings: Settings) -> CheckpointerHandle:
 
     logger.info("checkpointer: sqlite %s", settings.checkpoint_db_path)
     return CheckpointerHandle(
-        saver=saver, backend="sqlite", close=_close, prune=_prune
+        saver=saver, backend="sqlite", close=_close, prune=_prune, ping=_ping
     )
 
 
@@ -193,6 +198,10 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
     async def _close() -> None:
         await pool.close()
 
+    async def _ping() -> None:
+        async with pool.connection() as conn:
+            await conn.execute("SELECT 1")
+
     async def _prune(keep: int):
         from app.graph.retention import prune_all_postgres
 
@@ -200,5 +209,5 @@ async def _create_postgres(settings: Settings) -> CheckpointerHandle:
 
     logger.info("checkpointer: postgres（多 worker 共享状态）")
     return CheckpointerHandle(
-        saver=saver, backend="postgres", close=_close, prune=_prune
+        saver=saver, backend="postgres", close=_close, prune=_prune, ping=_ping
     )

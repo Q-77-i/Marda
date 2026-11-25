@@ -1,4 +1,4 @@
-> 本文是 SPEC 的 §7 正文；全局索引见 [../SPEC.md](../SPEC.md)。章节号冻结，不因拆分改变。
+> 本文是 SPEC 的 §7 正文；全局索引见 [SPEC.md](SPEC.md)。章节号冻结，不因拆分改变。
 
 ## 7. API 契约
 
@@ -21,7 +21,7 @@
 | GET /api/interviews | 可选 `status`（running/finished）、`type`（tech/behavioral；tech 含老场次 NULL）、`since`（YYYY-MM-DD，UTC 当日零点）、`page`（≥1）、`page_size`（1–50，默认 10） | 分页 + 过滤的历史列表（倒序）：`{items, total, page, page_size, counts:{finished, running}}`；**total 与 counts 基于过滤后全集**，不受分页影响；非法参数 422 |
 | GET /api/profile | — | 能力档案：`{sessions, summary, weakness_changes, excluded}`（§4.11）。**无路径参数**；**没有场次时返回零态结构（不是 404）**；**行为面场次不计入**（按报告 payload 的 `interview_type` 过滤），只进 `excluded` 计数 |
 | DELETE /api/interviews/{id} | — | **204**：物理删除（业务库三表 + checkpointer 线程，不可恢复；进行中的场次也允许）；不存在 404 |
-| POST /api/interviews/{id}/retry-persist | — | 修复「图 finished、业务库未写」的半成品场次：只重跑 finalize（幂等），不重跑图；404（不存在/越权）、409（未结束/场次忙）、200 `{repaired}`；详见 [P4-生产化 §8](../P4-生产化.md) |
+| POST /api/interviews/{id}/retry-persist | — | 修复「图 finished、业务库未写」的半成品场次：只重跑 finalize（幂等），不重跑图；404（不存在/越权）、409（未结束/场次忙）、200 `{repaired}`；详见 [P4-生产化 §8](../ops/P4-生产化.md) |
 | GET /api/bank/questions | `q`（关键词）/ `domain` / `difficulty` / `company` / `round` / `page` / `page_size`（1–50，默认 10） | `{mode, total, page, page_size, items}`——`q` 非空走混合检索（`mode=search`，`total=null`：相关性排序不翻页，单页 `SEARCH_LIMIT=20`），否则走 SQL 浏览（`mode=browse`，有 `total` 可翻页）；每项含题干/答案/关键点/追问/域/难度/厂商/面次 + `sources`（**主源排首位**） |
 | GET /api/bank/facets | — | `{domain, difficulty, company, round}` → `[{value, count}]`（仅 enabled；计数降序、同数按值升序，**难度例外：按档位 L1→L3**——有序维度按计数排会把 L2 顶到 L1 前面，而筛选项要的是档位序）。前端筛选项由此生成，不硬编候选值 |
 | GET /api/bank/capacity | `counts`（逗号分隔，默认 `5,10,15`；越界夹紧 2–20、去重升序） | `{options: [{difficulty, base, question_count, ok, shortfalls}]}`；`shortfalls = [{domain, required, available}]`（基准档见 §4.3） |

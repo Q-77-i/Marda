@@ -64,6 +64,11 @@ def _records(n: int = 2) -> list[dict]:
 
 
 @requires_pg
+def test_PG连通性探针(pg):
+    pg.ping()  # 不抛即通
+
+
+@requires_pg
 def test_业务库在PG上跑通(pg):
     db.create_user(DSN, user_id="u1", username="alice", password_hash="h")
     assert db.get_user(DSN, "u1")["username"] == "alice"

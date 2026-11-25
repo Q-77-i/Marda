@@ -12,15 +12,18 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, AsyncIterator
 
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from pydantic import BaseModel
 
-from app import coordination, db, llm, observability
+from app import cache, coordination, db, llm, metrics, observability, tracing
 from app.config import Settings
+from app.outbox.events import build_interview_finalized
 from app.pg_retry import retry_on_conflict
 from app.domain import INTERVIEW_TECH
 from app.graph.checkpointer import create_checkpointer
@@ -33,6 +36,11 @@ from app.graph.state import InterviewState
 from app.tools import images, profile
 
 logger = logging.getLogger(__name__)
+
+# P5-J4 缓存 TTL：档案 5m（报告变化时主动删）；报告不可变 1h；空报告 30s 防穿透。
+PROFILE_CACHE_TTL_S = 300
+REPORT_CACHE_TTL_S = 3600
+REPORT_NULL_TTL_S = 30
 
 
 class InterviewNotFoundError(Exception):
@@ -210,21 +218,30 @@ def _answers_row(record: Any) -> dict:
 class Service:
     """单场服务：持有一个编译图 + saver 连接，业务库走同步 db（to_thread）。"""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, cache_client: cache.Cache | None = None) -> None:
         self._settings = settings
         self._graph = None
         self._conn: aiosqlite.Connection | None = None
         self._close_checkpointer: Callable[[], Awaitable[None]] | None = None
+        self._checkpoint_ping: Callable[[], Awaitable[None]] | None = None
         self._coordinator: coordination.Coordinator | None = None
+        self._cache: cache.Cache | None = cache_client
 
     async def start(self) -> None:
-        """lifespan 启动：业务库 schema + checkpointer 连接 + 编译图 + 协调器。"""
+        """lifespan 启动：业务库 schema + checkpointer 连接 + 编译图 + 协调器 + 缓存。"""
         await self._ensure_schema_with_retry()
         handle = await create_checkpointer(self._settings)
         self._conn = None  # SQLite 连接已由 checkpointer 句柄持有
         self._close_checkpointer = handle.close
+        self._checkpoint_ping = handle.ping
         self._graph = build_graph(checkpointer=handle.saver)
         self._coordinator = coordination.get_coordinator(self._settings)
+        if self._cache is None:
+            try:
+                self._cache = cache.create_cache(self._settings)
+            except Exception as exc:  # noqa: BLE001 —— 缓存是可选依赖，配置坏了也不能拖垮启动
+                logger.warning("缓存初始化失败（本次禁用缓存）：%s", exc)
+                self._cache = cache.NoopCache()
         await self._apply_retention(handle)
 
     async def _ensure_schema_with_retry(self, attempts: int = 5) -> None:
@@ -277,9 +294,13 @@ class Service:
         if self._close_checkpointer is not None:
             await self._close_checkpointer()
             self._close_checkpointer = None
+        self._checkpoint_ping = None
         if self._coordinator is not None:
             await self._coordinator.close()
             coordination.reset_coordinator()
+        if self._cache is not None:
+            await self._cache.close()
+            self._cache = None
         observability.flush()  # 冲刷 Langfuse 缓冲（未配置时为空操作）
 
     @property
@@ -288,6 +309,34 @@ class Service:
         if self._coordinator is None:
             raise RuntimeError("service 未启动（lifespan）")
         return self._coordinator
+
+    async def is_ready(self) -> bool:
+        """readiness（J6-A）：业务库 + checkpoint 库都通才算 ready。
+
+        **只查 PG，不查 Redis**：Redis 挂了会让面试锁 fail closed（503），
+        但题库/档案等读接口仍可用；把它算进 readiness 会让编排层摘掉整个 API，
+        与「缓存/协调故障时尽量降级」的语义相反。
+        """
+        if self._graph is None:
+            return False
+        # J8 审查：readiness 的 DB ping 不产生独立 trace（否则 Jaeger 被 SELECT 1 根 trace 淹没）。
+        with suppress_instrumentation():
+            checks = [asyncio.to_thread(db.ping, self._settings.business_db)]
+            if self._checkpoint_ping is not None:
+                checks.append(self._checkpoint_ping())
+            try:
+                await asyncio.wait_for(asyncio.gather(*checks), timeout=2.0)
+            except Exception as exc:  # noqa: BLE001 —— readiness 失败是状态，不是异常
+                logger.warning("readiness 检查失败：%s", exc)
+                return False
+        return True
+
+    @property
+    def cache(self) -> cache.Cache:
+        """缓存（P5-J4）：不可用时自行回源，不抛给调用方。"""
+        if self._cache is None:
+            raise RuntimeError("service 未启动（lifespan）")
+        return self._cache
 
     # ---------- 会话锁（P4-E4）----------
 
@@ -308,6 +357,14 @@ class Service:
     async def release_session(self, interview_id: str, token: str) -> None:
         """释放会话锁（token 不匹配不删）。"""
         await self.coordinator.release_session(interview_id, token)
+
+    async def renew_session(self, interview_id: str, token: str) -> bool:
+        """续租会话锁（J6-B）：活跃 SSE 流靠它把 TTL 续下去。
+
+        失败返回 False（token 不匹配 / Redis 抖动）：心跳只记录，不打断面试；
+        锁的最终释放仍由 `finally` 或 TTL 兜底。
+        """
+        return await self.coordinator.renew_session(interview_id, token)
 
     @property
     def _g(self):
@@ -364,6 +421,7 @@ class Service:
         candidate_profile / resume_id（P2-M11 FR-28）：简历解析结果预填候选人插槽；
         空值 = 没传简历，出题侧消息构造与接入前逐字一致。
         """
+        metrics.record_interview_started(interview_type)
         state = InterviewState(
             interview_id=interview_id,
             position=position,
@@ -380,8 +438,10 @@ class Service:
             "interview_id": interview_id, "phase": "intro",
             "answered_count": 0, "question_count": question_count,
         })
-        async for event in self._run(state, config, state.model_dump(), user_id=user_id):
-            yield event
+        # J8-B：轮次 span 覆盖整轮（OTel 未启用时为空操作）。
+        with tracing.turn_span(interview_id, interview_type):
+            async for event in self._run(state, config, state.model_dump(), user_id=user_id):
+                yield event
 
     async def send_message(
         self,
@@ -412,8 +472,10 @@ class Service:
                 payload["images"] = list(images)
             if speech:
                 payload["speech"] = dict(speech)
-        async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
-            yield event
+        interview_type = values.get("interview_type") or INTERVIEW_TECH
+        with tracing.turn_span(interview_id, interview_type):
+            async for event in self._run(Command(resume=payload), config, values, user_id=user_id):
+                yield event
 
     async def _run(
         self, input_value: Any, config: dict, initial_values: dict, *, user_id: str = ""
@@ -452,10 +514,12 @@ class Service:
                     await self._persist(interview_id, values)
                     yield _event("done", {"interview_id": interview_id, "report_ready": True})
             except llm.LLMError as exc:
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "llm_error", "message": str(exc), "retryable": exc.retryable,
                 })
-            except GraphRecursionError:
+            except GraphRecursionError as exc:
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "recursion_error", "message": "面试流程超出步数上限，请稍后重试",
                 })
@@ -464,6 +528,7 @@ class Service:
                 # 不接住的话异常会逃出流——SSE 连接直接断开，**客户端拿不到任何 error 事件**，
                 # 只能看着一个「永远转圈」的界面（文档写的「仍失败回 SSE error」就不成立）。
                 # 所以显式接住并发 error 事件，并带上「怎么修」的指引。
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "persist_error",
                     "message": "面试已结束但结果保存失败，请稍后重试或查看面试记录",
@@ -480,6 +545,8 @@ class Service:
         """
         records = [_answers_row(q) for q in values.get("answered_questions") or []]
         report = values.get("report") or {}
+        # 事件只构建一次（确定性 event_id；重试沿用同一份，不会算出两个事件）
+        event = self._finalize_event(interview_id, values)
         last_error: Exception | None = None
         for attempt in range(3):  # 首次 + 2 次重试
             try:
@@ -489,6 +556,11 @@ class Service:
                     interview_id,
                     records,
                     report,
+                    event=event,
+                )
+                await self._evict_user_caches(values.get("user_id", ""), interview_id)
+                metrics.record_interview_completed(
+                    values.get("interview_type") or INTERVIEW_TECH
                 )
                 return
             except Exception as exc:  # noqa: BLE001 —— 落库失败要兜住，别把流打断
@@ -496,6 +568,36 @@ class Service:
                 if attempt < 2:
                     await asyncio.sleep(0.2 * (attempt + 1))
         raise PersistFailedError(f"落库失败（重试 3 次仍失败）：{last_error}")
+
+    def _finalize_event(self, interview_id: str, values: dict) -> dict | None:
+        """构建 `interview.finalized`（P5-J5）。
+
+        **构建失败不阻断落库**：报告是主产物，一条事件不值得让用户看到「保存失败」。
+        失败时记 warning，之后可用 `scripts/emit_finalized.py` 从已落库报告补发。
+        """
+        if not self._settings.outbox_enabled:
+            return None
+        try:
+            return build_interview_finalized(
+                interview_id=interview_id,
+                user_id=values.get("user_id") or "",
+                report=values.get("report") or {},
+                finished_at=datetime.now(timezone.utc),
+            )
+        except Exception as exc:  # noqa: BLE001 —— 事件是旁路，不能拖垮落库
+            logger.warning("收尾事件构建失败（报告照常落库，可 backfill 补发）：%s", exc)
+            return None
+
+    async def _evict_user_caches(self, user_id: str, interview_id: str | None = None) -> None:
+        """写/删成功后失效缓存；缓存故障只记日志，TTL 是最终边界。"""
+        if not user_id:
+            return
+        try:
+            await self.cache.delete(f"profile:{user_id}")
+            if interview_id:
+                await self.cache.delete(f"report:{user_id}:{interview_id}")
+        except Exception as exc:  # noqa: BLE001 —— 缓存失效失败不该影响写路径
+            logger.warning("缓存失效失败（等 TTL 过期）：%s", exc)
 
     async def retry_persist(self, interview_id: str, user_id: str) -> dict:
         """**重试落库**：修「图 finished、业务库没写」的半成品场次。
@@ -559,6 +661,7 @@ class Service:
             await asyncio.to_thread(
                 db.delete_interview, self._settings.business_db, interview_id
             )
+            await self._evict_user_caches(user_id, interview_id)
             await asyncio.to_thread(
                 images.remove_interview_images, self._settings.upload_dir, interview_id
             )
@@ -599,8 +702,32 @@ class Service:
         }
 
     async def get_report(self, interview_id: str, user_id: str) -> dict | None:
+        row, _ = await self.get_report_cached(interview_id, user_id)
+        return row
+
+    async def get_report_cached(
+        self, interview_id: str, user_id: str
+    ) -> tuple[dict | None, cache.CacheOutcome]:
+        """报告读缓存：归属校验永远先走 DB（安全语义不变），命中只省报告行读取。
+
+        `cache_null=True`：未结束/报告缺失的 404 也短缓存 30s，防穿透；
+        finalize 成功后会删这个 key，所以新报告不会被空值挡住。
+        """
         await self._require_owner(interview_id, user_id)
-        return await asyncio.to_thread(db.get_report, self._settings.business_db, interview_id)
+
+        async def load() -> dict | None:
+            return await asyncio.to_thread(
+                db.get_report, self._settings.business_db, interview_id
+            )
+
+        lookup = await self.cache.get_or_load(
+            f"report:{user_id}:{interview_id}",
+            load,
+            ttl_s=REPORT_CACHE_TTL_S,
+            null_ttl_s=REPORT_NULL_TTL_S,
+            cache_null=True,
+        )
+        return lookup.value, lookup.outcome
 
     async def _node_timeline(self, interview_id: str) -> list[dict]:
         """节点时间线（P2-M12 / SPEC §4.7）：checkpoint 历史零写入派生。
@@ -647,16 +774,33 @@ class Service:
         }
 
     async def get_profile(self, user_id: str) -> dict:
+        data, _ = await self.get_profile_cached(user_id)
+        return data
+
+    async def get_profile_cached(
+        self, user_id: str
+    ) -> tuple[dict, cache.CacheOutcome]:
         """能力档案（FR-19）：该用户全部已落库报告 → 曲线与短板变化。
 
-        只读、无场次参数——隔离由 user_id 过滤承担，故不存在 404/越权面；
-        数据源是报告 payload 本身（同学习推荐口径），题库/评分口径变更零回归。
+        缓存键按 user 隔离；finalize / retry / delete 成功后主动删，
+        TTL 5m 兜底。数据源与报告页同一份 payload（口径单一来源）。
         """
-        rows = await asyncio.to_thread(db.list_reports, self._settings.business_db, user_id=user_id)
-        no_report = await asyncio.to_thread(  # 已完成但报告缺失的场次（P2-M3）：只在档案里作说明
-            db.count_finished_without_report, self._settings.business_db, user_id=user_id
+
+        async def load() -> dict:
+            rows = await asyncio.to_thread(
+                db.list_reports, self._settings.business_db, user_id=user_id
+            )
+            no_report = await asyncio.to_thread(  # 已完成但报告缺失的场次（P2-M3）
+                db.count_finished_without_report, self._settings.business_db, user_id=user_id
+            )
+            return profile.build_profile(rows, no_report=no_report)
+
+        lookup = await self.cache.get_or_load(
+            f"profile:{user_id}", load, ttl_s=PROFILE_CACHE_TTL_S
         )
-        return profile.build_profile(rows, no_report=no_report)
+        # build_profile 永远返回 dict；缓存里的 null 值不属于这个 key。
+        assert lookup.value is not None
+        return lookup.value, lookup.outcome
 
     async def list_interviews(
         self,

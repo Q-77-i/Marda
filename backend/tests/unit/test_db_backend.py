@@ -46,6 +46,10 @@ def test_门面按target类型分派(sqlite_db):
     assert db.get_interview(sqlite_db, "iv-1")["position"] == "Agent"
 
 
+def test_sqlite_连通性探针(sqlite_db):
+    db.ping(sqlite_db)  # 不抛即通
+
+
 def test_finalize一次落库三样东西(sqlite_db):
     db.create_interview(
         sqlite_db, interview_id="iv-1", position="Agent", question_count=5, user_id="u1"

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +34,9 @@ class Settings(BaseSettings):
     # SiliconFlow：M3 起只留 rerank（嵌入退为本地 BGE-M3）
     siliconflow_api_key: str
     siliconflow_base_url: str = "https://api.siliconflow.cn/v1"
+    # J7：rerank 模式（real | fake）。fake 只跳过 SiliconFlow，保留真实 embedding + Qdrant + RRF，
+    # 用于压测检索路径；默认 real，不改变生产行为。
+    rerank_mode: Literal["real", "fake"] = "real"
 
     # 可观测（P1-M4）：Langfuse 云形态；Key 缺失时整体降级零开销（本地/CI 无需账号）
     langfuse_public_key: str = ""
@@ -62,6 +66,16 @@ class Settings(BaseSettings):
     llm_acquire_timeout_s: float = 30.0
     llm_breaker_threshold: int = 5  # 连续「上游不可用」次数（内容类失败不计）
     llm_breaker_cooldown_s: float = 30.0
+    # J6-0：应用级 fake（real | fake）。只给故障演练 / J7 压测用，默认 real。
+    llm_mode: Literal["real", "fake"] = "real"
+    # fake 模式下每个流式分片后的延迟（秒）：把一轮拉长到「中途杀实例」可复现的窗口。
+    llm_fake_delay_s: float = 0.0
+    # J7：fake 模式下每次调用**开始前**的固定延迟（秒）。流式即 TTFB、非流式即整次调用；
+    # 默认 0，不改变既有演练 / 测试行为。J7 用它让「首 token / 整轮」可测。
+    llm_fake_call_delay_s: float = 0.0
+
+    # J6-A：多实例演练时在响应头带 X-Marda-Instance（hostname:pid），只做诊断。
+    instance_header_enabled: bool = True
 
     # 面试默认值
     default_question_count: int = 10
@@ -78,14 +92,36 @@ class Settings(BaseSettings):
     checkpoint_backend: str = "sqlite"
     checkpoint_database_url: str = ""  # CHECKPOINT_DATABASE_URL（独立库）
     checkpoint_pool_max_size: int = 10
-    # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/P4-生产化.md §4.3）
+    # 每场保留最近 N 张快照 + 最终一张（更早的不可回放，见 docs/ops/P4-生产化.md §4.3）
     checkpoint_retention: int = 20
+
+    # ===== P5-J4 分布式缓存 =====
+    # 缓存是加速不是正确性：后端不可用时回源 DB；默认 memory（本地/测试），
+    # compose 用 redis（多 worker 共享）。逻辑库与协调层分开（默认 /1 vs /0）。
+    cache_enabled: bool = True
+    cache_backend: str = "memory"
+    cache_redis_url: str = "redis://localhost:6379/1"
+    cache_redis_timeout_s: float = 0.2
+    cache_key_prefix: str = "marda:cache:"
+
+    # ===== P5-J5 事件 outbox =====
+    # 默认关闭：单机 / SQLite 形态行为不变；P5 compose 用 true。
+    # 打开后 finalize 会在**同一事务**写 agent_outbox；Kafka 由独立 relay 发布。
+    outbox_enabled: bool = False
 
     # 协调后端：memory（默认，单进程 / 测试）| redis（多 worker 共享）
     coordination_backend: str = "memory"
     redis_url: str = "redis://localhost:6379/0"
-    # 会话锁 TTL 要大于一轮最长耗时；worker 崩了靠 TTL 自动过期
-    interview_lock_ttl_s: int = 600
+    # 会话锁：TTL 管「进程崩溃后的自动释放」，活跃流靠心跳续租（J6-B）。
+    # 30s/10s = 崩溃后最多 30s 可重连；正常一轮再长也不会丢锁（心跳在跑）。
+    interview_lock_ttl_s: int = 30
+    # Sentinel 模式下取锁要求至少 N 个从库确认（WAIT N timeout）：切换后任意被提升
+    # 的副本都带着锁。0 = 不等待（单机 Redis / 测试默认）；HA 配 2。
+    interview_lock_replica_acks: int = 0
+    interview_lock_wait_timeout_ms: int = 100
+    # Sentinel（J6-C）：逗号分隔 host:port；非空时协调层 / 缓存都走 Sentinel。
+    redis_sentinel_nodes: str = ""
+    redis_sentinel_master: str = "marda-master"
     # 单用户每分钟请求上限（Redis 模式下全局生效）
     user_rate_limit_per_min: int = 30
     # 全局 LLM 并发槽（**跨 worker 共享**，不是每 worker 一份）

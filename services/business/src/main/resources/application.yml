@@ -1,0 +1,113 @@
+server:
+  port: ${SERVER_PORT:8081}
+  # J6-A：SIGTERM 后先停止接新请求；readiness 变 REFUSING_TRAFFIC，
+  # gateway 的健康检查负载均衡据此摘流，在途请求跑完再退出。
+  shutdown: graceful
+
+spring:
+  application:
+    name: marda-business
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+  threads:
+    virtual:
+      # J3 的 Spring MVC 用虚拟线程跑阻塞 JDBC；Hikari 池仍是 DB 并发上限。
+      enabled: true
+  kafka:
+    # 只有 worker 角色会真正建生产者 / 消费者；web 角色留着地址也不连接。
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9094}
+    consumer:
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      max-poll-records: 10
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      properties:
+        # J6-D：2 个 worker 滚动重启时用协作式再均衡，避免 stop-the-world
+        # 把两个实例的消费都停住（默认 RangeAssignor 是 eager）。
+        partition.assignment.strategy: org.apache.kafka.clients.consumer.CooperativeStickyAssignor
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:55432/marda_business}
+    username: ${DB_USER:marda}
+    password: ${DB_PASSWORD:marda}
+    hikari:
+      maximum-pool-size: ${DB_POOL_MAX_SIZE:10}
+      minimum-idle: 2
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      # 缓存与协调层分库：/1 只放可丢缓存，/0 留给 Python 的锁 / 限流。
+      database: ${REDIS_DB:1}
+      # 缓存是保护不是正确性：命令/连接都设硬超时，Redis 挂时尽快回源。
+      timeout: ${REDIS_TIMEOUT:200ms}
+      connect-timeout: ${REDIS_CONNECT_TIMEOUT:200ms}
+  jackson:
+    property-naming-strategy: SNAKE_CASE
+    # 契约里的可选字段允许缺省；不全局裁 null，避免 required-but-null（如 plan_id）被省略。
+    default-property-inclusion: always
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # J8：缓存命中走 cache.requests，Prometheus 内网抓取（/actuator/prometheus）。
+        include: health,info,metrics,prometheus
+  tracing:
+    # J8-B：默认关闭（本地/测试不连 collector）；HA profile 显式开启。
+    enabled: false
+  metrics:
+    distribution:
+      # J8 修复：没有这一行时 Micrometer 不导出 _bucket，p95 永远为空。
+      percentiles-histogram:
+        "[http.server.requests]": true
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    # DB 是业务服务的正确性依赖：DB 不可用时 readiness 应为 DOWN。
+    db:
+      enabled: true
+    # Redis 只做缓存，不是正确性依赖。默认健康指标会在 Redis 挂时把服务标成
+    # DOWN，等于让编排层摘掉整个业务 API——与「缓存故障回源」语义相反。
+    redis:
+      enabled: false
+
+business:
+  service-token: ${SERVICE_TOKEN:}
+  timezone: ${BUSINESS_TIMEZONE:Asia/Shanghai}
+  # J6-A：多实例演练的诊断头（hostname:pid）；不是对外契约。
+  instance-header-enabled: ${BUSINESS_INSTANCE_HEADER_ENABLED:true}
+  # P5-J5：worker 角色（消费者 / relay）默认关闭；compose 的 worker 容器打开。
+  worker:
+    enabled: ${BUSINESS_WORKER_ENABLED:false}
+  kafka:
+    plan-consumer-group: ${BUSINESS_PLAN_CONSUMER_GROUP:business-plan}
+    notification-consumer-group: ${BUSINESS_NOTIFICATION_CONSUMER_GROUP:notification-delivery}
+    retry-delay-ms: ${BUSINESS_KAFKA_RETRY_DELAY_MS:1000}
+    partitions: ${BUSINESS_KAFKA_PARTITIONS:1}
+    replication-factor: ${BUSINESS_KAFKA_REPLICATION_FACTOR:1}
+  outbox:
+    topic: ${BUSINESS_OUTBOX_TOPIC:notification.requested}
+    batch-size: ${BUSINESS_OUTBOX_BATCH_SIZE:100}
+    lease-seconds: ${BUSINESS_OUTBOX_LEASE_SECONDS:60}
+    poll-interval-ms: ${BUSINESS_OUTBOX_POLL_INTERVAL_MS:1000}
+    base-backoff-seconds: ${BUSINESS_OUTBOX_BASE_BACKOFF_SECONDS:1}
+    max-backoff-seconds: ${BUSINESS_OUTBOX_MAX_BACKOFF_SECONDS:60}
+    retention-days: ${BUSINESS_OUTBOX_RETENTION_DAYS:30}
+    publish-timeout-seconds: ${BUSINESS_OUTBOX_PUBLISH_TIMEOUT_SECONDS:10}
+  cache:
+    # 默认关闭；compose 里通过 BUSINESS_CACHE_ENABLED=true 打开。
+    enabled: ${BUSINESS_CACHE_ENABLED:false}
+    key-prefix: ${BUSINESS_CACHE_PREFIX:marda:cache:}
+    today-ttl: ${BUSINESS_CACHE_TODAY_TTL:60s}
+    plan-ttl: ${BUSINESS_CACHE_PLAN_TTL:5m}
+    null-ttl: ${BUSINESS_CACHE_NULL_TTL:30s}
+    jitter: ${BUSINESS_CACHE_JITTER:0.1}
+    lock-ttl: ${BUSINESS_CACHE_LOCK_TTL:3s}
+    lock-wait: ${BUSINESS_CACHE_LOCK_WAIT:200ms}
+    lock-poll: ${BUSINESS_CACHE_LOCK_POLL:50ms}

@@ -60,6 +60,14 @@ class Coordinator(Protocol):
         """释放会话锁（token 不匹配则不删——防误删别人的锁）。"""
         ...
 
+    async def renew_session(self, interview_id: str, token: str) -> bool:
+        """续租会话锁；token 不匹配 / 后端异常返回 False（不抛）。
+
+        活跃 SSE 流靠心跳调用它：TTL 只负责「进程崩溃后的兜底释放」，
+        正常一轮再长也不该因为 TTL 到期被第二个请求抢锁。
+        """
+        ...
+
     async def allow_request(self, user_id: str, *, limit: int, window_s: int = 60) -> bool:
         """per-user 限流：超限返回 False。"""
         ...
@@ -91,8 +99,9 @@ class MemoryCoordinator:
     刻意保留它：单测、demo、CI 都不该依赖 Redis；Redis 挂掉时它也是 LLM 槽的兜底。
     """
 
-    def __init__(self, slots: dict[str, int] | None = None) -> None:
+    def __init__(self, slots: dict[str, int] | None = None, *, session_ttl_s: int = 30) -> None:
         self._sessions: dict[str, tuple[str, float]] = {}  # interview_id → (token, 过期时间)
+        self._session_ttl_s = session_ttl_s
         self._rate: dict[str, int] = {}  # "user:window" → 计数
         self._tts_tickets: dict[str, tuple[str, float]] = {}  # ticket → (text, 过期时间)
         # tier → 槽位 token 列表（None = 空闲）。**容量在这里定死**，
@@ -109,7 +118,7 @@ class MemoryCoordinator:
             if entry and entry[1] > now:
                 return None
             token = uuid.uuid4().hex
-            self._sessions[interview_id] = (token, now + 600)
+            self._sessions[interview_id] = (token, now + self._session_ttl_s)
             return token
 
     async def release_session(self, interview_id: str, token: str) -> None:
@@ -117,6 +126,14 @@ class MemoryCoordinator:
             entry = self._sessions.get(interview_id)
             if entry and entry[0] == token:
                 self._sessions.pop(interview_id, None)
+
+    async def renew_session(self, interview_id: str, token: str) -> bool:
+        async with self._lock:
+            entry = self._sessions.get(interview_id)
+            if not entry or entry[0] != token:
+                return False
+            self._sessions[interview_id] = (token, time.monotonic() + self._session_ttl_s)
+            return True
 
     async def allow_request(self, user_id: str, *, limit: int, window_s: int = 60) -> bool:
         window = int(time.time() // window_s)
@@ -193,6 +210,14 @@ end
 return 0
 """
 
+# 续租：token 匹配才 PEXPIRE——A 的锁已被 B 接手时，A 的心跳不能给 B 续命
+_RENEW_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('pexpire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+
 
 class RedisCoordinator:
     """Redis 协调（多 worker 共享状态）。
@@ -207,22 +232,29 @@ class RedisCoordinator:
         self,
         client,
         *,
-        session_ttl_s: int = 600,
+        session_ttl_s: int = 30,
         slot_lease_s: int = 120,
         slots: dict[str, int] | None = None,
         fallback: MemoryCoordinator | None = None,
+        replica_acks: int = 0,
+        wait_timeout_ms: int = 100,
     ) -> None:
         self._client = client
         self._session_ttl_s = session_ttl_s
         self._slot_lease_s = slot_lease_s
         self._slots = slots or {"flash": 16, "pro": 4}
         self._fallback = fallback or MemoryCoordinator()
+        # Sentinel 模式：取锁要求 N 个从库确认（见 acquire_session）
+        self._replica_acks = replica_acks
+        self._wait_timeout_ms = wait_timeout_ms
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "RedisCoordinator":
-        from redis.asyncio import Redis
+        from app.redis_client import make_redis_client
 
-        client = Redis.from_url(settings.redis_url, decode_responses=False)
+        client = make_redis_client(
+            settings, url=settings.redis_url, decode_responses=False
+        )
         return cls(
             client,
             session_ttl_s=settings.interview_lock_ttl_s,
@@ -231,6 +263,8 @@ class RedisCoordinator:
                 "flash": settings.llm_slots_flash,
                 "pro": settings.llm_slots_pro,
             },
+            replica_acks=settings.interview_lock_replica_acks,
+            wait_timeout_ms=settings.interview_lock_wait_timeout_ms,
         )
 
     # ---------- 会话锁 ----------
@@ -244,7 +278,25 @@ class RedisCoordinator:
             )
         except Exception as exc:  # noqa: BLE001 —— 任何 Redis 故障都 fail closed
             raise CoordinationUnavailable(f"会话锁不可用：{exc}") from exc
-        return token if ok else None
+        if not ok:
+            return None
+        if self._replica_acks > 0:
+            # Sentinel 切换可能提升一个没收到这把锁的副本（异步复制）。取锁后等
+            # N 个从库确认：之后任意被提升的副本都带着锁。确认不足 → fail closed，
+            # 宁可 503 也不能在切换窗口里出现两个 worker 同跑一场。
+            try:
+                acked = await self._client.execute_command(
+                    "WAIT", self._replica_acks, self._wait_timeout_ms
+                )
+            except Exception as exc:  # noqa: BLE001
+                await self.release_session(interview_id, token)
+                raise CoordinationUnavailable(f"会话锁复制确认失败：{exc}") from exc
+            if int(acked) < self._replica_acks:
+                await self.release_session(interview_id, token)
+                raise CoordinationUnavailable(
+                    f"会话锁复制确认不足：{acked}/{self._replica_acks}"
+                )
+        return token
 
     async def release_session(self, interview_id: str, token: str) -> None:
         key = f"interview:{interview_id}:lock"
@@ -252,6 +304,34 @@ class RedisCoordinator:
             await self._client.eval(_RELEASE_LUA, 1, key, token)
         except Exception as exc:  # noqa: BLE001 —— 释放失败不阻断业务（锁会 TTL 过期）
             logger.warning("释放会话锁失败（将等 TTL 过期）：%s", exc)
+
+    async def renew_session(self, interview_id: str, token: str) -> bool:
+        key = f"interview:{interview_id}:lock"
+        try:
+            renewed = await self._client.eval(
+                _RENEW_LUA, 1, key, token, self._session_ttl_s * 1000
+            )
+        except Exception as exc:  # noqa: BLE001 —— 续租失败不打断面试（TTL 兜底）
+            logger.warning("会话锁续租失败（将等 TTL 过期）：%s", exc)
+            return False
+        if not renewed:
+            return False
+        if self._replica_acks > 0:
+            # 续租的复制确认失败只告警：流已经在跑，不能因为复制抖动把面试打断；
+            # 取锁时的 WAIT 已经保证「切换前在任意副本上都有这把锁」。
+            try:
+                acked = await self._client.execute_command(
+                    "WAIT", self._replica_acks, self._wait_timeout_ms
+                )
+                if int(acked) < self._replica_acks:
+                    logger.warning(
+                        "会话锁续租复制确认不足：%s/%s（继续面试）",
+                        acked,
+                        self._replica_acks,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("会话锁续租复制确认失败（继续面试）：%s", exc)
+        return True
 
     # ---------- per-user 限流 ----------
 
@@ -349,7 +429,8 @@ def get_coordinator(settings: Settings | None = None) -> Coordinator:
                 slots={
                     "flash": settings.llm_slots_flash,
                     "pro": settings.llm_slots_pro,
-                }
+                },
+                session_ttl_s=settings.interview_lock_ttl_s,
             )
     return _COORDINATOR
 

@@ -54,6 +54,16 @@ def bank_db(client):
     return path
 
 
+async def test_分面第二次读取命中缓存(client, bank_db):
+    first = await client.get("/api/bank/facets")
+    assert first.status_code == 200
+    assert first.headers["x-cache"] == "MISS"
+
+    second = await client.get("/api/bank/facets")
+    assert second.headers["x-cache"] == "HIT"
+    assert second.json() == first.json()
+
+
 async def test_浏览筛选与分页(client, bank_db):
     r = await client.get("/api/bank/questions", params={"page_size": 5})
     assert r.status_code == 200, r.text

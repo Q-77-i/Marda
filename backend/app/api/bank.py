@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.auth import get_current_user
 from app.config import get_settings
@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api/bank", tags=["bank"], dependencies=[Depends(get_
 SEARCH_LIMIT = 20  # 关键词模式单页条数（相关性排序下分页无意义，超出部分不收）
 DEFAULT_COUNTS = "5,10,15"  # 与前端 QUESTION_COUNT_OPTIONS 一致的兜底
 COUNT_MIN, COUNT_MAX = 2, 20  # 同创建接口的轮次下限/上限
+FACETS_CACHE_TTL_S = 600  # 分面只随题库重建变化；10m + 抖动足够
 
 Filters = dict[str, str | None]
 
@@ -79,9 +80,22 @@ async def list_questions(
 
 
 @router.get("/facets")
-async def get_facets():
-    """四维分面取值与计数（仅 enabled）——前端筛选项由此生成，不硬编候选值。"""
-    return await asyncio.to_thread(bank_query.bank_facets, get_settings().db_path)
+async def get_facets(request: Request, response: Response):
+    """四维分面取值与计数（仅 enabled）——前端筛选项由此生成，不硬编候选值。
+
+    P5-J4 缓存：全局热 key；题库重建是离线动作，TTL 10m + 抖动即可，
+    重建后也可手动 DEL（J4 不把缓存删键挂到离线管线里）。
+    """
+    service = request.app.state.service
+
+    async def load() -> dict:
+        return await asyncio.to_thread(bank_query.bank_facets, get_settings().db_path)
+
+    lookup = await service.cache.get_or_load(
+        "bank:facets", load, ttl_s=FACETS_CACHE_TTL_S
+    )
+    response.headers["X-Cache"] = lookup.outcome.value
+    return lookup.value
 
 
 @router.get("/capacity")

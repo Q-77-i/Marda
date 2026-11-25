@@ -1,6 +1,6 @@
 # CI（P2-M10）：push / PR 上跑**不需要密钥**的那一半——测试、lint、构建、能离线跑的守卫。
 #
-# 不进 CI 的（口径见 docs/SPEC.md §10）：
+# 不进 CI 的（口径见 docs/spec/SPEC.md §10）：
 # - smoke_*（真 DeepSeek / 语音 key / Qdrant，手动跑）；
 # - 评测与评分门禁（花真钱，且门禁的余量按「同一 golden 连跑三次」的波动定，CI 里跑会被
 #   上游抖动误伤）；
@@ -84,12 +84,49 @@ jobs:
         working-directory: frontend
         run: pnpm build
 
-  p4-integration:
-    name: P4 集成（PostgreSQL + Redis）
+  java-gateway:
+    name: Java 网关（Maven + Testcontainers Redis）
     runs-on: ubuntu-latest
-    # 生产形态的两块地基：**只有真 PG / 真 Redis 才验得到的那些东西**——
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # 对齐 services/gateway/pom.xml 的 Maven enforcer
+          cache: maven
+          cache-dependency-path: services/gateway/pom.xml
+      # Testcontainers 用 runner 自带的 Docker 起 redis:7-alpine；
+      # 限流 / fail-open 必须真 Redis 才验得到（与本地同一条测试路径）。
+      - name: mvn verify
+        working-directory: services/gateway
+        run: mvn -B verify
+
+  java-business:
+    name: Java 业务服务（Maven + Testcontainers PostgreSQL/Redis）
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21" # 对齐 services/business/pom.xml 的 Maven enforcer
+          cache: maven
+          cache-dependency-path: services/business/pom.xml
+      # Testcontainers 起 postgres:16-alpine + redis:7-alpine；Flyway / ON CONFLICT /
+      # 版本条件更新 / 事务回滚 / 缓存命中与写后失效必须真 PG + 真 Redis 才验得到。
+      - name: mvn verify
+        working-directory: services/business
+        run: mvn -B verify
+
+  p4-integration:
+    name: 集成（PostgreSQL + Redis + Kafka）
+    runs-on: ubuntu-latest
+    # 生产形态的三块地基：**只有真 PG / 真 Redis / 真 Kafka 才验得到的那些东西**——
     # 方言（%s / ON CONFLICT / BIGSERIAL）、单事务回滚、checkpointer 跨实例 resume、
-    # 快照保留的 PG 分支、会话锁/限流/全局 LLM 槽**跨 worker** 生效。
+    # 快照保留的 PG 分支、会话锁/限流/全局 LLM 槽**跨 worker** 生效、
+    # outbox relay 真发布 / 消费者幂等与 DLQ（P5-J5）。
     # 假 key、不打真模型（同其余 job 的口径）。
     services:
       postgres:
@@ -108,6 +145,27 @@ jobs:
           --health-cmd "redis-cli ping"
           --health-interval 10s --health-timeout 5s --health-retries 10
         ports: ["6379:6379"]
+      # P5-J5：单节点 KRaft；advertised listener 用 localhost，runner 上的 pytest 能直连。
+      kafka:
+        image: apache/kafka:3.9.1
+        env:
+          KAFKA_NODE_ID: "1"
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 10s --health-timeout 10s --health-retries 12 --health-start-period 30s
+        ports: ["9092:9092"]
     env:
       DEEPSEEK_API_KEY: ci-dummy-key
       SILICONFLOW_API_KEY: ci-dummy-key
@@ -115,6 +173,7 @@ jobs:
       MARDA_TEST_DATABASE_URL: postgresql://marda:marda@localhost:5432/marda
       MARDA_TEST_CHECKPOINT_URL: postgresql://marda:marda@localhost:5432/marda_checkpoints
       MARDA_TEST_REDIS_URL: redis://localhost:6379/1
+      MARDA_TEST_KAFKA_BOOTSTRAP: 127.0.0.1:9092
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
@@ -126,9 +185,25 @@ jobs:
       - name: 安装依赖（锁定文件）
         working-directory: backend
         run: uv sync --frozen --default-index https://pypi.org/simple
-      - name: pytest（PG + Redis 集成）
+      - name: pytest（PG + Redis + Kafka 集成）
         working-directory: backend
-        run: uv run pytest -m "postgres or redis" -q
+        run: uv run pytest -m "postgres or redis or kafka" -q
+
+  compose-config:
+    name: HA compose 配置校验（不起容器）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # .env.example 的密钥保持空（避免默认值被误用）；这里注入 CI 占位值，
+      # 让 compose 的 `${VAR:?}` 插值通过。只做插值 / extends / profile / YAML
+      # 校验，不启动任何服务、不连任何端口。
+      - name: 校验 HA compose
+        env:
+          JWT_SECRET: ci-placeholder-jwt-secret-0123456789abcdef
+          SERVICE_TOKEN: ci-placeholder-service-token
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.ha.yml --profile agent --profile events config -q
 
   redline:
     name: 语料红线（CI 可查部分：入库守卫 + 检查器自检）

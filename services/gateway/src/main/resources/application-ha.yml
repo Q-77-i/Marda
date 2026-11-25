@@ -1,0 +1,44 @@
+# J6-A：HA 形态的网关路由配置（不引入注册中心）。
+#
+# 两个 business 实例在 SimpleDiscoveryClient 里静态登记；路由用 lb://business
+# （BUSINESS_URI），由 HealthCheckServiceInstanceListSupplier 每 2s 检查
+# /actuator/health/readiness 摘掉不健康实例。
+#
+# 为什么不用 K8s/Consul：单机 compose 的固定两实例不需要服务发现；静态列表
+# 与健康检查已经能覆盖「杀一个 business，另一个接管」的语义。
+spring:
+  data:
+    redis:
+      # J6-C：Sentinel 1 主 2 从 3 哨兵。master 名与 docker/redis-ha/sentinel.conf 一致。
+      sentinel:
+        master: ${REDIS_SENTINEL_MASTER:marda-master}
+        nodes: ${REDIS_SENTINEL_NODES:sentinel-1:26379,sentinel-2:26379,sentinel-3:26379}
+  cloud:
+    gateway:
+      # J8-B：网关路由的 client observation + traceparent 传播（OTLP → collector）。
+      observability:
+        enabled: true
+    discovery:
+      client:
+        simple:
+          instances:
+            business:
+              - uri: ${BUSINESS_1_URL:http://business-1:8081}
+              - uri: ${BUSINESS_2_URL:http://business-2:8081}
+    loadbalancer:
+      configurations: health-check
+      health-check:
+        interval: 2s
+        initial-delay: 0s
+        path:
+          default: /actuator/health/readiness
+
+# J8-B：HA 形态开启 OTel（应用侧全采样，由 collector 做 tail sampling）。
+management:
+  tracing:
+    enabled: true
+    sampling:
+      probability: 1.0
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_ENDPOINT:http://otel-collector:4318/v1/traces}

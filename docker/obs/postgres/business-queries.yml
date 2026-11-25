@@ -1,0 +1,39 @@
+# P5-J8：postgres_exporter 自定义查询（业务域 marda_business）。
+# 只读计数；不导出计划 / 通知的正文内容。
+
+marda_learning_plan:
+  query: "SELECT status, COUNT(*) AS total FROM learning_plan GROUP BY status"
+  metrics:
+    - status:
+        usage: "LABEL"
+        description: "learning plan status"
+    - total:
+        usage: "GAUGE"
+        description: "learning plans by status"
+
+marda_learning_task:
+  query: "SELECT status, COUNT(*) AS total FROM learning_task GROUP BY status"
+  metrics:
+    - status:
+        usage: "LABEL"
+        description: "learning task status"
+    - total:
+        usage: "GAUGE"
+        description: "learning tasks by status"
+
+marda_notification:
+  query: "SELECT status, COUNT(*) AS total FROM notification GROUP BY status"
+  metrics:
+    - status:
+        usage: "LABEL"
+        description: "notification status"
+    - total:
+        usage: "GAUGE"
+        description: "notifications by status"
+
+marda_business_outbox:
+  query: "SELECT COUNT(*) AS pending FROM business_outbox WHERE published_at IS NULL"
+  metrics:
+    - pending:
+        usage: "GAUGE"
+        description: "unpublished business_outbox rows"

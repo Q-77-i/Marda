@@ -1,0 +1,90 @@
+# P5-J8：recording rules（RED / SLO / 业务）。
+#
+# 口径：
+# - RED 只看 gateway / business（学习计划入口 / 学习执行域），**排除 /actuator 探针**——
+#   不排除时空闲 HA 下探针占请求数 99%+，真实 5xx 被稀释、SLO 在统计探针；
+# - SLO 沿用 J7 校准：业务 API 可用性 99.9%、p95 ≤ 100ms（500 RPS 口径来自 J7）；
+# - burn rate 用 1h 窗口（demo 时间尺度；生产可加 6h/3d 多窗口，见 runbook）。
+
+groups:
+  - name: marda-red
+    interval: 15s
+    rules:
+      - record: job:http_requests:rate5m
+        expr: |
+          sum by (job) (
+            rate(http_server_requests_seconds_count{job=~"gateway|business",uri!~"/actuator/.*"}[5m])
+          )
+
+      - record: job:http_5xx_ratio:5m
+        expr: |
+          (
+            sum by (job) (
+              rate(http_server_requests_seconds_count{job=~"gateway|business",uri!~"/actuator/.*",status=~"5.."}[5m])
+            )
+            or
+            (
+              sum by (job) (
+                rate(http_server_requests_seconds_count{job=~"gateway|business",uri!~"/actuator/.*"}[5m])
+              ) * 0
+            )
+          )
+          /
+          clamp_min(
+            sum by (job) (
+              rate(http_server_requests_seconds_count{job=~"gateway|business",uri!~"/actuator/.*"}[5m])
+            ),
+            1e-9
+          )
+
+      - record: job:http_latency_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (job, le) (
+              rate(http_server_requests_seconds_bucket{job=~"gateway|business",uri!~"/actuator/.*"}[5m])
+            )
+          )
+
+  - name: marda-slo
+    interval: 15s
+    rules:
+      - record: slo:availability:ratio_1h
+        expr: |
+          1 -
+          (
+            (
+              sum(rate(http_server_requests_seconds_count{job="business",uri!~"/actuator/.*",status=~"5.."}[1h]))
+              or vector(0)
+            )
+            /
+            clamp_min(
+              sum(rate(http_server_requests_seconds_count{job="business",uri!~"/actuator/.*"}[1h])),
+              1e-9
+            )
+          )
+
+      # 错误预算 = 0.1%（99.9%）；burn rate > 1 表示按此速率 30 天会烧穿。
+      - record: slo:error_budget_burn:1h
+        expr: (1 - slo:availability:ratio_1h) / 0.001
+
+  - name: marda-business
+    interval: 15s
+    rules:
+      - record: marda:cache_hit_ratio:5m
+        expr: |
+          (
+            sum(rate(cache_requests_total{job="business",result="HIT"}[5m]))
+            or
+            (sum(rate(cache_requests_total{job="business"}[5m])) * 0)
+          )
+          /
+          clamp_min(sum(rate(cache_requests_total{job="business"}[5m])), 1e-9)
+
+      # 按 tier 保留：flash（32 槽）与 pro（4 槽）是独立池，合并会掩盖 pro 的排队。
+      - record: marda:llm_slot_wait_p95:5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (tier, le) (rate(marda_llm_slot_wait_seconds_bucket[5m]))
+          )

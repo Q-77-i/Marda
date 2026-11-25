@@ -1,0 +1,31 @@
+{
+  "event_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+  "type": "interview.finalized",
+  "version": 1,
+  "occurred_at": "2026-11-10T12:00:00Z",
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "producer": "agent",
+  "payload": {
+    "interview_id": "6f1c2a9e-2b7d-4f4e-9f2a-3c5d7e9b1a20",
+    "user_id": "u_7d2c1a9b",
+    "position": "Agent",
+    "interview_type": "tech",
+    "finished_at": "2026-11-10T11:59:30Z",
+    "report_id": "r_5b3e8c41",
+    "report_summary": {
+      "overall": 3.4,
+      "weak_domains": [
+        {
+          "domain": "rag",
+          "score": 2.8,
+          "advice": "优先补混合检索与重排的取舍。"
+        },
+        {
+          "domain": "memory",
+          "score": 3.1,
+          "advice": "补会话记忆的压缩与保留策略。"
+        }
+      ]
+    }
+  }
+}

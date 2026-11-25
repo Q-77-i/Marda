@@ -1,6 +1,6 @@
 # 参与 Marda 开发
 
-> 个人项目，按小团队方式协作。开始前先读 [README](README.md) 的「快速开始」和 [CLAUDE.md](CLAUDE.md) 的工程规约；技术细节按需查 [SPEC](docs/SPEC.md)。
+> 个人项目，按小团队方式协作。开始前先读 [README](README.md) 的「快速开始」和 [CLAUDE.md](CLAUDE.md) 的工程规约；技术细节按需查 [SPEC](docs/spec/SPEC.md)。
 
 ## 本地跑起来
 
@@ -11,7 +11,7 @@ cd frontend && pnpm install && pnpm test
 docker compose up -d --build  # http://localhost:8080
 ```
 
-测试使用假 key / FakeLLM，不需要真实模型 API。**不要**在测试或 CI 里调用真实模型。P4 集成用例需要真 PostgreSQL / Redis，命令见 [docs/P4-生产化.md §7](docs/P4-生产化.md)。
+测试使用假 key / FakeLLM，不需要真实模型 API。**不要**在测试或 CI 里调用真实模型。P4 集成用例需要真 PostgreSQL / Redis，命令见 [docs/ops/P4-生产化.md §7](docs/ops/P4-生产化.md)。
 
 ## 分支
 
@@ -51,6 +51,27 @@ PR 描述用仓库模板；必须写测试命令和结果。单个 PR 尽量不�
 - 没有密钥、题库原文、私有文档进入提交；
 - PR 描述能让人从零复现验证。
 
+## 项目角色与贡献
+
+| 成员 | 角色 | 主要范围 | 粗略贡献 |
+| --- | --- | --- | --- |
+| Zhouq (Q-77-i) | 维护者 / 规划 | P1–P3、M13–M16、P5；P4 规划 / 验收 / 集成 / 发布；文档、评审、红线 | 全项目约 80–85%；P4 约 10–15% |
+| RangerCao | P4 实现 | 多 worker、PG / Redis、checkpoint 压缩与保留、迁移 / 备份、P4 CI 集成 | P4 实现约 85–90%；全项目约 15–20% |
+
+> 贡献度按阶段 / PR 范围估算，不按代码行数；依据 git 历史与 PR #20
+> （27 commits / 60 files / +6691 / −507）。详细台账在内部记录中（不随仓库）。
+
+## 文档公开与私有
+
+- **公开**：README、PRD、SPEC、里程碑、`docs/ops/`、`docs/p5/` 的 README / 评估稿 / contracts、
+  CONTRIBUTING。这些是给用户、面试官、合作者看的成果与契约。
+- **私有**：`docs/private/` —— 阶段计划、基线、证据、贡献台账、个人笔记、题库原文；
+  **不提交**，也不在公开文档里链接。
+- 写文档前先判断：这是“对外成果 / 契约”，还是“内部过程”？过程文档不进公开仓库。
+
 ## 文档分工
 
-README 是门面；需求看 [PRD](docs/PRD.md)，技术口径看 [SPEC](docs/SPEC.md)，生产化看 [P4-生产化](docs/P4-生产化.md)，过程记录看 [里程碑](docs/里程碑.md)。改动涉及哪一层，就同步更新对应文档。
+README 是门面；需求看 [PRD](docs/PRD.md)，技术口径看 [SPEC](docs/spec/SPEC.md)，
+生产化看 [P4-生产化](docs/ops/P4-生产化.md)，过程记录看 [里程碑](docs/里程碑.md)；
+P5 业务背景看 [p5/README](docs/p5/README.md)，评估稿看 [P5-Java业务](docs/p5/P5-Java业务.md)，
+契约看 [p5/contracts](docs/p5/contracts/)。改动涉及哪一层，就同步更新对应文档。

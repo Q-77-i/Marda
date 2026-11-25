@@ -1,4 +1,4 @@
-> 本文是 SPEC 的 §10 正文；全局索引见 [../SPEC.md](../SPEC.md)。章节号冻结，不因拆分改变。
+> 本文是 SPEC 的 §10 正文；全局索引见 [SPEC.md](SPEC.md)。章节号冻结，不因拆分改变。
 
 ## 10. 测试与验收
 
@@ -31,7 +31,7 @@ uv run python scripts/eval_retrieval_run.py   # 检索基线（需 Qdrant + 嵌�
 uv run python scripts/eval_judge_gate.py      # 评分门禁（改评分 prompt 后必跑）
 ```
 
-P4 集成（真 PG / Redis）的建库与环境变量见 [P4-生产化 §7](../P4-生产化.md)。
+P4 集成（真 PG / Redis）的建库与环境变量见 [P4-生产化 §7](../ops/P4-生产化.md)。
 
 **CI（`.github/workflows/ci.yml`）**：push main / PR 上跑**不需要密钥**的那一半——**四个 job**：后端 pytest · 前端 lint+vitest+build · **P4 集成（真 PostgreSQL + 真 Redis，用 Actions services 起）** · **语料红线（CI 可查部分）**。
 
