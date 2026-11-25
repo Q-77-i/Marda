@@ -194,9 +194,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # .env.example 里已有占位密钥；compose 的 env_file 要求文件存在。
-      # 只做插值 / extends / profile / YAML 校验，不启动任何服务、不连任何端口。
+      # .env.example 的密钥保持空（避免默认值被误用）；这里注入 CI 占位值，
+      # 让 compose 的 `${VAR:?}` 插值通过。只做插值 / extends / profile / YAML
+      # 校验，不启动任何服务、不连任何端口。
       - name: 校验 HA compose
+        env:
+          JWT_SECRET: ci-placeholder-jwt-secret-0123456789abcdef
+          SERVICE_TOKEN: ci-placeholder-service-token
         run: |
           cp .env.example .env
           docker compose -f docker-compose.ha.yml --profile agent --profile events config -q
