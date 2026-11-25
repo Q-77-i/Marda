@@ -174,6 +174,7 @@
 11. **postgres_exporter 的自定义指标名 = query key + `_` + metric 名**：`marda_outbox` + `pending` = `marda_outbox_pending`；写错一边告警就是空的。
 12. **HA 的 profile 文件不能有重复顶层键**：append 第二个 `spring:` 会让 SnakeYAML 抛 `DuplicateKeyException`，应用启动即失败；Kafka observation 与 Redis Sentinel 必须合并在同一个 `spring:` 块。
 13. **观测栈配置按目录挂载**：单文件 bind mount 在编辑时可能被读到截断版本（Prometheus 报 YAML `unexpected end of stream`），与 J6 的 nginx 坑位同源。
+14. **JSON 日志只在 `ha` profile 启用**：`logback-spring.xml` 无条件上 `LogstashEncoder` 会让 CI 的 Kafka 集成测试明显变慢（客户端 INFO 日志量 × 编码开销），Consumer 线程启动被拖过 20s 的 await 超时（实测 job 从 1 分钟涨到 5 分钟并失败）；测试/默认用 Spring Boot 默认 console，测试资源再把 Kafka 客户端日志降到 WARN。
 
 ## 开发纪律
 
