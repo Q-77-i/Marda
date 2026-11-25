@@ -37,14 +37,20 @@ def get_client():
 
     显式构造（而非依赖环境变量）让 base_url 与 .env 单一来源；该实例同时注册为
     SDK 的全局单例，drop-in openai 复用同一实例——两处若各建各的，span 父子关系会断。
+
+    **J8 审查修复**：给 Langfuse 一个**独立的 TracerProvider**。否则它会挂到
+    全局 OTLP provider 上，prompt / completion（含图片 data URL）与
+    user.id / session.id 会被一并导出到 Jaeger——违反"user_id 不进标签/日志"的口径。
     """
     from langfuse import Langfuse
+    from opentelemetry.sdk.trace import TracerProvider
 
     settings = get_settings()
     return Langfuse(
         public_key=settings.langfuse_public_key,
         secret_key=settings.langfuse_secret_key,
         base_url=settings.langfuse_base_url,
+        tracer_provider=TracerProvider(),
     )
 
 

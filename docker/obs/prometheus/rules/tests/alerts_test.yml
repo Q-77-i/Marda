@@ -29,7 +29,26 @@ tests:
               job: redis
               cluster: marda-ha
             exp_annotations:
-              summary: "Redis exporter 不可达（缓存/锁可能降级）"
+              summary: "Redis 不可达（缓存/锁可能降级）"
+              runbook: "docs/ops/可观测与运维.md#redisdown"
+
+  # exporter 活着但连不上 Redis：up 仍为 1，必须靠 redis_up 触发。
+  - interval: 15s
+    input_series:
+      - series: 'up{job="redis",cluster="marda-ha"}'
+        values: '1x20'
+      - series: 'redis_up{job="redis",cluster="marda-ha"}'
+        values: '1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: redis
+              cluster: marda-ha
+            exp_annotations:
+              summary: "Redis 不可达（缓存/锁可能降级）"
               runbook: "docs/ops/可观测与运维.md#redisdown"
 
   - interval: 15s
@@ -148,6 +167,21 @@ tests:
     input_series:
       - series: 'cache_requests_total{job="business",result="HIT"}'
         values: '0+1x60'
+      - series: 'cache_requests_total{job="business",result="MISS"}'
+        values: '0+4x60'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: CacheHitRatioLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "缓存命中率低于 80%"
+              runbook: "docs/ops/可观测与运维.md#cachehitratiolow"
+
+  # 一次命中都没有：HIT 序列不存在，比率必须补 0 才能触发。
+  - interval: 15s
+    input_series:
       - series: 'cache_requests_total{job="business",result="MISS"}'
         values: '0+4x60'
     alert_rule_test:

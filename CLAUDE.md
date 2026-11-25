@@ -175,6 +175,14 @@
 12. **HA 的 profile 文件不能有重复顶层键**：append 第二个 `spring:` 会让 SnakeYAML 抛 `DuplicateKeyException`，应用启动即失败；Kafka observation 与 Redis Sentinel 必须合并在同一个 `spring:` 块。
 13. **观测栈配置按目录挂载**：单文件 bind mount 在编辑时可能被读到截断版本（Prometheus 报 YAML `unexpected end of stream`），与 J6 的 nginx 坑位同源。
 14. **JSON 日志只在 `ha` profile 启用**：`logback-spring.xml` 无条件上 `LogstashEncoder` 会让 CI 的 Kafka 集成测试明显变慢（客户端 INFO 日志量 × 编码开销），Consumer 线程启动被拖过 20s 的 await 超时（实测 job 从 1 分钟涨到 5 分钟并失败）；测试/默认用 Spring Boot 默认 console，测试资源再把 Kafka 客户端日志降到 WARN。
+15. **Micrometer 默认不导出 histogram bucket**：p95 依赖 `http_server_requests_seconds_bucket`，必须配 `management.metrics.distribution.percentiles-histogram."[http.server.requests]": true`；否则 p95 记录规则 / HighLatencyP95 / 看板永久为空（`promtool` 测试仍绿——它手工喂了 bucket，掩盖了生产缺失）。
+16. **RedisDown 要监控 `redis_up` 而不是 `up{job="redis"}`**：`up` 只是 exporter 的抓取健康；exporter 活着但连不上 Redis 时仍为 1。
+17. **RED / SLO 必须排除 `/actuator`**：空闲 HA 下探针占请求数 99%+，真实 5xx 被稀释到 1% 阈值以下，99.9% 可用性实际在统计探针。选择器加 `uri!~"/actuator/.*"`。
+18. **Langfuse 必须用独立 TracerProvider**：复用全局 OTLP provider 时，它会把 prompt / completion（含图片 data URL）与 user.id / session.id 一并导出到 Jaeger——违反「user_id / 题库原文不进 trace」的口径。构造 `Langfuse(..., tracer_provider=TracerProvider())`。
+19. **worker 也要 `SPRING_PROFILES_ACTIVE=ha`**：它是唯一真正跑 Kafka 的进程；没有 profile 时 JSON 日志 / OTel / Kafka observation 全不生效（表现为 worker 日志是文本、Jaeger 没有消费段）。
+20. **tail sampling 的 `decision_wait` 要长于最长轮次**：5s 会在根 span / `interview.turn` 结束前裁决，长 trace 被拆分或丢弃；本项目用 **90s**（真实 DeepSeek + SSE 可到 60–120s）。
+21. **`StructuredArguments` 只被 `LogstashEncoder` 渲染**：非 ha profile 的默认 console 只打印 `%m`，访问日志会只剩一个词 `access`。访问日志按 profile 分支（ha 用结构化参数，默认用 `{}` 占位符）。
+22. **gateway 的访问日志 / request_id 要放在 Security 之前**（`Ordered.HIGHEST_PRECEDENCE`；`WebFilterChainProxy` 是 -100）：放 `LOWEST_PRECEDENCE` 时 401/403 请求完全不可见，`X-Request-Id` 也不会回写。
 
 ## 开发纪律
 

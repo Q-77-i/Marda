@@ -12,7 +12,9 @@ receivers:
 
 processors:
   tail_sampling:
-    decision_wait: 5s
+    # 必须长于最长轮次（真实 DeepSeek + SSE 可到 60–120s）；5s 会在根 span /
+    # interview.turn 结束前裁决，长 trace 被拆分或丢弃（J8 审查发现）。
+    decision_wait: 90s
     num_traces: 50000
     policies:
       - name: errors

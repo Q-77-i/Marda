@@ -47,12 +47,14 @@ groups:
           runbook: "docs/ops/可观测与运维.md#outboxbacklog"
 
       - alert: RedisDown
-        expr: up{job="redis"} == 0
+        # redis_up 才是 Redis 本身可达；up 只是 exporter 抓取健康（exporter 活着但
+        # 连不上 Redis 时仍为 1）。两个都保留：exporter 挂了也要能叫醒人。
+        expr: redis_up{job="redis"} == 0 or up{job="redis"} == 0
         for: 30s
         labels:
           severity: critical
         annotations:
-          summary: "Redis exporter 不可达（缓存/锁可能降级）"
+          summary: "Redis 不可达（缓存/锁可能降级）"
           runbook: "docs/ops/可观测与运维.md#redisdown"
 
       - alert: ReplicationLagHigh

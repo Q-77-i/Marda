@@ -586,6 +586,9 @@ services:
       BUSINESS_KAFKA_REPLICATION_FACTOR: "3"
       BUSINESS_OUTBOX_POLL_INTERVAL_MS: "1000"
       BUSINESS_CACHE_ENABLED: "false"
+      # J8：worker 是唯一真正跑 Kafka 的进程，必须拿 ha profile——
+      # 否则 JSON 日志 / OTel / Kafka observation 在它身上全部不生效。
+      SPRING_PROFILES_ACTIVE: ha
     depends_on: !override
       postgres-primary:
         condition: service_healthy
@@ -615,6 +618,9 @@ services:
       BUSINESS_KAFKA_REPLICATION_FACTOR: "3"
       BUSINESS_OUTBOX_POLL_INTERVAL_MS: "1000"
       BUSINESS_CACHE_ENABLED: "false"
+      # J8：worker 是唯一真正跑 Kafka 的进程，必须拿 ha profile——
+      # 否则 JSON 日志 / OTel / Kafka observation 在它身上全部不生效。
+      SPRING_PROFILES_ACTIVE: ha
     depends_on: !override
       postgres-primary:
         condition: service_healthy

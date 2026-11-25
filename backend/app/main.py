@@ -77,8 +77,13 @@ async def _metrics_middleware(request: Request, call_next):
         duration = time.perf_counter() - started
         metrics.observe_http(request.method, path, status, duration)
         logging.getLogger("app.access").info(
-            "access method=%s path=%s status=%s duration_ms=%.1f",
-            request.method, path, status, duration * 1000,
+            "access method=%s path=%s route=%s status=%s duration_ms=%.1f client=%s",
+            request.method,
+            request.url.path,
+            path,
+            status,
+            duration * 1000,
+            request.client.host if request.client else "",
         )
 
 

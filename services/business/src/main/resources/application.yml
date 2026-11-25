@@ -59,6 +59,11 @@ management:
   tracing:
     # J8-B：默认关闭（本地/测试不连 collector）；HA profile 显式开启。
     enabled: false
+  metrics:
+    distribution:
+      # J8 修复：没有这一行时 Micrometer 不导出 _bucket，p95 永远为空。
+      percentiles-histogram:
+        "[http.server.requests]": true
   endpoint:
     health:
       probes:

@@ -53,6 +53,12 @@ management:
   tracing:
     # J8-B：默认关闭（本地/测试不连 collector）；HA profile 显式开启。
     enabled: false
+  metrics:
+    distribution:
+      # J8 修复：Micrometer 默认只导出 _count/_sum/_max，没有 _bucket；
+      # 不配这一行，p95 记录规则 / HighLatencyP95 / 看板全部永久为空。
+      percentiles-histogram:
+        "[http.server.requests]": true
   endpoint:
     health:
       probes:

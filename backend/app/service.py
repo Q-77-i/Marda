@@ -18,6 +18,7 @@ from typing import Any, AsyncIterator
 
 from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
+from opentelemetry.instrumentation.utils import suppress_instrumentation
 from pydantic import BaseModel
 
 from app import cache, coordination, db, llm, metrics, observability, tracing
@@ -318,14 +319,16 @@ class Service:
         """
         if self._graph is None:
             return False
-        checks = [asyncio.to_thread(db.ping, self._settings.business_db)]
-        if self._checkpoint_ping is not None:
-            checks.append(self._checkpoint_ping())
-        try:
-            await asyncio.wait_for(asyncio.gather(*checks), timeout=2.0)
-        except Exception as exc:  # noqa: BLE001 —— readiness 失败是状态，不是异常
-            logger.warning("readiness 检查失败：%s", exc)
-            return False
+        # J8 审查：readiness 的 DB ping 不产生独立 trace（否则 Jaeger 被 SELECT 1 根 trace 淹没）。
+        with suppress_instrumentation():
+            checks = [asyncio.to_thread(db.ping, self._settings.business_db)]
+            if self._checkpoint_ping is not None:
+                checks.append(self._checkpoint_ping())
+            try:
+                await asyncio.wait_for(asyncio.gather(*checks), timeout=2.0)
+            except Exception as exc:  # noqa: BLE001 —— readiness 失败是状态，不是异常
+                logger.warning("readiness 检查失败：%s", exc)
+                return False
         return True
 
     @property
@@ -511,10 +514,12 @@ class Service:
                     await self._persist(interview_id, values)
                     yield _event("done", {"interview_id": interview_id, "report_ready": True})
             except llm.LLMError as exc:
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "llm_error", "message": str(exc), "retryable": exc.retryable,
                 })
-            except GraphRecursionError:
+            except GraphRecursionError as exc:
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "recursion_error", "message": "面试流程超出步数上限，请稍后重试",
                 })
@@ -523,6 +528,7 @@ class Service:
                 # 不接住的话异常会逃出流——SSE 连接直接断开，**客户端拿不到任何 error 事件**，
                 # 只能看着一个「永远转圈」的界面（文档写的「仍失败回 SSE error」就不成立）。
                 # 所以显式接住并发 error 事件，并带上「怎么修」的指引。
+                tracing.mark_error(exc)
                 yield _event("error", {
                     "code": "persist_error",
                     "message": "面试已结束但结果保存失败，请稍后重试或查看面试记录",

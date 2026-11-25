@@ -55,7 +55,13 @@ def configure(app) -> bool:
     # **用通用 ASGI middleware，不用 FastAPIInstrumentor**：FastAPI 0.141 / Starlette 1.6
     # 下 FastAPIInstrumentor 静默不产生 HTTP span（实测 Jaeger 只有 psycopg span）；
     # ASGI 协议稳定，OpenTelemetryMiddleware 不依赖框架内部 hook。
-    app.add_middleware(OpenTelemetryMiddleware, excluded_urls="healthz,readyz,metrics")
+    # exclude_spans：默认每个 send/receive 消息一个 INTERNAL span——SSE 的每个 delta、
+    # /api/asr 的每个音频帧都会生成，长面试可上万 span；只保留 server span。
+    app.add_middleware(
+        OpenTelemetryMiddleware,
+        excluded_urls="healthz,readyz,metrics",
+        exclude_spans=["receive", "send"],
+    )
     HTTPXClientInstrumentor().instrument()
     PsycopgInstrumentor().instrument()
     RedisInstrumentor().instrument()
@@ -73,6 +79,22 @@ def langfuse_trace_id(interview_id: str) -> str:
         return observability.get_client().create_trace_id(seed=interview_id)
     except Exception:  # noqa: BLE001 —— 关联失败不该影响面试
         return ""
+
+
+def mark_error(exc: BaseException) -> None:
+    """把当前 span 标成 ERROR（供吞掉异常后发 SSE error 的分支调用）。
+
+    `_run` 捕获 LLMError / GraphRecursionError / PersistFailedError 后不再抛出；
+    不显式标记的话 collector 的 errors 100% 策略会把失败轮次当成功样本丢掉。
+    """
+    if not enabled():
+        return
+    from opentelemetry import trace as otel_trace
+    from opentelemetry.trace import Status, StatusCode
+
+    span = otel_trace.get_current_span()
+    if span.is_recording():
+        span.set_status(Status(StatusCode.ERROR, str(exc)))
 
 
 @contextmanager

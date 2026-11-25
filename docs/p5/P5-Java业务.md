@@ -781,6 +781,22 @@ Runbook：启动 / 停止、故障转移、DLQ 重放、缓存清理、回滚、
 | 日志 | JSON + `request_id` / `trace_id`；gateway 访问日志用 `request_id`（WebFlux 的 WebFilter 在 server span 外层，拿不到 trace_id——边界） |
 | 资源 | 观测栈 **536 MiB**（12 容器）；HA 应用栈空闲 4.7 GiB |
 
+**审查修复（2026-11-26）**：会话收尾代码审查发现并修复了以下会影响结论的问题（均已重新验证）：
+
+- **p95 一直是空的**：Micrometer 默认不导出 histogram bucket；补
+  `management.metrics.distribution.percentiles-histogram."[http.server.requests]": true`；
+- **RedisDown 只看 exporter**：改为 `redis_up{job="redis"} == 0 or up{job="redis"} == 0`；
+- **RED / SLO 被探针污染**：选择器排除 `/actuator`（实测空闲时探针占请求 99%+）；
+- **缓存命中率零命中时为空向量**：分子补 0（实测返回 0）；
+- **LLM 槽等待把 flash / pro 合并**：记录规则保留 tier；
+- **worker 没有 ha profile**：JSON 日志 / OTel / Kafka observation 在唯一跑 Kafka 的进程上不生效，已补；
+- **Langfuse 会污染 Jaeger**：给独立 `TracerProvider`，prompt / user.id / session.id 不再进 OTel；
+- **tail sampling 5s 短于长轮次**：`decision_wait: 90s`；
+- **gateway 401 不可见**：访问日志 / request_id 移到 Security 之前（实测 401 有日志与
+  `X-Request-Id` 回写）；非 ha 形态的访问日志不再只剩一个词；
+- **失败轮次不标 ERROR**：`_run` 吞异常的分支显式 `mark_error`（错误 100% 对失败轮次成立）；
+- ASGI middleware 关闭 receive/send span；readiness 的 DB ping 不再产生独立 trace。
+
 **边界**：单机多实例、非多可用区、非生产监控；Jaeger 内存存储（重启丢）；
 Docker Desktop 的 cAdvisor 只有 cgroup id（无容器名）；告警阈值为 demo 尺度；
 gateway 访问日志的 trace_id 为空（用 request_id 串联）。

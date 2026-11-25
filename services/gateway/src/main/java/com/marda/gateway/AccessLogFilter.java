@@ -8,12 +8,14 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.Ordered;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ServerWebExchange;
 import org.springframework.web.server.WebFilter;
 import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -26,11 +28,15 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
     private final ExecutorService executor;
     private final ObjectProvider<Tracer> tracerProvider;
+    /** ha profile 用 LogstashEncoder（结构化字段）；默认 console pattern 只认 {}。 */
+    private final boolean jsonLogging;
 
     public AccessLogFilter(ExecutorService gatewayBlockingExecutor,
-                           ObjectProvider<Tracer> tracerProvider) {
+                           ObjectProvider<Tracer> tracerProvider,
+                           Environment environment) {
         this.executor = gatewayBlockingExecutor;
         this.tracerProvider = tracerProvider;
+        this.jsonLogging = Arrays.stream(environment.getActiveProfiles()).anyMatch("ha"::equals);
     }
 
     @Override
@@ -82,7 +88,17 @@ public class AccessLogFilter implements WebFilter, Ordered {
                         fields.put("request_id", finalRequestId);
                         fields.put("trace_id", finalTraceId);
                         fields.put("virtual", Thread.currentThread().isVirtual());
-                        log.info("access", StructuredArguments.entries(fields));
+                        if (jsonLogging) {
+                            log.info("access", StructuredArguments.entries(fields));
+                        } else {
+                            // 默认 console pattern 不渲染 StructuredArguments；不分支的话
+                            // 单机形态（无 ha profile）的访问日志只剩一个词 access。
+                            log.info(
+                                    "access method={} path={} status={} duration_ms={} request_id={} trace_id={}",
+                                    fields.get("method"), fields.get("path"), fields.get("status"),
+                                    fields.get("duration_ms"), fields.get("request_id"),
+                                    fields.get("trace_id"));
+                        }
                     });
                 } catch (RuntimeException ignored) {
                     // 应用关闭时 executor 可能已关闭；访问日志不能影响响应。
@@ -93,6 +109,8 @@ public class AccessLogFilter implements WebFilter, Ordered {
 
     @Override
     public int getOrder() {
-        return Ordered.LOWEST_PRECEDENCE;
+        // 在 Spring Security（WebFilterChainProxy order = -100）之前：未认证请求也会被
+        // 记录，且 X-Request-Id 对 401/403 也会回写（审查实测：LOWEST 时 401 完全不可见）。
+        return Ordered.HIGHEST_PRECEDENCE;
     }
 }
